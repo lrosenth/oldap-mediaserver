@@ -1,22 +1,22 @@
-[project]
+[tool.poetry]
 name = "oldap-mediaserver"
 version = "0.1.0"
 description = ""
-authors = [
-    {name = "lrosenth",email = "lukas.rosenthaler@pm.me"}
-]
+authors = ["Lukas Rosenthaler <lukas.rosenthaler@unibas.ch>"]
 readme = "README.md"
-requires-python = ">=3.13,<4.0"
-dependencies = [
-    "flask (==3.1.2)",
-    "pyvips (==3.0.0)",
-    "requests (==2.32.5)",
-    "flask-cors (>=6.0.1,<7.0.0)",
-    "pyjwt (>=2.10.1)",
-    "gunicorn (>=23.0.0)"
-]
+
+[tool.poetry.dependencies]
+python = "^3.14"
+pyjwt = "==2.10.1"
+flask = "==3.1.2"
+flask-cors = "==6.0.1"
+pyvips = "==3.0.0"
+gunicorn = "==23.0.0"
+nanoid = "==2.0.0"
+oldaplib = "==0.3.23"
+requests = "==2.32.5"
 
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

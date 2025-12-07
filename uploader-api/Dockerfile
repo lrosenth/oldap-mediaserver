@@ -23,6 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Your Flask app
 COPY app.py .
+COPY oldap_client.py .
+COPY __init__.py .
 
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1

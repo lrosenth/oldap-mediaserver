@@ -1,27 +1,49 @@
+import json
 import os
+import shutil
 import uuid
 import subprocess
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args, cast
 
-from flask import Flask, request, jsonify, abort
+import jwt
+from flask import Flask, request, jsonify, abort, logging
 
 import pyvips  # make sure this is in requirements.txt
 from flask_cors import CORS
+from nanoid import generate
+from oldaplib.src.enums.adminpermissions import AdminPermission
+from oldaplib.src.helpers.oldaperror import OldapError
+from oldaplib.src.helpers.serializer import serializer
+from oldaplib.src.userdataclass import UserData
+from oldaplib.src.xsd.iri import Iri
 
-IMAGE_ROOT = Path("/data/images")   # shared volume with Cantaloupe
-IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
+from oldap_client import OldapClient
 
+imgdir  = os.environ.get("UPLOADER_IMGDIR", "/data/images")
 # For local dev, Cantaloupe is usually on host:8182
 # In production, put your real hostname here
-CANTALOUPE_BASE_URL = os.environ.get(
-    "CANTALOUPE_BASE_URL",
-    "http://localhost:8182"  # change in deployment
-)
+iiif_base_url = os.environ.get("IIIF_BASE_URL", "http://localhost:8182/iiif/3/")
+
+oldap_api_url = os.environ.get("OLDAP_API_URL", "http://localhost:8000")
+
+IMAGE_ROOT = Path(imgdir)   # shared volume with Cantaloupe
+IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
 
 
 def create_app() -> Flask:
     app = Flask(__name__)
+
+    app.logger.setLevel("INFO")  # <— enable INFO
+
+    logger = app.logger
+
+    logger.info(f"Using image root: {IMAGE_ROOT}")
+    logger.info(f"Using IIIF base URL: {iiif_base_url}")
+    logger.info(f"Using Oldap API URL: {oldap_api_url}")
+
+    jwt_secret = os.getenv("OLDAP_JWT_SECRET", "You have to change this!!! +D&RWG+")
 
     # ------------------------------------------------------------------
     # Simple auth helper (Bearer <token>)
@@ -35,6 +57,7 @@ def create_app() -> Flask:
         token = auth[7:]
         if not token:
             abort(401, description="Empty Bearer token")
+
         # TODO: call oldap-api or verify JWT here
         return token
 
@@ -94,6 +117,19 @@ def create_app() -> Flask:
         )
 
     # ------------------------------------------------------------------
+    # Helper: make JPEG with vips (no compression)
+    # ------------------------------------------------------------------
+    def convert_to_jpeg_with_vips(src: Path, dst: Path) -> None:
+        """
+        Use pyvips to create a pyramidal tiled TIFF *without compression*.
+        """
+        image = pyvips.Image.new_from_file(str(src), access="sequential")
+        image.jpegsave(str(dst))
+
+    def copy_file(src: Path, dst: Path) -> None:
+        shutil.copy2(src, dst)
+
+    # ------------------------------------------------------------------
     # /upload endpoint
     # ------------------------------------------------------------------
     @app.post("/upload")
@@ -101,6 +137,7 @@ def create_app() -> Flask:
         """
         Accepts:
           - Multipart file "file"
+          - Form field "projectId"
           - Optional form field "identifier" (if you want explicit IIIF id)
           - Optional form field "target_format": "jp2" or "tiff"
             (default: "jp2")
@@ -108,31 +145,66 @@ def create_app() -> Flask:
         Stores the derivative directly in /data/images/<identifier>.<ext>
         and returns the IIIF URL for Cantaloupe.
         """
-        require_bearer_token()
+        token = require_bearer_token()
+        tokendata = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        userdata: UserData = json.loads(tokendata.get("userdata", "{}"), object_hook=serializer.decoder_hook)
+
+        # get the projectID from the query parameters. It's needed for the OldapClient...
+        if (projectId := request.form.get('projectId', None)) is None:
+            return jsonify({"message": "Missing projectId field"}), 400
+
+        # create the OldapClient which make the connection to the oldap server and reads the project data
+        try:
+            client = OldapClient(oldap_api_url=oldap_api_url, projectId=projectId, token=token)
+        except Exception as exc:
+            return jsonify({"message": f"Could not connect to oldap: {exc}"}), 400
+
+        # get the projectIri and projectShortName from the project data
+        if (projectIri := client.project.get('projectIri')) is None:
+            return jsonify({"message": "Could not find project"}), 404
+        if (projectShortName := client.project.get('projectShortName')) is None:
+            return jsonify({"message": "Could not find projectShortName"}), 404
+
+        # check if the user has the permission to upload images (ADMIN_CREATE permission)
+        try:
+            permissions =  userdata.inProject.get(Iri(projectIri, validate=True))
+        except OldapError:
+            return jsonify({"message": f'problem with projectIri "{projectIri}"'}), 404
+        if AdminPermission.ADMIN_CREATE not in permissions:
+            return jsonify({"message": "You don't have permission to upload images"}), 403
 
         if "file" not in request.files:
-            abort(400, description="Missing file field")
+            return jsonify({"message": "Missing file field"}), 400
 
+        # Check if the post request has the file part
         upload_file = request.files["file"]
         if not upload_file.filename:
-            abort(400, description="Uploaded file has no filename")
+            return jsonify({"message": "No file selected for uploading"}), 400
+
+        fpath = request.form.get('path', None)
 
         # Decide output format
-        target_format: Literal["jp2", "tiff"]
-        target_format = request.form.get("target_format", "jp2").lower()  # default jp2
-        if target_format not in ("jp2", "tiff"):
-            abort(400, description="target_format must be 'jp2' or 'tiff'")
+        TargetFormat = Literal["jp2", "tiff", "jpeg"]
+        raw_format = request.form.get("targetFormat", "jp2").lower()  # default jp2
+        if raw_format not in get_args(TargetFormat):
+            return jsonify({"message": "Invalid target_format"}), 400
+        target_format = cast(TargetFormat, raw_format)
 
         # Identifier to be used for IIIF
         identifier = request.form.get("identifier")
         if not identifier:
             # If none provided, just generate a UUID – you may want to use
             # an OLDAP resource ID instead.
-            identifier = str(uuid.uuid4())
+            identifier = str(generate(size=12))
+
+        if (permission_sets := request.form.getlist("permissionSets")) is None:
+            return jsonify({"message": "No permission sets provided"}), 400
 
         # Decide on extensions
         if target_format == "jp2":
             out_ext = ".jp2"
+        elif target_format == "jpeg":
+            out_ext = ".jpg"
         else:
             out_ext = ".tif"
 
@@ -143,18 +215,34 @@ def create_app() -> Flask:
         # Try to keep original extension for tmp
         orig_ext = Path(upload_file.filename).suffix or ".dat"
         tmp_path = tmp_dir / f"{identifier}{orig_ext}"
+        tmp_path2 = ''
 
-        out_path = IMAGE_ROOT / f"{identifier}{out_ext}"
+        pdir = IMAGE_ROOT / f"{projectId}"
+        pdir.mkdir(parents=True, exist_ok=True)
+        if fpath:
+            ppdir = IMAGE_ROOT / f"{projectId}/{fpath}"
+            out_path = IMAGE_ROOT / f"{projectShortName}/{fpath}/{identifier}{out_ext}"
+        else:
+            out_path = IMAGE_ROOT / f"{projectShortName}/{identifier}{out_ext}"
 
         # Save uploaded file
         upload_file.save(tmp_path)
 
         try:
             if target_format == "jp2":
-                # Option 1: if the upload is already TIFF, we compress directly.
-                # If it is JPEG or something else, you may want an additional
-                # conversion step here (e.g. vips -> TIFF -> kdu_compress).
+                if (upload_file.mimetype != "image/tiff"):
+                    # kakadu can only read TIFF's
+                    tmp_path2 = tmp_dir / f"{identifier}.tif"
+                    image = pyvips.Image.new_from_file(str(tmp_path), access="sequential")
+                    image.tiffsave(str(tmp_path2), bigtiff=True)
+                    tmp_path = tmp_path2
                 convert_to_jp2_with_kakadu(tmp_path, out_path)
+            elif target_format == "jpeg":
+                # simple JPEG – if input is JPEG, just copy the file...
+                if upload_file.mimetype != "image/jpeg":
+                    copy_file(tmp_path, out_path)
+                else:
+                    convert_to_jpeg_with_vips(tmp_path, out_path)
             else:
                 # pyramidal tiled TIFF (no compression)
                 convert_to_pyramidal_tiff_with_vips(tmp_path, out_path)
@@ -166,18 +254,33 @@ def create_app() -> Flask:
         finally:
             # Remove temp file
             tmp_path.unlink(missing_ok=True)
+            if tmp_path2:
+                tmp_path2.unlink(missing_ok=True)
 
         # Build an IIIF URL for convenience
         # For IIIF 3:
         iiif_id = f"{identifier}{out_ext}"
-        iiif_info_url = f"{CANTALOUPE_BASE_URL}/iiif/3/{iiif_id}/info.json"
+        iiif_info_url = f"{iiif_base_url}/iiif/3/{iiif_id}/info.json"
+
+        try:
+            response = client.create_resource(resource="shared:MediaObject", resource_data={
+                'shared:originalName': upload_file.filename,
+                'shared:originalMimeType': upload_file.mimetype,
+                'shared:serverUrl': iiif_base_url,
+                'shared:imageId': f"{identifier}{out_ext}",
+                'shared:protocol': 'iiif',
+                'shared:path': f"{projectId}/{fpath}" if fpath else projectId,
+                'grantsPermission': permission_sets
+            })
+        except Exception as exc:
+            out_path.unlink(missing_ok=True)
+            return jsonify({"error": f"Failed to create OLDAP resource: {exc}"}), 500
+
 
         return jsonify(
             {
                 "identifier": identifier,
-                "target_format": target_format,
-                "filename": iiif_id,
-                "iiif_info_url": iiif_info_url,
+                "iri": response['iri']
             }
         )
 
