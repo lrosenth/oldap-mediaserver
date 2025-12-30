@@ -1,0 +1,24 @@
+files.example.org {
+
+  # Öffentlicher Endpunkt: /get?token=...
+  handle /get* {
+
+    # Auth-Check (inkl. Query-String an Auth-Service weitergeben)
+    forward_auth http://127.0.0.1:9000 {
+      uri /auth?{query}
+
+      # Header aus Auth-Response in den "laufenden" Request übernehmen
+      copy_headers X-Internal-Path
+    }
+
+    # Request auf den internen Pfad umbiegen (relativ zum root)
+    rewrite * {http.request.header.X-Internal-Path}
+
+    # Root des Dateibaums
+    root * /srv/oldap-files
+    file_server
+  }
+
+  # Optional: alles andere 404
+  respond "Not found" 404
+}

@@ -12,7 +12,7 @@ help:
 run:
 	OLDAP_JWT_SECRET="A very short secret!" \
 	OLDAP_API="http://localhost:8000" \
-	UPLOADER_IMGDIR="../imageserver/test-images2" \
+	UPLOADER_IMGDIR="../imageserver/test-images" \
 	gunicorn -b 0.0.0.0:8080 app:app
 
 
