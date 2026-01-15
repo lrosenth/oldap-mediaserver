@@ -1,11 +1,12 @@
 require 'java'
+require "net/http"
 require 'cgi'
 require "json"
 require "uri"
 require "openssl"
 require "base64"
 
-logger = Java::edu.illinois.library.cantaloupe.delegate.Logger
+LOGGER = Java::edu.illinois.library.cantaloupe.delegate.Logger
 
 ##
 # Sample Ruby delegate script containing stubs and documentation for all
@@ -25,6 +26,9 @@ class CustomDelegate
     JWT_SECRET = ENV.fetch("OLDAP_JWT_SECRET") # MUST be set
     IMAGE_ROOT = ENV.fetch("OLDAP_IMAGE_ROOT", "/data/images")
     JWT_ISS    = ENV.fetch("OLDAP_JWT_ISS", "http://oldap.org")
+    OLDAP_API_BASE = ENV.fetch("OLDAP_API_BASE", "http://oldap-api")
+    OLDAP_UNKNOWN_PASSWORD = ENV.fetch("OLDAP_UNKNOWN_PASSWORD", "")
+    OLDAP_UNKNOWN_USERID = ENV.fetch("OLDAP_UNKNOWN_USERID", "unknown")
 
   ##
   # Attribute for the request context, which is a hash containing information
@@ -115,6 +119,12 @@ class CustomDelegate
   def serialize_meta_identifier(components)
   end
 
+    ##
+    # Analyze the JWT token that is passed as query parameter ?token=...
+    #
+    # @param token The token string
+    # @ return [Hash<String,String>] key-value pairs of the content of the JWT payload
+    #
     def jwt_payload_from_query_token(token)
         unless @payload
             @payload = jwt_decode_hs256(token, JWT_SECRET)
@@ -143,7 +153,13 @@ class CustomDelegate
     end
 
     # ---- Minimal HS256 implementation ----
-
+    ##
+    # Used to decode the JWT token
+    #
+    # @param token [String] The JWT token string
+    # @param secret [String] The secret necessary for decoding the token
+    # @return [Hash<String, String>] The deocded information as key-value pairs
+    #
     def jwt_decode_hs256(token, secret)
         header_b64, payload_b64, sig_b64 = token.split(".", 3)
         return nil unless header_b64 && payload_b64 && sig_b64
@@ -161,12 +177,24 @@ class CustomDelegate
         JSON.parse(payload_json)
     end
 
+    ##
+    # Decode a base64 string
+    #
+    # @param str [String] String to decode.
+    # @return [String] Decoded string
+    #
     def b64url_decode(str)
         s = str.tr("-_", "+/")
         s += "=" * ((4 - s.length % 4) % 4)
         Base64.decode64(s)
     end
 
+    ##
+    # Encode a binary string to base64
+    #
+    # @param bin [String] String to be encoded
+    # @return [String] Encoded string
+    #
     def b64url_encode(bin)
         Base64.strict_encode64(bin).tr("+/", "-_").gsub("=", "")
     end
@@ -189,6 +217,119 @@ class CustomDelegate
         }
     end
 
+
+    # ---------------------------
+    # OLDAP helpers (incremental)
+    # ---------------------------
+
+    def oldap_http_for(uri)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = (uri.scheme == "https")
+        http.read_timeout = 10
+        http.open_timeout = 5
+        http
+    end
+
+    def oldap_login_unknown!
+        uri = URI("#{OLDAP_API_BASE}/admin/auth/#{OLDAP_UNKNOWN_USERID}")
+        req = Net::HTTP::Post.new(uri.request_uri)
+        req["Content-Type"] = "application/json"
+        req.body = { password: OLDAP_UNKNOWN_PASSWORD }.to_json
+
+        STDERR.puts "[delegate.oldap_login_unknown] POST #{uri}"
+
+        resp = oldap_http_for(uri).request(req)
+        STDERR.puts "[delegate.oldap_login_unknown] status=#{resp.code}"
+
+        return nil unless resp.is_a?(Net::HTTPSuccess)
+
+        data = JSON.parse(resp.body) rescue {}
+        user_token = data["token"]
+        STDERR.puts "[delegate.oldap_login_unknown] got_token=#{!user_token.to_s.empty?}"
+        user_token
+    rescue => e
+        STDERR.puts "[delegate.oldap_login_unknown] exception #{e.class}: #{e.message}"
+        nil
+    end
+
+    # Simple TTL cache to avoid login on every request
+    def unknown_user_token
+        @@unknown_user_token ||= nil
+        @@unknown_user_token_exp ||= 0
+
+        now = Time.now.to_i
+        return @@unknown_user_token if @@unknown_user_token && now < @@unknown_user_token_exp
+
+        tok = oldap_login_unknown!
+        if tok
+            @@unknown_user_token = tok
+            @@unknown_user_token_exp = now + 600 # 10 minutes
+        end
+        tok
+    end
+
+    def unknown_permitted_for_identifier?(identifier)
+        tok = unknown_user_token
+        return false unless tok
+
+        # STEP 1: just prove we have a token:
+        STDERR.puts "[delegate.unknown_perm] have_unknown_token=true id=#{identifier}"
+        return true   # TEMPORARY: allow everything for now
+
+        # STEP 2 (later): fetch MediaObject, compute permval, return permval>=1
+    end
+
+    def oldap_get_mediaobject_json(id, tok)
+        # Path param must be escaped properly:
+        id_esc = URI.encode_www_form_component(id.to_s)
+        uri = URI("#{OLDAP_API_BASE}/data/mediaobject/id/#{id_esc}")
+
+        req = Net::HTTP::Get.new(uri.request_uri)
+        req["Authorization"] = "Bearer #{tok}"
+        req["Accept"] = "application/json"
+
+        STDERR.puts "[delegate.oldap_get_mediaobject] GET #{uri}"
+
+        resp = oldap_http_for(uri).request(req)
+        STDERR.puts "[delegate.oldap_get_mediaobject] status=#{resp.code}"
+
+        return nil unless resp.is_a?(Net::HTTPSuccess)
+
+        JSON.parse(resp.body)
+    rescue => e
+        STDERR.puts "[delegate.oldap_get_mediaobject] exception #{e.class}: #{e.message}"
+        nil
+    end
+
+    def unknown_mediaobject_access(identifier)
+        return @mediainfo if defined?(@mediainfo)
+        tok = unknown_user_token
+        unless tok
+            @mediainfo = nil
+            return nil
+        end
+
+        obj = oldap_get_mediaobject_json(identifier, tok)
+        unless obj
+            @mediainfo = nil
+            return nil
+        end
+
+        permval = obj["permval"].to_i
+        path    = obj["shared:path"].to_s
+
+        STDERR.puts "[delegate.unknown_mediaobject_access] id=#{identifier} permval=#{permval} path=#{path.inspect}"
+
+        @mediainfo = { "permval" => permval, "path" => path }
+    end
+
+
+    ##
+    # Get the query parameter "token" (?token=...) from the context. It uses the "context['local_uri']"
+    # because that's where the complete URL including the query parameters is given
+    #
+    # @return [String | nil] The token, or nil, if there is no token given
+    #
     def get_token(options = {})
         unless @token
             uri_string = context['local_uri']
@@ -245,35 +386,31 @@ class CustomDelegate
   # @return [Boolean,Hash<String,Object>] See above.
   #
     def pre_authorize(options = {})
-        STDERR.puts "[delegate] pre_authorize file=#{__FILE__} t=#{Time.now.to_f}"
-        STDERR.flush
-
         uri_string = context['local_uri']
-        STDERR.puts "[delegate] request_uri=#{uri_string}"
+        STDERR.puts '[delegate.pre_authorize] Using URL #{uri_string} for authorization'
 
-        #context.each_key {|key| STDERR.puts "[delegate] ==> #{key} = #{context[key]}"}
-
+        permval = nil
         token = get_token()
-        unless token
-            STDERR.puts "[delegate] No token query parameter"
-            # TODO: Get permission for user "unkown" from OLDAP
-            return unauthorized("Missing/invalid token")
+        if token
+            payload = jwt_payload_from_query_token(token)
+            if payload
+                permval = payload["permval"].to_i
+            end
+        end
+        unless permval
+            info = unknown_mediaobject_access(context["identifier"])
+            unless info
+                STDERR.puts "[delegate.pre_authorize] Unknown user: no media object found"
+                return unauthorized("No access for unknown user")
+            end
+            permval = info["permval"]
         end
 
-        payload = jwt_payload_from_query_token(token)
-        unless payload
-            STDERR.puts "[delegate] JWT rejected (invalid/expired/iss mismatch)"
-            # TODO: Get permission for user "unkown" from OLDAP
-            return unauthorized("Missing/invalid token")
-        end
-
-        permval = payload["permval"].to_i
-
-        STDERR.puts "[delegate] pre_authorize: ============> permval=#{permval}"
+        STDERR.puts '[delegate.pre_authorize] pre_authorize: Permission permval=#{permval}'
 
         return true if permval >= 1
 
-        STDERR.puts "[delegate] pre_authorize: Permission denied permval=#{permval}"
+        STDERR.puts '[delegate.pre_authorize] pre_authorize: Permission denied permval=#{permval}'
         return unauthorized("Not permitted")
     end
 
@@ -355,37 +492,39 @@ class CustomDelegate
   #
     def filesystemsource_pathname(options = {})
         STDERR.puts "[delegate.filesystemsource_pathname] =========> in filesystemsource_pathname..."
-        token = get_token()
-        unless token
-            STDERR.puts "[delegate] No token query parameter"
-            # TODO: Get permission for user "unkown" from OLDAP
-            return unauthorized("Missing/invalid token")
-        end
-       STDERR.puts "[delegate.filesystemsource_pathname] =========> token=#{token}"
 
-        payload = jwt_payload_from_query_token(token)
-        unless payload
-            STDERR.puts "[delegate] filesystemsource_pathname: no/invalid JWT payload"
-            return nil
+        path = nil
+
+        #
+        # test if we have a token that reveals the path
+        #
+        token = get_token()
+        if token
+            payload = jwt_payload_from_query_token(token)
+            if payload
+                path = payload["path"]
+            end
         end
-        STDERR.puts "[delegate.filesystemsource_pathname] =========> payload here"
-        requested_identifier = context['identifier']
-        token_id             = payload["id"].to_s
-        STDERR.puts "[delegate.filesystemsource_pathname] filesystemsource_pathname: requested=#{requested_identifier} token_id=#{token_id}"
-        unless token_id == requested_identifier
-            STDERR.puts "[delegate.filesystemsource_pathname] filesystemsource_pathname: identifier mismatch -> rejecting"
-            return nil
+
+        unless path
+            #
+            # we didn't get the path with the token (missing, expired etc.). Let's try to access the image
+            # as user "unknown". Therefore we retrieve the media object as user unknown...
+            #
+            info = unknown_mediaobject_access(context["identifier"])
+            unless info
+                STDERR.puts "[delegate.filesystemsource_pathname] No media object for user unknown"
+                return nil
+            end
+            path = info["path"]
         end
 
         # Prevent traversal via "path"
-        path = payload["path"]
-        STDERR.puts "[delegate.filesystemsource_pathname] payload[path]=#{path}"
-        #subpath = path.to_s.tr("\\", "/")
-        #subpath_s = subpath.to_s
-        #clean_subpath = subpath_s.split("/").reject { |p| p.empty? || p == "." || p == ".." }.join("/")
-        #clean_subpath = subpath.split("/").reject { |p| p.empty? || p == "." || p == ".." }.join("/")
+        STDERR.puts "[delegate.filesystemsource_pathname] path=#{path}"
+        subpath = path.to_s.tr("\\", "/")
+        clean_subpath = subpath.split("/").reject { |p| p.empty? || p == "." || p == ".." }.join("/")
 
-        full_path = File.join(IMAGE_ROOT, path, token_id)
+        full_path = File.join(IMAGE_ROOT, clean_subpath, context["identifier"])
     end
 
   ##

@@ -37,6 +37,8 @@ docker-run-local:
 	  -v "$$(pwd)/test-images:/data/images" \
 	  -e OLDAP_JWT_SECRET="A very short secret!" \
 	  -e OLDAP_JWT_ISS="http://oldap.org" \
+	  -e OLDAP_API_BASE="http://host.docker.internal:8000" \
+	  -e OLDAP_UNKNOWN_USERID="unknown" \
 	  lrosenth/oldap-imageserver:local
 
 .PHONY: docker-run
@@ -47,5 +49,7 @@ docker-run:
 	  -v "$$(pwd)/test-images:/data/images" \
 	  -e OLDAP_JWT_SECRET="A very short secret!" \
 	  -e OLDAP_JWT_ISS="http://oldap.org" \
+	  -e OLDAP_API_BASE="http://localhost:8000" \
+	  -e OLDAP_UNKNOWN_USERID="unknown" \
 	  lrosenth/oldap-imageserver:latest
 

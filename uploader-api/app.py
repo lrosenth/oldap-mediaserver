@@ -212,8 +212,8 @@ def create_app() -> Flask:
             # an OLDAP resource ID instead.
             identifier = str(generate(size=12))
 
-        if (permission_sets := request.form.getlist("permissionSets")) is None:
-            return jsonify({"message": "No permission sets provided"}), 400
+        if (roles := request.form.getlist("attachedToRole")) is None:
+            return jsonify({"message": "No roles to attach to provided"}), 400
 
         # Decide on extensions
         if target_format == "jp2":
@@ -285,7 +285,7 @@ def create_app() -> Flask:
             'shared:imageId': f"{identifier}{out_ext}",
             'shared:protocol': 'iiif',
             'shared:path': f"{projectId}/{fpath}" if fpath else projectId,
-            'grantsPermission': permission_sets
+            'attachedToRole': roles
         }
         for key, value in request.form.items():
             if key not in primary_fields:
