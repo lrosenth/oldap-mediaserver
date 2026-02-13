@@ -3,8 +3,10 @@ import os
 import shutil
 import uuid
 import subprocess
+import mimetypes
+from enum import Enum
 from pathlib import Path
-from typing import Literal, get_args, cast
+from typing import Optional
 
 import jwt
 from flask import Flask, request, jsonify, abort, logging
@@ -13,6 +15,7 @@ import pyvips  # make sure this is in requirements.txt
 from flask_cors import CORS
 from nanoid import generate
 from oldaplib.src.enums.adminpermissions import AdminPermission
+from oldaplib.src.helpers.observable_dict import ObservableDict
 from oldaplib.src.helpers.oldaperror import OldapError
 from oldaplib.src.helpers.serializer import serializer
 from oldaplib.src.userdataclass import UserData
@@ -30,10 +33,111 @@ oldap_api_url = os.environ.get("OLDAP_API_URL", "http://localhost:8000")
 IMAGE_ROOT = Path(imgdir)   # shared volume with Cantaloupe
 IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
+class MediaType(str, Enum):
+    IMAGE = "image"
+    AUDIO = "audio"
+    VIDEO = "video"
+    DOCUMENT = "document"
+    OTHER = "other"
 
+# ------------------------------------------------------------
+# Storage layout helpers
+# ------------------------------------------------------------
+
+def safe_subpath(raw: str | None) -> Path:
+    """Return a safe relative Path for user-provided subpaths (no absolute paths, no '..')."""
+    if not raw:
+        return Path()
+    p = Path(raw)
+    if p.is_absolute():
+        raise ValueError("path must be a relative path")
+    if any(part in ("..", "") for part in p.parts):
+        raise ValueError("path contains invalid segments")
+    return p
+
+
+def build_asset_root(project_short: str, media_type: MediaType, subpath: str | None, identifier: str) -> Path:
+    """Compute the root folder for a single asset according to storage layout.
+
+    Layout:
+      <IMAGE_ROOT>/<projectShortName>/<media_type>/<subpath>/<identifier>/
+        original/
+        derived/
+    """
+    rel = Path(project_short) / media_type.value / safe_subpath(subpath) / identifier
+    return IMAGE_ROOT / rel
+
+# ------------------------------------------------------------
+# Media-type detection + target format validation
+# ------------------------------------------------------------
+
+def detect_media_type(upload_file) -> MediaType:
+    """Best-effort media type detection based on mimetype (preferred) and filename."""
+    mt = (upload_file.mimetype or "").lower()
+    if mt.startswith("image/"):
+        return MediaType.IMAGE
+    if mt.startswith("audio/"):
+        return MediaType.AUDIO
+    if mt.startswith("video/"):
+        return MediaType.VIDEO
+    if mt == "application/pdf":
+        return MediaType.DOCUMENT
+
+    # Fallback: guess from filename
+    guessed, _ = mimetypes.guess_type(upload_file.filename or "")
+    guessed = (guessed or "").lower()
+    if guessed.startswith("image/"):
+        return MediaType.IMAGE
+    if guessed.startswith("audio/"):
+        return MediaType.AUDIO
+    if guessed.startswith("video/"):
+        return MediaType.VIDEO
+    if guessed == "application/pdf":
+        return MediaType.DOCUMENT
+
+    return MediaType.OTHER
+
+def protocol_for_media(media_type: MediaType) -> str:
+    if media_type == MediaType.IMAGE:
+        return "iiif"
+    if media_type in (MediaType.DOCUMENT, MediaType.AUDIO, MediaType.VIDEO):
+        return "http"
+    return "custom"
+
+def validate_target_format(media_type: MediaType, raw: str | None) -> str:
+    """Validate and normalize targetFormat per media type."""
+    # For now we only support the image pipeline; other media types will be added next.
+    if media_type != MediaType.IMAGE:
+        raise ValueError(f"Unsupported media type: {media_type}")
+
+    allowed = {"jp2", "tiff", "jpeg"}
+    fmt = (raw or "jp2").lower().strip()
+    if fmt not in allowed:
+        raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
+    return fmt
+
+# ------------------------------------------------------------
+# Metadata helpers
+# ------------------------------------------------------------
+
+def dcterms_type_for_media(media_type: MediaType) -> str:
+    """Return a DCMI Type IRI (as QName string) suitable for dcterms:type."""
+    if media_type == MediaType.IMAGE:
+        return "dcmitype:StillImage"
+    if media_type == MediaType.AUDIO:
+        return "dcmitype:Sound"
+    if media_type == MediaType.VIDEO:
+        return "dcmitype:MovingImage"
+    if media_type == MediaType.DOCUMENT:
+        return "dcmitype:Text"
+    return "dcmitype:Dataset"
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    CORS(app,
+         resources={r"/*": {"origins": "*"}},
+         supports_credentials=True,
+         expose_headers=["Content-Disposition"])
 
     app.logger.setLevel("INFO")  # <— enable INFO
 
@@ -117,11 +221,13 @@ def create_app() -> Flask:
         )
 
     # ------------------------------------------------------------------
-    # Helper: make JPEG with vips (no compression)
+    # Helper: make JPEG with vips
     # ------------------------------------------------------------------
     def convert_to_jpeg_with_vips(src: Path, dst: Path) -> None:
-        """
-        Use pyvips to create a pyramidal tiled TIFF *without compression*.
+        """Create a JPEG derivative with vips.
+
+        Note: JPEG is *lossy* by default. If you want near-lossless, pass a high `Q` (quality)
+        and/or use JPEG-LS/JPEG2000 instead.
         """
         image = pyvips.Image.new_from_file(str(src), access="sequential")
         image.jpegsave(str(dst))
@@ -134,30 +240,18 @@ def create_app() -> Flask:
     # ------------------------------------------------------------------
     @app.post("/upload")
     def upload():
-        """
-        Handles the upload endpoint to process image file uploads and convert them to a specific format.
+        required_form_fields = {
+            'resourceClass',
+            'projectId',
+            'path',
+            'identifier',
+            'targetFormat',
+            'attachedToRole',
+        }
 
-        This function performs a series of operations to handle an image file upload, validate input, ensure
-        permissions, convert the file to a specified format, and store metadata into a resource management system.
-        It relies on connectivity with an OLDAP server and handles temporary file storage during the conversion
-        process. The processed image file is stored in a predefined directory structure, and associated metadata
-        is saved along with it.
-
-        :raises: Returns JSON error responses with HTTP status codes on error.
-
-        :param resourceClass: Defines the type of the uploaded resource (default is shared:MediaObject).
-        :param projectId: Mandatory, specifies the project to associate the uploaded file with.
-        :param identifier: Optional, an identifier for the uploaded file, autogenerated if not provided.
-        :param target_format: The desired output format of the uploaded image, defaults to jp2.
-        :param path: Optional, subdirectory within the project-specific directory for the file's output location.
-        :param permissionSets: List of permissions granted for the uploaded resource.
-        :param file: The actual image file being uploaded by the client.
-
-        :return: A JSON response containing the file's identifier and IRI if successful.
-        """
-        primary_fields = {'resourceClass', 'projectId', 'identifier', 'target_format',
-                          'path', 'identifier', 'permissionSets'}
-
+        #
+        # extract the baerer token and the userinformation therein
+        #
         token = require_bearer_token()
         tokendata = jwt.decode(token, jwt_secret, algorithms=["HS256"])
         userdata: UserData = json.loads(tokendata.get("userdata", "{}"), object_hook=serializer.decoder_hook)
@@ -198,12 +292,18 @@ def create_app() -> Flask:
 
         fpath = request.form.get('path', None)
 
-        # Decide output format
-        TargetFormat = Literal["jp2", "tiff", "jpeg"]
-        raw_format = request.form.get("targetFormat", "jp2").lower()  # default jp2
-        if raw_format not in get_args(TargetFormat):
-            return jsonify({"message": "Invalid target_format"}), 400
-        target_format = cast(TargetFormat, raw_format)
+        # User-provided subpath (relative)
+        try:
+            _ = safe_subpath(fpath)  # validates; actual Path building happens later
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
+
+        # Decide media type + output format
+        media_type = detect_media_type(upload_file)
+        try:
+            target_format = validate_target_format(media_type, request.form.get("targetFormat"))
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
 
         # Identifier to be used for IIIF
         identifier = request.form.get("identifier")
@@ -212,49 +312,62 @@ def create_app() -> Flask:
             # an OLDAP resource ID instead.
             identifier = str(generate(size=12))
 
-        if (roles := request.form.getlist("attachedToRole")) is None:
-            return jsonify({"message": "No roles to attach to provided"}), 400
+        roles = request.form.getlist("attachedToRole")
 
-        # Decide on extensions
-        if target_format == "jp2":
-            out_ext = ".jp2"
-        elif target_format == "jpeg":
-            out_ext = ".jpg"
-        else:
-            out_ext = ".tif"
-
-        # Temporary location & final output location
+        # Temporary location
         tmp_dir = IMAGE_ROOT / "_tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
-        # Try to keep original extension for tmp
+        # Build storage layout for this asset
+        asset_base_rel = Path(projectShortName) / media_type.value / safe_subpath(fpath)
+        asset_root = IMAGE_ROOT / asset_base_rel / identifier
+
+        original_dir = asset_root / "original"
+        derived_dir = asset_root / "derived"
+
+        for d in (original_dir, derived_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        # Keep original extension for tmp and store original as received
         orig_ext = Path(upload_file.filename).suffix or ".dat"
         tmp_path = tmp_dir / f"{identifier}{orig_ext}"
-        tmp_path2 = ''
+        tmp_path2: Optional[Path] = None
 
-        pdir = IMAGE_ROOT / f"{projectId}"
-        pdir.mkdir(parents=True, exist_ok=True)
-        if fpath:
-            ppdir = IMAGE_ROOT / f"{projectId}/{fpath}"
-            out_path = IMAGE_ROOT / f"{projectShortName}/{fpath}/{identifier}{out_ext}"
+        # Store original file (as received), sanitized for filename
+        original_name = Path(upload_file.filename).name if upload_file.filename else f"{identifier}{orig_ext}"
+        original_path = original_dir / original_name
+
+        # Decide where the produced file goes
+        if target_format == "jp2":
+            out_ext = ".jp2"
+            out_path = derived_dir / f"iiif{out_ext}"
+        elif target_format == "jpeg":
+            out_ext = ".jpg"
+            out_path = derived_dir / f"preview{out_ext}"
         else:
-            out_path = IMAGE_ROOT / f"{projectShortName}/{identifier}{out_ext}"
+            out_ext = ".tif"
+            out_path = derived_dir / f"master{out_ext}"
 
-        # Save uploaded file
+        # This is the filename inside <imageId>/derived/ that the delegate should serve
+        derivative_name = out_path.name
+
+        # Save uploaded file (tmp) and store original
         upload_file.save(tmp_path)
+        copy_file(tmp_path, original_path)
 
         try:
             if target_format == "jp2":
-                if (upload_file.mimetype != "image/tiff"):
-                    # kakadu can only read TIFF's
+                src_for_kakadu = tmp_path
+                if upload_file.mimetype != "image/tiff":
+                    # Kakadu can only read TIFF
                     tmp_path2 = tmp_dir / f"{identifier}.tif"
                     image = pyvips.Image.new_from_file(str(tmp_path), access="sequential")
                     image.tiffsave(str(tmp_path2), bigtiff=True)
-                    tmp_path = tmp_path2
-                convert_to_jp2_with_kakadu(tmp_path, out_path)
+                    src_for_kakadu = tmp_path2
+                convert_to_jp2_with_kakadu(src_for_kakadu, out_path)
             elif target_format == "jpeg":
-                # simple JPEG – if input is JPEG, just copy the file...
-                if upload_file.mimetype != "image/jpeg":
+                # simple JPEG – if input is already JPEG, just copy the file
+                if upload_file.mimetype == "image/jpeg":
                     copy_file(tmp_path, out_path)
                 else:
                     convert_to_jpeg_with_vips(tmp_path, out_path)
@@ -269,32 +382,34 @@ def create_app() -> Flask:
         finally:
             # Remove temp file
             tmp_path.unlink(missing_ok=True)
-            if tmp_path2:
+            if tmp_path2 is not None:
                 tmp_path2.unlink(missing_ok=True)
 
-        # Build an IIIF URL for convenience
-        # For IIIF 3:
-        iiif_id = f"{identifier}{out_ext}"
-        iiif_info_url = f"{iiif_base_url}/iiif/3/{iiif_id}/info.json"
+        # Cantaloupe identifier is the relative path from IMAGE_ROOT
+        iiif_id = identifier
+        # iiif_base_url is expected to already end with /iiif/3/ (see env default)
+        iiif_info_url = f"{iiif_base_url}{iiif_id}/info.json"
 
         resource_data = {
-            'dcterms:type': 'dcmitype:StillImage',
+            'dcterms:type': dcterms_type_for_media(media_type),
             'shared:originalName': upload_file.filename,
             'shared:originalMimeType': upload_file.mimetype,
             'shared:serverUrl': iiif_base_url,
-            'shared:imageId': f"{identifier}{out_ext}",
-            'shared:protocol': 'iiif',
-            'shared:path': f"{projectId}/{fpath}" if fpath else projectId,
-            'attachedToRole': roles
+            'shared:imageId': identifier,
+            'shared:protocol': protocol_for_media(media_type),
+            'shared:derivativeName': derivative_name,
+            # Store the logical folder (relative to IMAGE_ROOT) for later retrieval / housekeeping
+            'shared:path': asset_base_rel.as_posix(),
         }
+        if (roles):
+            resource_data['attachedToRole'] = roles
         for key, value in request.form.items():
-            if key not in primary_fields:
-                if key in primary_fields:
-                    continue
+            if key not in required_form_fields:
                 resource_data[key] = value
         try:
             response = client.create_resource(resource=resource_class, resource_data=resource_data)
         except Exception as exc:
+            # Keep the original, but remove the derived/master file to avoid orphaned derivatives
             out_path.unlink(missing_ok=True)
             return jsonify({"error": f"Failed to create OLDAP resource: {exc}"}), 500
 
@@ -304,13 +419,12 @@ def create_app() -> Flask:
                 "identifier": identifier,
                 "iri": response['iri'],
                 "originalName": upload_file.filename,
+                "mediaType": media_type.value,
+                "iiifInfoUrl": iiif_info_url,
+                "imageId": identifier,
+                "storedPath": asset_base_rel.as_posix(),
             }
         )
-
-    CORS(app,
-         resources={r"/*": {"origins": "*"}},
-         supports_credentials=True,
-         expose_headers=["Content-Disposition"])
 
     return app
 

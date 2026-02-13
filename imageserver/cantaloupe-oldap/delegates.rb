@@ -302,25 +302,33 @@ class CustomDelegate
     end
 
     def unknown_mediaobject_access(identifier)
-        return @mediainfo if defined?(@mediainfo)
+        @mediainfo_by_id ||= {}
+        return @mediainfo_by_id[identifier] if @mediainfo_by_id.key?(identifier)
+
         tok = unknown_user_token
         unless tok
-            @mediainfo = nil
+            @mediainfo_by_id[identifier] = nil
             return nil
         end
 
         obj = oldap_get_mediaobject_json(identifier, tok)
         unless obj
-            @mediainfo = nil
+            @mediainfo_by_id[identifier] = nil
             return nil
         end
 
         permval = obj["permval"].to_i
-        path    = obj["shared:path"].to_s
 
-        STDERR.puts "[delegate.unknown_mediaobject_access] id=#{identifier} permval=#{permval} path=#{path.inspect}"
+        # OLDAP API may return single-valued fields as a 1-element Array for homogeneity.
+        raw_path  = obj["shared:path"]
+        raw_dname = obj["shared:derivativeName"]
 
-        @mediainfo = { "permval" => permval, "path" => path }
+        path  = raw_path.is_a?(Array) ? raw_path.first.to_s : raw_path.to_s
+        dname = raw_dname.is_a?(Array) ? raw_dname.first.to_s : raw_dname.to_s
+
+        STDERR.puts "[delegate.unknown_mediaobject_access] id=#{identifier} permval=#{permval} path=#{path.inspect} derivativeName=#{dname.inspect}"
+
+        @mediainfo_by_id[identifier] = { "permval" => permval, "path" => path, "derivativeName" => dname }
     end
 
 
@@ -387,7 +395,7 @@ class CustomDelegate
   #
     def pre_authorize(options = {})
         uri_string = context['local_uri']
-        STDERR.puts '[delegate.pre_authorize] Using URL #{uri_string} for authorization'
+        STDERR.puts "[delegate.pre_authorize] Using URL #{uri_string} for authorization"
 
         permval = nil
         token = get_token()
@@ -406,11 +414,11 @@ class CustomDelegate
             permval = info["permval"]
         end
 
-        STDERR.puts '[delegate.pre_authorize] pre_authorize: Permission permval=#{permval}'
+        STDERR.puts "[delegate.pre_authorize] pre_authorize: Permission permval=#{permval}"
 
         return true if permval >= 1
 
-        STDERR.puts '[delegate.pre_authorize] pre_authorize: Permission denied permval=#{permval}'
+        STDERR.puts "[delegate.pre_authorize] pre_authorize: Permission denied permval=#{permval}"
         return unauthorized("Not permitted")
     end
 
@@ -494,6 +502,7 @@ class CustomDelegate
         STDERR.puts "[delegate.filesystemsource_pathname] =========> in filesystemsource_pathname..."
 
         path = nil
+        derivative_name = nil
 
         #
         # test if we have a token that reveals the path
@@ -502,7 +511,14 @@ class CustomDelegate
         if token
             payload = jwt_payload_from_query_token(token)
             if payload
-                path = payload["path"]
+                # Safety: token should correspond to the requested identifier
+                tok_id = payload["id"].to_s
+                if !tok_id.empty? && tok_id != context["identifier"].to_s
+                    STDERR.puts "[delegate.filesystemsource_pathname] token id mismatch tok_id=#{tok_id.inspect} ctx_id=#{context["identifier"].to_s.inspect}"
+                else
+                    path = payload["path"].is_a?(Array) ? payload["path"].first : payload["path"]
+                    derivative_name = payload["derivativeName"].is_a?(Array) ? payload["derivativeName"].first : payload["derivativeName"]
+                end
             end
         end
 
@@ -516,7 +532,8 @@ class CustomDelegate
                 STDERR.puts "[delegate.filesystemsource_pathname] No media object for user unknown"
                 return nil
             end
-            path = info["path"]
+            path = info["path"].is_a?(Array) ? info["path"].first : info["path"]
+            derivative_name = info["derivativeName"].is_a?(Array) ? info["derivativeName"].first : info["derivativeName"]
         end
 
         # Prevent traversal via "path"
@@ -524,7 +541,28 @@ class CustomDelegate
         subpath = path.to_s.tr("\\", "/")
         clean_subpath = subpath.split("/").reject { |p| p.empty? || p == "." || p == ".." }.join("/")
 
-        full_path = File.join(IMAGE_ROOT, clean_subpath, context["identifier"])
+        # Sanitize derivative filename and provide a safe default
+        derivative_name = derivative_name.to_s
+        derivative_name = "iiif.jp2" if derivative_name.empty?
+        derivative_name = File.basename(derivative_name.tr("\\", "/"))
+        if derivative_name == "." || derivative_name == ".." || derivative_name.include?("/")
+            derivative_name = "iiif.jp2"
+        end
+
+        # Sanitize identifier used in the filesystem path
+        identifier = context["identifier"].to_s
+        identifier = identifier.tr("\\", "/")
+        identifier = File.basename(identifier)
+        if identifier.empty? || identifier == "." || identifier == ".." || identifier.include?("/")
+            STDERR.puts "[delegate.filesystemsource_pathname] invalid identifier=#{context["identifier"].to_s.inspect}"
+            return nil
+        end
+
+        # New storage layout:
+        #   <IMAGE_ROOT>/<shared:path>/<imageId>/derived/<derivativeName>
+        full_path = File.join(IMAGE_ROOT, clean_subpath, identifier, "derived", derivative_name)
+        STDERR.puts "[delegate.filesystemsource_pathname] resolved=#{full_path}"
+        full_path
     end
 
   ##
