@@ -106,15 +106,40 @@ def protocol_for_media(media_type: MediaType) -> str:
 
 def validate_target_format(media_type: MediaType, raw: str | None) -> str:
     """Validate and normalize targetFormat per media type."""
-    # For now we only support the image pipeline; other media types will be added next.
-    if media_type != MediaType.IMAGE:
-        raise ValueError(f"Unsupported media type: {media_type}")
+    fmt = (raw or "").lower().strip()
 
-    allowed = {"jp2", "tiff", "jpeg"}
-    fmt = (raw or "jp2").lower().strip()
-    if fmt not in allowed:
-        raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
-    return fmt
+    if media_type == MediaType.IMAGE:
+        allowed = {"jp2", "tiff", "jpeg"}
+        fmt = fmt or "jp2"
+        if fmt not in allowed:
+            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
+        return fmt
+
+    if media_type == MediaType.VIDEO:
+        # Single, highly compatible web derivative.
+        allowed = {"mp4"}
+        fmt = fmt or "mp4"
+        if fmt not in allowed:
+            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
+        return fmt
+
+    if media_type == MediaType.AUDIO:
+        # Start simple: AAC in an M4A container.
+        allowed = {"m4a", "mp3"}
+        fmt = fmt or "m4a"
+        if fmt not in allowed:
+            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
+        return fmt
+
+    if media_type == MediaType.DOCUMENT:
+        # For now: keep original; allow only pdf when we add conversions later.
+        allowed = {"pdf"}
+        fmt = fmt or "pdf"
+        if fmt not in allowed:
+            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
+        return fmt
+
+    raise ValueError(f"Unsupported media type: {media_type}")
 
 # ------------------------------------------------------------
 # Metadata helpers
@@ -232,6 +257,53 @@ def create_app() -> Flask:
         image = pyvips.Image.new_from_file(str(src), access="sequential")
         image.jpegsave(str(dst))
 
+    # ------------------------------------------------------------------
+    # Helper: make MP4 (H.264 + AAC) with ffmpeg
+    # ------------------------------------------------------------------
+    def convert_to_mp4_with_ffmpeg(src: Path, dst: Path) -> None:
+        """Create a broadly compatible MP4 derivative.
+
+        H.264 video + AAC audio, with faststart for progressive download.
+        """
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(src),
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", "22",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ac", "2",
+            "-movflags", "+faststart",
+            str(dst),
+        ]
+        app.logger.debug("Running ffmpeg (mp4): %s", " ".join(cmd))
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg mp4 failed (exit {result.returncode}): {result.stderr}")
+
+
+    # ------------------------------------------------------------------
+    # Helper: make M4A (AAC) with ffmpeg
+    # ------------------------------------------------------------------
+    def convert_to_m4a_with_ffmpeg(src: Path, dst: Path) -> None:
+        """Create an AAC-in-M4A derivative."""
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(src),
+            "-vn",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            str(dst),
+        ]
+        app.logger.debug("Running ffmpeg (m4a): %s", " ".join(cmd))
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg m4a failed (exit {result.returncode}): {result.stderr}")
+
     def copy_file(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
@@ -338,15 +410,39 @@ def create_app() -> Flask:
         original_path = original_dir / original_name
 
         # Decide where the produced file goes
-        if target_format == "jp2":
-            out_ext = ".jp2"
-            out_path = derived_dir / f"iiif{out_ext}"
-        elif target_format == "jpeg":
-            out_ext = ".jpg"
-            out_path = derived_dir / f"preview{out_ext}"
+        if media_type == MediaType.IMAGE:
+            if target_format == "jp2":
+                out_ext = ".jp2"
+                out_path = derived_dir / f"iiif{out_ext}"
+            elif target_format == "jpeg":
+                out_ext = ".jpg"
+                out_path = derived_dir / f"preview{out_ext}"
+            else:
+                out_ext = ".tif"
+                out_path = derived_dir / f"master{out_ext}"
+
+        elif media_type == MediaType.VIDEO:
+            # Single web-friendly derivative
+            out_ext = ".mp4"
+            out_path = derived_dir / f"web{out_ext}"
+
+        elif media_type == MediaType.AUDIO:
+            if target_format == "mp3":
+                out_ext = ".mp3"
+                out_path = derived_dir / f"audio{out_ext}"
+            else:
+                out_ext = ".m4a"
+                out_path = derived_dir / f"audio{out_ext}"
+
+        elif media_type == MediaType.DOCUMENT:
+            # For now: keep as-is; derived is a copy for consistent layout
+            out_ext = Path(upload_file.filename).suffix or ".pdf"
+            out_path = derived_dir / f"document{out_ext}"
+
         else:
-            out_ext = ".tif"
-            out_path = derived_dir / f"master{out_ext}"
+            # Fallback: just store a derived copy
+            out_ext = Path(upload_file.filename).suffix or ".dat"
+            out_path = derived_dir / f"asset{out_ext}"
 
         # This is the filename inside <imageId>/derived/ that the delegate should serve
         derivative_name = out_path.name
@@ -356,24 +452,52 @@ def create_app() -> Flask:
         copy_file(tmp_path, original_path)
 
         try:
-            if target_format == "jp2":
-                src_for_kakadu = tmp_path
-                if upload_file.mimetype != "image/tiff":
-                    # Kakadu can only read TIFF
-                    tmp_path2 = tmp_dir / f"{identifier}.tif"
-                    image = pyvips.Image.new_from_file(str(tmp_path), access="sequential")
-                    image.tiffsave(str(tmp_path2), bigtiff=True)
-                    src_for_kakadu = tmp_path2
-                convert_to_jp2_with_kakadu(src_for_kakadu, out_path)
-            elif target_format == "jpeg":
-                # simple JPEG – if input is already JPEG, just copy the file
-                if upload_file.mimetype == "image/jpeg":
-                    copy_file(tmp_path, out_path)
+            if media_type == MediaType.IMAGE:
+                if target_format == "jp2":
+                    src_for_kakadu = tmp_path
+                    if upload_file.mimetype != "image/tiff":
+                        # Kakadu can only read TIFF
+                        tmp_path2 = tmp_dir / f"{identifier}.tif"
+                        image = pyvips.Image.new_from_file(str(tmp_path), access="sequential")
+                        image.tiffsave(str(tmp_path2), bigtiff=True)
+                        src_for_kakadu = tmp_path2
+                    convert_to_jp2_with_kakadu(src_for_kakadu, out_path)
+                elif target_format == "jpeg":
+                    # simple JPEG – if input is already JPEG, just copy the file
+                    if upload_file.mimetype == "image/jpeg":
+                        copy_file(tmp_path, out_path)
+                    else:
+                        convert_to_jpeg_with_vips(tmp_path, out_path)
                 else:
-                    convert_to_jpeg_with_vips(tmp_path, out_path)
+                    # pyramidal tiled TIFF (no compression)
+                    convert_to_pyramidal_tiff_with_vips(tmp_path, out_path)
+
+            elif media_type == MediaType.VIDEO:
+                # Always create a web MP4 derivative for now.
+                convert_to_mp4_with_ffmpeg(tmp_path, out_path)
+
+            elif media_type == MediaType.AUDIO:
+                if target_format == "mp3":
+                    # Simple MP3 derivative
+                    cmd = [
+                        "ffmpeg",
+                        "-y",
+                        "-i", str(tmp_path),
+                        "-vn",
+                        "-c:a", "libmp3lame",
+                        "-b:a", "192k",
+                        str(out_path),
+                    ]
+                    app.logger.debug("Running ffmpeg (mp3): %s", " ".join(cmd))
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    if result.returncode != 0:
+                        raise RuntimeError(f"ffmpeg mp3 failed (exit {result.returncode}): {result.stderr}")
+                else:
+                    convert_to_m4a_with_ffmpeg(tmp_path, out_path)
+
             else:
-                # pyramidal tiled TIFF (no compression)
-                convert_to_pyramidal_tiff_with_vips(tmp_path, out_path)
+                # DOCUMENT / OTHER: just keep a derived copy for now
+                copy_file(tmp_path, out_path)
         except Exception as exc:
             # Clean up on failure
             if out_path.exists():

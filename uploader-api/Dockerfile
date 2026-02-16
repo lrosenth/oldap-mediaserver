@@ -13,8 +13,9 @@ ENV PATH="/opt/kakadu/bin:${PATH}"
 WORKDIR /app
 
 # System deps: libvips for pyvips
-RUN apt-get update && apt-get install -y \
-    libvips \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libvips42 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps

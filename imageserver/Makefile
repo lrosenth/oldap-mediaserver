@@ -31,6 +31,7 @@ docker-build:
 
 .PHONY: docker-run-local
 docker-run-local:
+	docker rm -f oldap-imageserver
 	docker run -d \
 	  --name oldap-imageserver \
 	  -p 8182:8182 \
@@ -43,6 +44,7 @@ docker-run-local:
 
 .PHONY: docker-run
 docker-run:
+	docker rm -f oldap-imageserver
 	docker run -d \
 	  --name oldap-imageserver \
 	  -p 8182:8182 \

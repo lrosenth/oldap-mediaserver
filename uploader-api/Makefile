@@ -10,7 +10,7 @@ help:
 
 .PHONY: run
 run:
-	OLDAP_JWT_SECRET="A very short secret!" \
+	OLDAP_JWT_SECRET="56cbaa67af5bc403f1de9b7035e7c88239a853e4b40d6fc659ab4e4679b42785" \
 	OLDAP_API="http://localhost:8000" \
 	UPLOADER_IMGDIR="../imageserver/test-images" \
 	gunicorn -b 0.0.0.0:8080 app:app
@@ -39,7 +39,7 @@ docker-run:
 	docker run --rm -it \
 	  --name uploader-api \
 	  -p 8080:8000 \
-	  -e OLDAP_JWT_SECRET="A very short secret!" \
+	  -e OLDAP_JWT_SECRET="56cbaa67af5bc403f1de9b7035e7c88239a853e4b40d6fc659ab4e4679b42785" \
 	  -e OLDAP_API_URL=http://host.docker.internal:8000 \
 	  -e UPLOADER_IMGDIR="/data/images" \
 	  -v "$$(pwd)/../imageserver/test-images:/data/images" \

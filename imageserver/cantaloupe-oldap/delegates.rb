@@ -559,7 +559,7 @@ class CustomDelegate
         end
 
         # New storage layout:
-        #   <IMAGE_ROOT>/<shared:path>/<imageId>/derived/<derivativeName>
+        #   <IMAGE_ROOT>/<shared:path>/<assetId>/derived/<derivativeName>
         full_path = File.join(IMAGE_ROOT, clean_subpath, identifier, "derived", derivative_name)
         STDERR.puts "[delegate.filesystemsource_pathname] resolved=#{full_path}"
         full_path
