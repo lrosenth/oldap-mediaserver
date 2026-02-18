@@ -26,7 +26,10 @@ class CustomDelegate
     JWT_SECRET = ENV.fetch("OLDAP_JWT_SECRET") # MUST be set
     IMAGE_ROOT = ENV.fetch("OLDAP_IMAGE_ROOT", "/data/images")
     JWT_ISS    = ENV.fetch("OLDAP_JWT_ISS", "http://oldap.org")
-    OLDAP_API_BASE = ENV.fetch("OLDAP_API_BASE", "http://oldap-api")
+    OLDAP_API_URL = ENV.fetch("OLDAP_API_URL", "http://oldap-api")
+    def oldap_api_url
+        ENV.fetch("OLDAP_API_URL", "http://oldap-api")
+    end
     OLDAP_UNKNOWN_PASSWORD = ENV.fetch("OLDAP_UNKNOWN_PASSWORD", "")
     OLDAP_UNKNOWN_USERID = ENV.fetch("OLDAP_UNKNOWN_USERID", "unknown")
 
@@ -231,7 +234,9 @@ class CustomDelegate
     end
 
     def oldap_login_unknown!
-        uri = URI("#{OLDAP_API_BASE}/admin/auth/#{OLDAP_UNKNOWN_USERID}")
+        base = oldap_api_url
+        STDERR.puts "[delegate.config] ENV[OLDAP_API_URL]=#{ENV['OLDAP_API_URL'].inspect} effective=#{base.inspect}"
+        uri = URI("#{base}/admin/auth/#{OLDAP_UNKNOWN_USERID}")
         req = Net::HTTP::Post.new(uri.request_uri)
         req["Content-Type"] = "application/json"
         req.body = { password: OLDAP_UNKNOWN_PASSWORD }.to_json
@@ -282,7 +287,8 @@ class CustomDelegate
     def oldap_get_mediaobject_json(id, tok)
         # Path param must be escaped properly:
         id_esc = URI.encode_www_form_component(id.to_s)
-        uri = URI("#{OLDAP_API_BASE}/data/mediaobject/id/#{id_esc}")
+        base = oldap_api_url
+        uri = URI("#{base}/data/mediaobject/id/#{id_esc}")
 
         req = Net::HTTP::Get.new(uri.request_uri)
         req["Authorization"] = "Bearer #{tok}"

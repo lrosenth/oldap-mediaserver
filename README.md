@@ -78,7 +78,7 @@ When `oldap-api` runs on the host machine (not in Docker) and the image server r
 
 Use Docker Desktop’s host gateway instead:
 
-- `OLDAP_API_BASE=http://host.docker.internal:8000`
+- `OLDAP_API_URLhttp://host.docker.internal:8000`
 
 The `imageserver/Makefile` targets `docker-run` and `docker-run-local` set this accordingly.
 

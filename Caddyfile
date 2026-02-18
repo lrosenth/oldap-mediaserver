@@ -1,24 +1,72 @@
-files.example.org {
+{
+	# Useful for local dev while iterating
+	# debug
+}
 
-  # Öffentlicher Endpunkt: /get?token=...
-  handle /get* {
+:{$CADDY_PORT:8088} {
 
-    # Auth-Check (inkl. Query-String an Auth-Service weitergeben)
-    forward_auth http://127.0.0.1:9000 {
-      uri /auth?{query}
+	encode zstd gzip
 
-      # Header aus Auth-Response in den "laufenden" Request übernehmen
-      copy_headers X-Internal-Path
-    }
+	# ----------------------------
+	# IIIF -> Cantaloupe
+	# ----------------------------
+	@iiif path /iiif/*
+	handle @iiif {
+		reverse_proxy imageserver:8182
+	}
 
-    # Request auf den internen Pfad umbiegen (relativ zum root)
-    rewrite * {http.request.header.X-Internal-Path}
+	# ----------------------------
+	# Asset delivery (non-IIIF)
+	# Public:  /asset/<id>[/original|derived]
+	# ----------------------------
+	@asset path /asset/*
+	handle @asset {
 
-    # Root des Dateibaums
-    root * /srv/oldap-files
-    file_server
-  }
+		# Ask Flask if this request is allowed and where the file lives
+		# Flask endpoint shape:
+		#   /auth/asset/<id>[/original|derived]
+		# This rewrite works because {uri} includes the full path+query.
+		forward_auth mediaserver:8000 {
+			uri /auth{uri}
+			# Copy headers from Flask response into this request (avoid using generic header names)
+			copy_headers X-OLDAP-Internal-Path X-OLDAP-Content-Type X-OLDAP-Content-Disposition
+		}
 
-  # Optional: alles andere 404
-  respond "Not found" 404
+		# Guard: if auth did not provide an internal path, deny
+		@no_internal not header X-OLDAP-Internal-Path *
+		respond @no_internal "forbidden" 403
+
+		# Rewrite the request path to the internal absolute file path
+		# Flask sets X-Internal-Path to something like:
+		#   /data/images/<project>/<type>/<subpath>/<id>/derived/<file>
+		rewrite * {http.request.header.X-OLDAP-Internal-Path}
+
+		# Serve that file from disk
+		root * /
+		file_server
+
+		# Preserve the Content-Type / Disposition Flask already computed
+		header {
+			Content-Type "{http.request.header.X-OLDAP-Content-Type}"
+			Content-Disposition "{http.request.header.X-OLDAP-Content-Disposition}"
+		}
+	}
+
+	# Optional: healthcheck
+	handle /health {
+		respond "ok" 200
+	}
+
+	# ----------------------------
+	# Upload -> Flask mediahelper
+	# ----------------------------
+	@upload path /upload /upload/*
+	handle @upload {
+		reverse_proxy mediaserver:8000
+	}
+
+	# Default
+	handle {
+		respond "not found" 404
+	}
 }

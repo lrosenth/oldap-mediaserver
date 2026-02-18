@@ -21,8 +21,8 @@ docker-build-local:
 	poetry export --only main -f requirements.txt --without-hashes -o requirements.txt
 	docker buildx build \
 	    --load \
-	    -t lrosenth/oldap-uploadserver:v0.0.4 \
-	    -t lrosenth/oldap-uploadserver:latest \
+	    -t lrosenth/oldap-mediahelper:v0.0.4 \
+	    -t lrosenth/oldap-mediahelper:latest \
 		.
 
 .PHONY: docker-build
@@ -30,8 +30,8 @@ docker-build:
 	poetry export --only main -f requirements.txt --without-hashes -o requirements.txt
 	docker buildx build \
 	    --platform linux/amd64,linux/arm64 \
-	    -t lrosenth/oldap-uploadserver:v0.0.4 \
-	    -t lrosenth/oldap-uploadserver:latest \
+	    -t lrosenth/oldap-mediahelper:v0.0.4 \
+	    -t lrosenth/oldap-mediahelper:latest \
 	    --push .
 
 .PHONY: docker-run
@@ -43,4 +43,4 @@ docker-run:
 	  -e OLDAP_API_URL=http://host.docker.internal:8000 \
 	  -e UPLOADER_IMGDIR="/data/images" \
 	  -v "$$(pwd)/../imageserver/test-images:/data/images" \
-	  lrosenth/oldap-uploadserver:v0.0.4
+	  lrosenth/oldap-mediahelper:v0.0.4

@@ -32,5 +32,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-# You can also use flask run if you prefer, but gunicorn is nicer for prod
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "--workers", "1", "--worker-class", "gthread", "--threads", "4", "--timeout", "300", "--graceful-timeout", "60", "app:app"]

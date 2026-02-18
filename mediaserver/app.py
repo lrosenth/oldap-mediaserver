@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import jwt
+import requests
 from flask import Flask, request, jsonify, abort, logging
 
 import pyvips  # make sure this is in requirements.txt
@@ -26,7 +27,12 @@ from oldap_client import OldapClient
 imgdir  = os.environ.get("UPLOADER_IMGDIR", "/data/images")
 # For local dev, Cantaloupe is usually on host:8182
 # In production, put your real hostname here
-iiif_base_url = os.environ.get("IIIF_BASE_URL", "http://localhost:8182/iiif/3/")
+iiif_base_url = os.environ.get("IIIF_BASE_URL", "http://localhost:8088/iiif/3/")
+
+# Base URL for non-IIIF delivery (Caddy). Should end with a trailing slash.
+media_base_url = os.environ.get("MEDIA_BASE_URL", "http://localhost:8088/")
+if not media_base_url.endswith('/'):
+    media_base_url += '/'
 
 oldap_api_url = os.environ.get("OLDAP_API_URL", "http://localhost:8000")
 
@@ -159,10 +165,22 @@ def dcterms_type_for_media(media_type: MediaType) -> str:
 
 def create_app() -> Flask:
     app = Flask(__name__)
-    CORS(app,
-         resources={r"/*": {"origins": "*"}},
-         supports_credentials=True,
-         expose_headers=["Content-Disposition"])
+    # CORS: for uploads from the Svelte dev server (and later from production hosts).
+    # Note: if supports_credentials=True, you MUST NOT use origins="*".
+    # We do not rely on cookies here (we use Authorization: Bearer ...), so keep credentials disabled.
+    cors_origins = os.environ.get(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",")
+
+    CORS(
+        app,
+        resources={r"/*": {"origins": cors_origins}},
+        supports_credentials=False,
+        expose_headers=["Content-Disposition"],
+        allow_headers=["Authorization", "Content-Type"],
+        methods=["GET", "POST", "OPTIONS"],
+    )
 
     app.logger.setLevel("INFO")  # <— enable INFO
 
@@ -170,6 +188,7 @@ def create_app() -> Flask:
 
     logger.info(f"Using image root: {IMAGE_ROOT}")
     logger.info(f"Using IIIF base URL: {iiif_base_url}")
+    logger.info(f"Using Media base URL: {media_base_url}")
     logger.info(f"Using Oldap API URL: {oldap_api_url}")
 
     jwt_secret = os.getenv("OLDAP_JWT_SECRET", "You have to change this!!! +D&RWG+")
@@ -189,6 +208,16 @@ def create_app() -> Flask:
 
         # TODO: call oldap-api or verify JWT here
         return token
+
+    def decode_optional_query_token() -> Optional[dict]:
+        """Decode optional JWT from `?token=` (HS256). Returns claims dict or None."""
+        tok = request.args.get("token")
+        if not tok:
+            return None
+        try:
+            return jwt.decode(tok, jwt_secret, algorithms=["HS256"])
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Helper: run kdu_compress to JPEG2000
@@ -306,6 +335,116 @@ def create_app() -> Flask:
 
     def copy_file(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
+
+
+    @app.get("/auth/asset/<asset_id>")
+    @app.get("/auth/asset/<asset_id>/<which>")
+    def auth_asset(asset_id: str, which: str = "derived"):
+        """
+        Authorize + resolve an opaque asset URL to an internal on-disk path.
+
+        Intended for Caddy `auth_request`. On success returns 204 with:
+          - X-OLDAP-Internal-Path: absolute path to the file on disk
+          - X-OLDAP-Content-Type: best-effort MIME type
+          - X-OLDAP-Content-Disposition: inline; filename="..."
+
+        Public URL shape (served by Caddy):
+          /asset/<assetId>            -> derived
+          /asset/<assetId>/derived     -> derived
+          /asset/<assetId>/original    -> original
+        """
+        which = (which or "derived").lower().strip()
+        if which == "":
+            which = "derived"
+        if which not in ("derived", "original"):
+            abort(404, description="Invalid asset variant")
+
+        claims = decode_optional_query_token()
+
+        resolved_path = None
+        derivative_name = None
+        original_name = None
+        protocol = None
+
+        if claims:
+            def _first_claim(v):
+                return v[0] if isinstance(v, list) and v else v
+
+            resolved_path = _first_claim(claims.get("path"))
+            derivative_name = _first_claim(claims.get("derivativeName"))
+            original_name = _first_claim(claims.get("originalName"))
+            protocol = _first_claim(claims.get("protocol"))
+            tok_id = claims.get("id") or claims.get("assetId")
+            if tok_id and tok_id != asset_id:
+                claims = None
+
+        if not claims:
+            try:
+                mo_client = OldapClient(oldap_api_url=oldap_api_url, projectId=None, token=None)
+                mo = mo_client.get_mediaobject_by_assetid_unknown(asset_id)
+            except requests.exceptions.HTTPError as exc:
+                if getattr(exc.response, "status_code", None) == 404:
+                    abort(404, description="MediaObject not found")
+                app.logger.error(f"OLDAP lookup HTTP error for asset_id={asset_id}: {exc}")
+                abort(502, description="Upstream OLDAP API error")
+            except Exception as exc:
+                app.logger.error(f"OLDAP lookup failed for asset_id={asset_id}: {exc}")
+                abort(502, description="Upstream OLDAP API error")
+
+            if mo is None:
+                abort(404, description="MediaObject not found")
+
+            # Some OLDAP endpoints may return single values as 1-element lists; normalize.
+            def _first(v):
+                if isinstance(v, list):
+                    return v[0] if v else None
+                return v
+
+            resolved_path = _first(mo.get("shared:path") or mo.get("path"))
+            derivative_name = _first(mo.get("shared:derivativeName") or mo.get("derivativeName"))
+            original_name = _first(mo.get("shared:originalName") or mo.get("originalName"))
+            protocol = _first(mo.get("shared:protocol") or mo.get("protocol"))
+
+        # Only non-IIIF assets should be served here
+        if protocol and str(protocol).lower() != "http":
+            abort(403, description="Asset not served via HTTP")
+
+        if not resolved_path:
+            abort(404, description="Missing path information")
+
+        try:
+            base_rel = safe_subpath(str(resolved_path))
+        except ValueError:
+            abort(403, description="Invalid stored path")
+
+        if which == "derived":
+            if not derivative_name:
+                abort(404, description="Missing derivativeName")
+            filename = Path(str(derivative_name)).name
+            internal = (IMAGE_ROOT / base_rel / asset_id / "derived" / filename).resolve()
+        else:
+            if not original_name:
+                abort(404, description="Missing originalName")
+            filename = Path(str(original_name)).name
+            internal = (IMAGE_ROOT / base_rel / asset_id / "original" / filename).resolve()
+
+        # Ensure the resolved file is within IMAGE_ROOT (no traversal)
+        try:
+            internal.relative_to(IMAGE_ROOT.resolve())
+        except Exception:
+            abort(403, description="Resolved path escapes media root")
+
+        if not internal.exists() or not internal.is_file():
+            abort(404, description="Asset file not found")
+
+        mime, _ = mimetypes.guess_type(str(internal))
+        mime = mime or "application/octet-stream"
+
+        resp = app.response_class(status=204)
+        resp.headers["X-OLDAP-Internal-Path"] = str(internal)
+        resp.headers["X-OLDAP-Content-Type"] = mime
+        resp.headers["X-OLDAP-Content-Disposition"] = f'inline; filename="{filename}"'
+        return resp
 
     # ------------------------------------------------------------------
     # /upload endpoint
@@ -513,14 +652,18 @@ def create_app() -> Flask:
         iiif_id = identifier
         # iiif_base_url is expected to already end with /iiif/3/ (see env default)
         iiif_info_url = f"{iiif_base_url}{iiif_id}/info.json"
+        asset_url = f"{media_base_url}asset/{identifier}"
 
         resource_data = {
             'dcterms:type': dcterms_type_for_media(media_type),
             'shared:originalName': upload_file.filename,
             'shared:originalMimeType': upload_file.mimetype,
-            'shared:serverUrl': iiif_base_url,
-            'shared:imageId': identifier,
-            'shared:protocol': protocol_for_media(media_type),
+            # For images, serverUrl is the IIIF base; for other media, it is the Caddy base.
+            'shared:serverUrl': iiif_base_url if media_type == MediaType.IMAGE else media_base_url,
+            # New canonical key
+            'shared:assetId': identifier,
+            # Backwards compatibility (can be removed once everything is migrated)
+            'shared:imageId': identifier,            'shared:protocol': protocol_for_media(media_type),
             'shared:derivativeName': derivative_name,
             # Store the logical folder (relative to IMAGE_ROOT) for later retrieval / housekeeping
             'shared:path': asset_base_rel.as_posix(),
@@ -537,19 +680,19 @@ def create_app() -> Flask:
             out_path.unlink(missing_ok=True)
             return jsonify({"error": f"Failed to create OLDAP resource: {exc}"}), 500
 
-
         return jsonify(
             {
                 "identifier": identifier,
+                "assetId": identifier,
+                "imageId": identifier,  # backwards compatibility
                 "iri": response['iri'],
                 "originalName": upload_file.filename,
                 "mediaType": media_type.value,
                 "iiifInfoUrl": iiif_info_url,
-                "imageId": identifier,
+                "assetUrl": asset_url,
                 "storedPath": asset_base_rel.as_posix(),
             }
         )
-
     return app
 
 
