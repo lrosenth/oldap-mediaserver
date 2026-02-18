@@ -1,0 +1,69 @@
+services:
+  # Flask upload + auth resolver (your app.py)
+  mediaserver:
+    image: lrosenth/oldap-mediahelper:${OLDAP_MEDIAHELPER_TAG:-latest}
+    container_name: oldap-mediahelper
+    environment:
+      - OLDAP_JWT_SECRET=${OLDAP_JWT_SECRET:-secret}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - UPLOADER_IMGDIR=/data/images
+      - OLDAP_API_URL=${OLDAP_API_URL:-http://host.docker.internal:8000}
+      - IIIF_BASE_URL=${IIIF_BASE_URL:-http://localhost:8088/iiif/3/}
+      - MEDIA_BASE_URL=${MEDIA_BASE_URL:-http://localhost:8088/}
+      - MEDIA_DATA=${MEDIA_DATA:-/Users/rosenth/ProgDev/OMAS/imageserver/test-images}
+      - APP_ENV=${APP_ENV:-Dev}
+
+    volumes:
+      - ${MEDIA_DATA:-./data}:/data/images
+    expose:
+      - "8000"
+    # Needed on Linux so host.docker.internal works
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # IIIF image server (your custom Kakadu-based image)
+  imageserver:
+    image: lrosenth/oldap-imageserver:${OLDAP_IMAGESERVER_TAG:-latest}
+    container_name: oldap-imageserver
+    environment:
+      OLDAP_JWT_SECRET: ${OLDAP_JWT_SECRET:-secret}
+      OLDAP_JWT_ISS: ${OLDAP_JWT_ISS:-http://oldap.org}
+      OLDAP_API_URL: ${OLDAP_API_URL:-http://host.docker.internal:8000}
+      OLDAP_UNKNOWN_USERID: ${OLDAP_UNKNOWN_USERID:-unknown}
+      OLDAP_UNKNOWN_PASSWORD: ${OLDAP_UNKNOWN_PASSWORD:-}
+      # The imageserver expects media under /data/images
+      MEDIA_DATA: ${MEDIA_DATA:-/Users/rosenth/ProgDev/OMAS/imageserver/test-images}
+      UPLOADER_IMGDIR: /data/images
+    volumes:
+      - ${MEDIA_DATA:-./data}:/data/images
+    expose:
+      - "8182"
+    # Needed on Linux so host.docker.internal works
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Caddy reverse proxy + static bitstream serving
+  caddy:
+    image: caddy:2.8
+    container_name: oldap-media-caddy
+    ports:
+      - "8088:8088"    # local dev entrypoint (http://localhost:8088)
+      - "8443:443"     # optional local TLS testing
+      # On the VM you will usually map 80:80 and 443:443 instead
+    environment:
+      CADDY_MODE: ${CADDY_MODE:-dev}
+      CADDY_PORT: ${CADDY_PORT:-8088}
+      # For dev set SITE_ADDRESS=http://localhost to disable auto-https redirects.
+      # For prod set SITE_ADDRESS=media.oldap.org to enable HTTPS.
+      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${MEDIA_DATA:-./data}/images:/data/images:ro
+      - ${CADDY_DATA:-./caddy-data}:/data
+      - ${CADDY_CONF:-./caddy-conf}:/config
+    depends_on:
+      - mediaserver
+      - imageserver
+    restart: unless-stopped
