@@ -21,6 +21,15 @@
 	# ----------------------------
 	handle_path /asset/* {
 		route {
+			# Only allow GET/HEAD for asset delivery
+			@asset_methods not method GET HEAD
+			respond @asset_methods "method not allowed" 405
+
+			# Prevent clients from spoofing internal decision headers
+			header -X-Oldap-Internal-Path
+			header -X-Oldap-Content-Type
+			header -X-Oldap-Content-Disposition
+
 			# Ask Flask if this request is allowed and where the file lives.
 			# Because we're inside handle_path /asset/*, {http.request.uri} is the remainder:
 			#   /<id>[/original|derived][?query]
@@ -64,9 +73,15 @@
 	# Allows calling the forward_auth backend endpoint directly for debugging.
 	# In production you typically do NOT expose /auth/* publicly.
 	# ----------------------------
-	@auth path /auth/*
-	handle @auth {
+	@auth_asset path /auth/asset/*
+	handle @auth_asset {
 		reverse_proxy mediaserver:8000
+	}
+
+	# Any other /auth/* path should not be exposed (DEV safety)
+	@auth_other path /auth/*
+	handle @auth_other {
+		respond "not found" 404
 	}
 
 	# Default
