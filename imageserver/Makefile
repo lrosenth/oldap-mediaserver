@@ -36,7 +36,7 @@ docker-run-local:
 	  --name oldap-imageserver \
 	  -p 8182:8182 \
 	  -v "$$(pwd)/test-images:/data/images" \
-	  -e OLDAP_JWT_SECRET="A very short secret!" \
+	  -e OLDAP_JWT_SECRET="56cbaa67af5bc403f1de9b7035e7c88239a853e4b40d6fc659ab4e4679b42785" \
 	  -e OLDAP_JWT_ISS="http://oldap.org" \
 	  -e OLDAP_API_URL="http://host.docker.internal:8000" \
 	  -e OLDAP_UNKNOWN_USERID="unknown" \
@@ -49,7 +49,7 @@ docker-run:
 	  --name oldap-imageserver \
 	  -p 8182:8182 \
 	  -v "$$(pwd)/test-images:/data/images" \
-	  -e OLDAP_JWT_SECRET="A very short secret!" \
+	  -e OLDAP_JWT_SECRET="56cbaa67af5bc403f1de9b7035e7c88239a853e4b40d6fc659ab4e4679b42785" \
 	  -e OLDAP_JWT_ISS="http://oldap.org" \
 	  -e OLDAP_API_URL="http://host.docker.internal:8000" \
 	  -e OLDAP_UNKNOWN_USERID="unknown" \

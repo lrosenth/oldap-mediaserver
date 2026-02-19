@@ -1,5 +1,3 @@
-# uploader-api/Dockerfile
-
 FROM lrosenth/kakadu-base:latest AS kakadu-base
 
 # Final image
@@ -32,4 +30,5 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "--workers", "1", "--worker-class", "gthread", "--threads", "4", "--timeout", "300", "--graceful-timeout", "60", "app:app"]
+# Default command (can be overridden in docker-compose.yml for env-specific tuning)
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]

@@ -3,40 +3,43 @@ services:
   mediaserver:
     image: lrosenth/oldap-mediahelper:${OLDAP_MEDIAHELPER_TAG:-latest}
     container_name: oldap-mediahelper
+    env_file:
+      - ./mediaserver.env
     environment:
-      - OLDAP_JWT_SECRET=${OLDAP_JWT_SECRET:-secret}
-      - CORS_ORIGINS=${CORS_ORIGINS}
-      - UPLOADER_IMGDIR=/data/images
-      - OLDAP_API_URL=${OLDAP_API_URL:-http://host.docker.internal:8000}
       - IIIF_BASE_URL=${IIIF_BASE_URL:-http://localhost:8088/iiif/3/}
       - MEDIA_BASE_URL=${MEDIA_BASE_URL:-http://localhost:8088/}
-      - MEDIA_DATA=${MEDIA_DATA:-/Users/rosenth/ProgDev/OMAS/imageserver/test-images}
       - APP_ENV=${APP_ENV:-Dev}
 
     volumes:
-      - ${MEDIA_DATA:-./data}:/data/images
+      - ${MEDIA_DATA_HOST:-./data}:/data/images
     expose:
       - "8000"
     # Needed on Linux so host.docker.internal works
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    command:
+      ["gunicorn",
+       "-b", "0.0.0.0:8000",
+       "--workers", "${GUNICORN_WORKERS:-1}",
+       "--worker-class", "gthread",
+       "--threads", "${GUNICORN_THREADS:-4}",
+       "--timeout", "${GUNICORN_TIMEOUT:-300}",
+       "--graceful-timeout", "${GUNICORN_GRACEFUL_TIMEOUT:-60}",
+       "--keep-alive", "${GUNICORN_KEEPALIVE:-5}",
+       "--access-logfile", "-",
+       "--error-logfile", "-",
+       "--log-level", "${GUNICORN_LOG_LEVEL:-info}",
+       "app:app"]
 
   # IIIF image server (your custom Kakadu-based image)
   imageserver:
     image: lrosenth/oldap-imageserver:${OLDAP_IMAGESERVER_TAG:-latest}
     container_name: oldap-imageserver
-    environment:
-      OLDAP_JWT_SECRET: ${OLDAP_JWT_SECRET:-secret}
-      OLDAP_JWT_ISS: ${OLDAP_JWT_ISS:-http://oldap.org}
-      OLDAP_API_URL: ${OLDAP_API_URL:-http://host.docker.internal:8000}
-      OLDAP_UNKNOWN_USERID: ${OLDAP_UNKNOWN_USERID:-unknown}
-      OLDAP_UNKNOWN_PASSWORD: ${OLDAP_UNKNOWN_PASSWORD:-}
-      # The imageserver expects media under /data/images
-      MEDIA_DATA: ${MEDIA_DATA:-/Users/rosenth/ProgDev/OMAS/imageserver/test-images}
-      UPLOADER_IMGDIR: /data/images
+    env_file:
+      - ./mediaserver.env
     volumes:
-      - ${MEDIA_DATA:-./data}:/data/images
+      - ${MEDIA_DATA_HOST:-./data}:/data/images
     expose:
       - "8182"
     # Needed on Linux so host.docker.internal works
@@ -49,8 +52,8 @@ services:
     image: caddy:2.8
     container_name: oldap-media-caddy
     ports:
-      - "8088:8088"    # local dev entrypoint (http://localhost:8088)
-      - "8443:443"     # optional local TLS testing
+      - "${CADDY_PORT:-8088}:8088"    # local dev entrypoint (http://localhost:8088)
+      # - "8443:443"     # optional local TLS testing
       # On the VM you will usually map 80:80 and 443:443 instead
     environment:
       CADDY_MODE: ${CADDY_MODE:-dev}
@@ -60,7 +63,7 @@ services:
       SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ${MEDIA_DATA:-./data}/images:/data/images:ro
+      - ${MEDIA_DATA_HOST:-./data}:/data/images:ro
       - ${CADDY_DATA:-./caddy-data}:/data
       - ${CADDY_CONF:-./caddy-conf}:/config
     depends_on:

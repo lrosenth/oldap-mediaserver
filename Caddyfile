@@ -1,6 +1,6 @@
 {
 	# Useful for local dev while iterating
-	# debug
+	debug
 }
 
 :{$CADDY_PORT:8088} {
@@ -19,36 +19,34 @@
 	# Asset delivery (non-IIIF)
 	# Public:  /asset/<id>[/original|derived]
 	# ----------------------------
-	@asset path /asset/*
-	handle @asset {
+	handle_path /asset/* {
+		route {
+			# TEMP DEBUG (must run before forward_auth)
+			@asset_debug query debug=1
+			respond @asset_debug "rest={http.request.uri} path={http.request.uri.path} query={http.request.uri.query}" 200
 
-		# Ask Flask if this request is allowed and where the file lives
-		# Flask endpoint shape:
-		#   /auth/asset/<id>[/original|derived]
-		# This rewrite works because {uri} includes the full path+query.
-		forward_auth mediaserver:8000 {
-			uri /auth{uri}
-			# Copy headers from Flask response into this request (avoid using generic header names)
-			copy_headers X-OLDAP-Internal-Path X-OLDAP-Content-Type X-OLDAP-Content-Disposition
-		}
+			# Ask Flask if this request is allowed and where the file lives.
+			# Because we're inside handle_path /asset/*, {http.request.uri} is the remainder:
+			#   /<id>[/original|derived][?query]
+			forward_auth mediaserver:8000 {
+				uri /auth/asset{http.request.uri}
+				copy_headers X-Oldap-Internal-Path X-Oldap-Content-Type X-Oldap-Content-Disposition
+			}
 
-		# Guard: if auth did not provide an internal path, deny
-		@no_internal not header X-OLDAP-Internal-Path *
-		respond @no_internal "forbidden" 403
+			# Guard: if auth did not provide an internal path, deny
+			@no_internal not header X-Oldap-Internal-Path *
+			respond @no_internal "forbidden" 403
 
-		# Rewrite the request path to the internal absolute file path
-		# Flask sets X-Internal-Path to something like:
-		#   /data/images/<project>/<type>/<subpath>/<id>/derived/<file>
-		rewrite * {http.request.header.X-OLDAP-Internal-Path}
+			# Rewrite to the internal absolute file path and serve it
+			rewrite * {http.request.header.X-Oldap-Internal-Path}
+			root * /
+			file_server
 
-		# Serve that file from disk
-		root * /
-		file_server
-
-		# Preserve the Content-Type / Disposition Flask already computed
-		header {
-			Content-Type "{http.request.header.X-OLDAP-Content-Type}"
-			Content-Disposition "{http.request.header.X-OLDAP-Content-Disposition}"
+			# Preserve the Content-Type / Disposition Flask already computed
+			header {
+				Content-Type "{http.request.header.X-Oldap-Content-Type}"
+				Content-Disposition "{http.request.header.X-Oldap-Content-Disposition}"
+			}
 		}
 	}
 
@@ -62,6 +60,16 @@
 	# ----------------------------
 	@upload path /upload /upload/*
 	handle @upload {
+		reverse_proxy mediaserver:8000
+	}
+
+	# ----------------------------
+	# Auth helper (DEV ONLY)
+	# Allows calling the forward_auth backend endpoint directly for debugging.
+	# In production you typically do NOT expose /auth/* publicly.
+	# ----------------------------
+	@auth path /auth/*
+	handle @auth {
 		reverse_proxy mediaserver:8000
 	}
 
