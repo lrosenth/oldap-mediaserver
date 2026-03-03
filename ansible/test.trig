@@ -1,0 +1,123 @@
+################################################################################
+# Project: test
+# Date: 2026-03-02T21:48:17.124599
+################################################################################
+
+#
+# User info
+#
+#>> {"userIri": {"value": "urn:uuid:3fe47118-7c51-4c2c-9a18-a3dc6b201c5c", "__class__": "Iri"}, "userId": {"value": "test", "__class__": "Xsd_NCName"}, "familyName": {"value": "Testing", "lang": null, "__class__": "Xsd_string"}, "givenName": {"value": "Testing", "lang": null, "__class__": "Xsd_string"}, "email": {"value": "lrosenth@mac.com", "lang": null, "__class__": "Xsd_string"}, "credentials": {"value": "$2b$12$8L.NRBXs5v3KlTxO06MlZ.vQK0.B1iNKKsYLwnvuMAWmU6uncqqAO", "lang": null, "__class__": "Xsd_string"}, "isActive": {"value": "True", "__class__": "Xsd_boolean"}, "inProject": {"setdata": {"https://test.oldap.org": {"setitems": [{"__class__": "AdminPermission", "__value__": "oldap:ADMIN_MODEL"}, {"__class__": "AdminPermission", "__value__": "oldap:ADMIN_ROLES"}, {"__class__": "AdminPermission", "__value__": "oldap:ADMIN_RESOURCES"}, {"__class__": "AdminPermission", "__value__": "oldap:ADMIN_LISTS"}, {"__class__": "AdminPermission", "__value__": "oldap:ADMIN_CREATE"}], "__class__": "ObservableSet"}}, "__class__": "InProjectClass"}, "hasRole": {"obsdict": [{"key": {"value": "oldap:Unknown", "__class__": "Xsd_QName"}, "val": {"__class__": "DataPermission", "__value__": [{"value": "oldap:DATA_PERMISSIONS", "__class__": "Xsd_QName"}, {"value": 6, "__class__": "Xsd_integer"}]}}], "__class__": "ObservableDict"}, "creator": {"value": "https://orcid.org/0000-0003-1681-4036", "__class__": "Iri"}, "created": {"value": "2026-03-02T21:08:55.525021+00:00", "__class__": "Xsd_dateTime"}, "contributor": {"value": "https://orcid.org/0000-0003-1681-4036", "__class__": "Iri"}, "modified": {"value": "2026-03-02T21:08:55.525021+00:00", "__class__": "Xsd_dateTime"}, "__class__": "User"}
+#<<
+
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix xml: <http://www.w3.org/XML/1998/namespace#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix schema: <http://schema.org/> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix dcmitype: <http://purl.org/dc/dcmitype/> .
+@prefix dash: <http://datashapes.org/dash#> .
+@prefix oldap: <http://oldap.org/base#> .
+@prefix shared: <http://oldap.org/shared#> .
+@prefix fasnacht: <http://fasnacht.digital/ns/> .
+@prefix test: <http://test.oldap.org/ns/> .
+#
+# Load the oldap:admin part
+#
+oldap:admin {
+#
+# Project info
+#
+
+    <https://test.oldap.org> a oldap:Project ;
+        dcterms:creator <https://orcid.org/0000-0003-1681-4036> ;
+        dcterms:created "2026-03-02T21:05:21.823146+00:00"^^xsd:dateTime ;
+        dcterms:contributor <https://orcid.org/0000-0003-1681-4036> ;
+        dcterms:modified "2026-03-02T21:05:21.823146+00:00"^^xsd:dateTime ;
+        oldap:projectShortName "test"^^xsd:NCName ;
+        oldap:projectIri <https://test.oldap.org> ;
+        rdfs:label "Test"@en, "Test"@de, "Test"@fr ;
+        oldap:namespaceIri <http://test.oldap.org/ns/> ;
+        rdfs:comment "A Project for testing anything and experiments. "@en, "Ein Projekt für Tests und Experimente"@de ;
+        oldap:projectStart "2026-03-02"^^xsd:date .
+
+
+#
+# Roles info
+#
+
+}
+
+@prefix dcmitype: <http://purl.org/dc/dcmitype/> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix ns1: <http://schema.org/> .
+@prefix ns2: <http://oldap.org/base#> .
+@prefix ns3: <http://oldap.org/shared#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<http://test.oldap.org/ns/onto> {
+    <http://test.oldap.org/ns/TestMedieObject> a owl:Class ;
+        rdfs:label "Testobjekt für Medien"@de,
+            "TestMediaObject"@en ;
+        dcterms:contributor <https://orcid.org/0000-0003-1681-4036> ;
+        dcterms:created "2026-03-02T21:10:52.545023+00:00"^^xsd:dateTime ;
+        dcterms:creator <https://orcid.org/0000-0003-1681-4036> ;
+        dcterms:modified "2026-03-02T21:10:52.545023+00:00"^^xsd:dateTime ;
+        ns1:version "0.1.0" ;
+        rdfs:comment "Resource um Medienobjekte zu testen"@de,
+            "Resource for testing media objects"@en ;
+        rdfs:subClassOf ns2:Thing,
+            ns3:MediaObject .
+
+    <http://test.oldap.org/ns/ontology> owl:type owl:Ontology ;
+        owl:versionIRI <http://oldap.org/ontology/test/version/0.1.0> ;
+        owl:versionInfo "0.1.0" .
+}
+
+<http://test.oldap.org/ns/shacl> {
+    <http://test.oldap.org/ns/TestMedieObjectShape> a sh:NodeShape ;
+        rdfs:label "Testobjekt für Medien"@de,
+            "TestMediaObject"@en ;
+        ns2:externalOntology false ;
+        dcterms:contributor <https://orcid.org/0000-0003-1681-4036> ;
+        dcterms:created "2026-03-02T21:10:52.545023+00:00"^^xsd:dateTime ;
+        dcterms:creator <https://orcid.org/0000-0003-1681-4036> ;
+        dcterms:modified "2026-03-02T21:10:52.545023+00:00"^^xsd:dateTime ;
+        rdfs:comment "Resource um Medienobjekte zu testen"@de,
+            "Resource for testing media objects"@en ;
+        sh:closed false ;
+        sh:node ns2:ThingShape,
+            ns3:MediaObjectShape ;
+        sh:property _:Na2a5eb32093e428e9b0b3ebeb11e3a3c ;
+        sh:targetClass <http://test.oldap.org/ns/TestMedieObject> .
+
+    <http://test.oldap.org/ns/shapes> ns1:version "0.1.0" .
+
+    _:Na2a5eb32093e428e9b0b3ebeb11e3a3c sh:path rdf:type .
+}
+
+<http://test.oldap.org/ns/data> {
+    <urn:rdf4j:triple:PDw8dXJuOnV1aWQ6NmZmNjhlYzgtNDNjMS00ZGMyLTgxNzYtZDJlYmNlMzFmYzAyPiA8aHR0cDovL29sZGFwLm9yZy9iYXNlI2F0dGFjaGVkVG9Sb2xlPiA8aHR0cDovL29sZGFwLm9yZy9iYXNlI1Vua25vd24-Pj4=> ns2:hasDataPermission ns2:DATA_PERMISSIONS .
+
+    <urn:uuid:6ff68ec8-43c1-4dc2-8176-d2ebce31fc02> a ns3:MediaObject ;
+        ns2:attachedToRole ns2:Unknown ;
+        ns2:createdBy <urn:uuid:3fe47118-7c51-4c2c-9a18-a3dc6b201c5c> ;
+        ns2:creationDate "2026-03-02T21:32:18.448160+00:00"^^xsd:dateTimeStamp ;
+        ns2:lastModificationDate "2026-03-02T21:32:18.448160+00:00"^^xsd:dateTimeStamp ;
+        ns2:lastModifiedBy <urn:uuid:3fe47118-7c51-4c2c-9a18-a3dc6b201c5c> ;
+        ns3:imageId "_6klY24J_-GC" ;
+        ns3:originalMimeType "image/tiff" ;
+        ns3:originalName "BE_Bern_BHM_8881.tif" ;
+        ns3:path "test/image" ;
+        ns3:protocol "iiif" ;
+        ns3:serverUrl "https://media.oldap.org/iiif/3/"^^xsd:anyURI ;
+        dcterms:type dcmitype:StillImage .
+}
+

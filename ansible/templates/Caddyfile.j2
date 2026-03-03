@@ -1,0 +1,60 @@
+{
+{% if caddy_acme_email | default('') | length > 0 %}
+    email {{ caddy_acme_email }}
+{% endif %}
+}
+
+{{ media_domain }} {
+    encode zstd gzip
+
+    @iiif path /iiif/*
+    handle @iiif {
+        reverse_proxy imageserver:8182
+    }
+
+    handle_path /asset/* {
+        route {
+            @asset_methods not method GET HEAD
+            respond @asset_methods "method not allowed" 405
+
+            header -X-Oldap-Internal-Path
+            header -X-Oldap-Content-Type
+            header -X-Oldap-Content-Disposition
+
+            forward_auth mediaserver:8000 {
+                uri /auth/asset{http.request.uri}
+                copy_headers X-Oldap-Internal-Path X-Oldap-Content-Type X-Oldap-Content-Disposition
+            }
+
+            @no_internal not header X-Oldap-Internal-Path *
+            respond @no_internal "forbidden" 403
+
+            rewrite * {http.request.header.X-Oldap-Internal-Path}
+            root * /
+            file_server
+
+            header {
+                Content-Type "{http.request.header.X-Oldap-Content-Type}"
+                Content-Disposition "{http.request.header.X-Oldap-Content-Disposition}"
+            }
+        }
+    }
+
+    @upload path /upload /upload/*
+    handle @upload {
+        reverse_proxy mediaserver:8000
+    }
+
+    handle /health {
+        respond "ok" 200
+    }
+
+    @auth_any path /auth/*
+    handle @auth_any {
+        respond "not found" 404
+    }
+
+    handle {
+        respond "not found" 404
+    }
+}

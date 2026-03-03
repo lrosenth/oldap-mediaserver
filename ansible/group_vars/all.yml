@@ -1,0 +1,37 @@
+# Deployment target
+media_domain: media.oldap.org
+oldap_api_url: https://api.oldap.org
+
+# Image tags (override with -e to pin versions)
+oldap_mediahelper_tag: latest
+oldap_imageserver_tag: latest
+caddy_image_tag: 2.8
+
+# Runtime behavior
+app_env: Prod
+force_pull: false
+rollback: false
+
+# Host filesystem layout
+media_root: /data/media
+deploy_root: /opt/oldap-mediaserver
+compose_dir: "{{ deploy_root }}/compose"
+caddy_data_dir: "{{ deploy_root }}/caddy-data"
+caddy_config_dir: "{{ deploy_root }}/caddy-config"
+
+# Flask / OLDAP integration
+oldap_jwt_secret: "Xsjh-738@-789M-h%rS"
+oldap_jwt_iss: http://oldap.org
+oldap_unknown_userid: unknown
+oldap_unknown_password: ""
+cors_origins: "*"
+
+# Optional ACME contact address for Caddy (recommended)
+caddy_acme_email: ""
+
+# Optional firewall management via UFW
+manage_ufw: false
+
+# Docker apt repo architecture
+# amd64 for x86_64 VMs; change if needed.
+docker_apt_arch: amd64

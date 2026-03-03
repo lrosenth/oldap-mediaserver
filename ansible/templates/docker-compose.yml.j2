@@ -1,0 +1,59 @@
+services:
+  mediaserver:
+    image: lrosenth/oldap-mediahelper:{{ oldap_mediahelper_tag }}
+    container_name: oldap-mediahelper
+    env_file:
+      - ./mediaserver.env
+    environment:
+      IIIF_BASE_URL: https://{{ media_domain }}/iiif/3/
+      MEDIA_BASE_URL: https://{{ media_domain }}/
+      APP_ENV: {{ app_env }}
+    volumes:
+      - {{ media_root }}:/data/images
+    expose:
+      - "8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    command:
+      ["gunicorn",
+       "-b", "0.0.0.0:8000",
+       "--workers", "${GUNICORN_WORKERS:-1}",
+       "--worker-class", "gthread",
+       "--threads", "${GUNICORN_THREADS:-4}",
+       "--timeout", "${GUNICORN_TIMEOUT:-300}",
+       "--graceful-timeout", "${GUNICORN_GRACEFUL_TIMEOUT:-60}",
+       "--keep-alive", "${GUNICORN_KEEPALIVE:-5}",
+       "--access-logfile", "-",
+       "--error-logfile", "-",
+       "--log-level", "${GUNICORN_LOG_LEVEL:-info}",
+       "app:app"]
+
+  imageserver:
+    image: lrosenth/oldap-imageserver:{{ oldap_imageserver_tag }}
+    container_name: oldap-imageserver
+    env_file:
+      - ./mediaserver.env
+    volumes:
+      - {{ media_root }}:/data/images
+    expose:
+      - "8182"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:{{ caddy_image_tag }}
+    container_name: oldap-media-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - {{ media_root }}:/data/images:ro
+      - {{ caddy_data_dir }}:/data
+      - {{ caddy_config_dir }}:/config
+    depends_on:
+      - mediaserver
+      - imageserver
+    restart: unless-stopped

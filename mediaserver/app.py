@@ -663,12 +663,13 @@ def create_app() -> Flask:
             # New canonical key
             'shared:assetId': identifier,
             # Backwards compatibility (can be removed once everything is migrated)
-            'shared:imageId': identifier,            'shared:protocol': protocol_for_media(media_type),
+            'shared:imageId': identifier,
+            'shared:protocol': protocol_for_media(media_type),
             'shared:derivativeName': derivative_name,
             # Store the logical folder (relative to IMAGE_ROOT) for later retrieval / housekeeping
             'shared:path': asset_base_rel.as_posix(),
         }
-        if (roles):
+        if roles:
             resource_data['attachedToRole'] = roles
         for key, value in request.form.items():
             if key not in required_form_fields:
@@ -687,6 +688,7 @@ def create_app() -> Flask:
                 "imageId": identifier,  # backwards compatibility
                 "iri": response['iri'],
                 "originalName": upload_file.filename,
+                "derivativeName": derivative_name,
                 "mediaType": media_type.value,
                 "iiifInfoUrl": iiif_info_url,
                 "assetUrl": asset_url,

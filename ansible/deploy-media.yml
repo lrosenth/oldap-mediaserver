@@ -1,0 +1,130 @@
+---
+- name: Deploy OLDAP media stack
+  hosts: mediaserver
+  become: true
+
+  tasks:
+    - name: Optionally allow HTTP/HTTPS with UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "80"
+        - "443"
+      when: manage_ufw | bool
+
+    - name: Remove outdated Docker apt source file if present
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+
+    - name: Install apt prerequisites for Docker
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: true
+
+    - name: Ensure apt keyring directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker GPG key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Configure Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch={{ docker_apt_arch }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    - name: Install Docker engine and compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker service is enabled and started
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Create deployment and data directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - "{{ deploy_root }}"
+        - "{{ compose_dir }}"
+        - "{{ caddy_data_dir }}"
+        - "{{ caddy_config_dir }}"
+        - "{{ media_root }}"
+
+    - name: Render docker-compose.yml
+      ansible.builtin.template:
+        src: templates/docker-compose.yml.j2
+        dest: "{{ compose_dir }}/docker-compose.yml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Render Caddyfile
+      ansible.builtin.template:
+        src: templates/Caddyfile.j2
+        dest: "{{ compose_dir }}/Caddyfile"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Render mediaserver.env
+      ansible.builtin.template:
+        src: templates/mediaserver.env.j2
+        dest: "{{ compose_dir }}/mediaserver.env"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Roll back stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ compose_dir }}"
+        state: absent
+      when: rollback | bool
+
+    - name: Deploy stack
+      community.docker.docker_compose_v2:
+        project_src: "{{ compose_dir }}"
+        state: present
+        pull: "{{ 'always' if force_pull | bool else 'missing' }}"
+        remove_orphans: true
+      when: not rollback | bool
+
+    - name: Show resulting compose services
+      community.docker.docker_compose_v2:
+        project_src: "{{ compose_dir }}"
+        state: present
+      register: compose_result
+      changed_when: false
+      when: not rollback | bool
+
+    - name: Print compose status
+      ansible.builtin.debug:
+        var: compose_result
+      when: not rollback | bool
