@@ -97,6 +97,7 @@ class OldapClient:
         response.raise_for_status()
         return response.json()
 
+
     def get_mediaobject_by_assetid_unknown(self, asset_id: str) -> dict:
         """Resolve a MediaObject by assetId using the cached unknown-user token."""
         id_esc = quote(str(asset_id), safe="")

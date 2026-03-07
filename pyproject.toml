@@ -15,7 +15,14 @@ gunicorn = "^23.0.0"
 nanoid = "^2.0.0"
 oldaplib = "^0.4.7"
 requests = "^2.32.5"
-poetry-plugin-export = "^1.10.0"
+#poetry-plugin-export = "^1.10.0"
+
+[tool.poetry.group.dev.dependencies]
+# Tooling used during development / CI only (must NOT go into runtime Docker images)
+# NOTE: poetry-plugin-export must be installed into Poetry itself ("poetry self add poetry-plugin-export"), not as a project dependency.
+pytest = "^9.0.0"
+coverage = "^7.4.0"
+black = "^25.0.0"
 
 [build-system]
 requires = ["poetry-core"]

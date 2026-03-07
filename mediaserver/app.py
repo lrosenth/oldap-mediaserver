@@ -7,6 +7,8 @@ import mimetypes
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+from unittest import case
+from urllib.parse import quote
 
 import jwt
 import requests
@@ -16,11 +18,13 @@ import pyvips  # make sure this is in requirements.txt
 from flask_cors import CORS
 from nanoid import generate
 from oldaplib.src.enums.adminpermissions import AdminPermission
+from oldaplib.src.enums.datapermissions import DataPermission
 from oldaplib.src.helpers.observable_dict import ObservableDict
 from oldaplib.src.helpers.oldaperror import OldapError
 from oldaplib.src.helpers.serializer import serializer
 from oldaplib.src.userdataclass import UserData
 from oldaplib.src.xsd.iri import Iri
+from oldaplib.src.xsd.xsd_qname import Xsd_QName
 
 from oldap_client import OldapClient
 
@@ -179,7 +183,7 @@ def create_app() -> Flask:
         supports_credentials=False,
         expose_headers=["Content-Disposition"],
         allow_headers=["Authorization", "Content-Type"],
-        methods=["GET", "POST", "OPTIONS"],
+        methods=["GET", "POST", "OPTIONS", "DELETE"],
     )
 
     app.logger.setLevel("INFO")  # <— enable INFO
@@ -662,8 +666,6 @@ def create_app() -> Flask:
             'shared:serverUrl': iiif_base_url if media_type == MediaType.IMAGE else media_base_url,
             # New canonical key
             'shared:assetId': identifier,
-            # Backwards compatibility (can be removed once everything is migrated)
-            'shared:imageId': identifier,
             'shared:protocol': protocol_for_media(media_type),
             'shared:derivativeName': derivative_name,
             # Store the logical folder (relative to IMAGE_ROOT) for later retrieval / housekeeping
@@ -695,6 +697,65 @@ def create_app() -> Flask:
                 "storedPath": asset_base_rel.as_posix(),
             }
         )
+
+    @app.delete("/upload/<asset_id>")
+    def delete(asset_id):
+        # we can only delete if we have a bearer token
+        token = require_bearer_token()
+
+        #
+        # now let's retieve the MediaObject from the OLDAP-API
+        #
+        id_esc = quote(str(asset_id), safe="")
+        url = f"{oldap_api_url}/data/mediaobject/id/{id_esc}"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+        except requests.exceptions.Timeout as exc:
+            return jsonify({"error": f"Timeout: Failed to fetch OLDAP resource: {exc}"}), 500
+        except requests.exceptions.RequestException as exc:
+            return jsonify({"error": f"Failed to fetch OLDAP resource: {exc}"}), 500
+        res = response.json()
+
+        #
+        # we need the project id (aka projectShortName) which is the prefix of the graph
+        #
+        graph = res.get("graph", "")
+        try:
+            graph_qname = Xsd_QName(graph)
+        except OldapError:
+            return jsonify({"error": f"Invalid graph: {graph}"}), 400
+        project_id = graph_qname.prefix  # The graph QName for data is "<projectid>:data"
+
+        #
+        # now let's check if the user has the permission to delete the asset
+        #
+        permval = res.get("permval")
+        if permval < DataPermission.DATA_DELETE.numeric:
+            return jsonify({"error": f"Insufficient permissions: {permval}"}), 403
+
+        iri = res.get("iri")
+
+        url = f"{oldap_api_url}/data/{project_id}/{iri}"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            response = requests.delete(url, headers=headers, timeout=10)
+        except requests.exceptions.Timeout as exc:
+            return jsonify({"error": f"Timeout: Failed to fetch OLDAP resource: {exc}"}), 500
+        except requests.exceptions.RequestException as exc:
+            return jsonify({"error": f"Failed to fetch OLDAP resource: {exc}"}), 500
+        if response.status_code < 200 or response.status_code >= 300:
+            return jsonify({"error": f"Failed to delete OLDAP resource: {response.text}"}), 500
+
+        asset_basepath = res.get("shared:path", [''])[0]
+
+        asset_root = IMAGE_ROOT / asset_basepath / asset_id
+        if asset_root.exists():
+            shutil.rmtree(asset_root)
+
+        return jsonify({"message": f"Deleted asset {asset_id}"}), 200
+
+
     return app
 
 

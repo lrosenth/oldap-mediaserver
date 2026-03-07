@@ -1,0 +1,272 @@
+openapi: 3.0.3
+info:
+  title: OLDAP Media Server API
+  version: 1.0.0
+  description: OpenAPI definition generated from routes in mediaserver/app.py.
+servers:
+  - url: http://localhost:8000
+security:
+  - bearerAuth: []
+paths:
+  /upload:
+    post:
+      summary: Upload and register a media asset
+      description: |
+        Uploads a file, generates a derived asset based on media type/target format,
+        stores files on disk, and creates a MediaObject in OLDAP.
+      tags:
+        - upload
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - projectId
+              properties:
+                file:
+                  type: string
+                  format: binary
+                resourceClass:
+                  type: string
+                  default: shared:MediaObject
+                projectId:
+                  type: string
+                path:
+                  type: string
+                  description: Relative subpath under the project/media-type root.
+                identifier:
+                  type: string
+                  description: Asset identifier. If omitted, server generates one.
+                targetFormat:
+                  type: string
+                  description: |
+                    Desired output format. Allowed values depend on detected media type.
+                    image: jp2|tiff|jpeg, video: mp4, audio: m4a|mp3, document: pdf.
+                attachedToRole:
+                  type: array
+                  items:
+                    type: string
+                  description: One or more role identifiers.
+            encoding:
+              attachedToRole:
+                style: form
+                explode: true
+      responses:
+        '200':
+          description: Upload and registration succeeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadSuccess'
+        '400':
+          description: Validation or request error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+        '404':
+          description: Project/resource lookup failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+        '500':
+          description: Internal/upstream failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+
+  /upload/{asset_id}:
+    delete:
+      summary: Delete an asset and its media files
+      tags:
+        - upload
+      parameters:
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Asset deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Deleted asset abc123
+        '400':
+          description: Invalid graph information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+        '500':
+          description: OLDAP/network/server failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+
+  /auth/asset/{asset_id}:
+    get:
+      summary: Resolve derived asset path for Caddy auth_request
+      description: |
+        Returns status 204 and sets headers with internal path metadata for non-IIIF assets.
+        Optional JWT query token can be supplied via `token`.
+      tags:
+        - auth
+      security: []
+      parameters:
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: token
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Optional HS256 JWT.
+      responses:
+        '204':
+          description: Asset authorized and resolved
+          headers:
+            X-OLDAP-Internal-Path:
+              schema:
+                type: string
+            X-OLDAP-Content-Type:
+              schema:
+                type: string
+            X-OLDAP-Content-Disposition:
+              schema:
+                type: string
+        '403':
+          description: Forbidden (e.g., invalid protocol/path)
+        '404':
+          description: Asset or file not found
+        '502':
+          description: Upstream OLDAP API error
+
+  /auth/asset/{asset_id}/{which}:
+    get:
+      summary: Resolve asset path for selected variant
+      description: Same as `/auth/asset/{asset_id}` but explicit variant selection.
+      tags:
+        - auth
+      security: []
+      parameters:
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: which
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [derived, original]
+        - name: token
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Asset authorized and resolved
+          headers:
+            X-OLDAP-Internal-Path:
+              schema:
+                type: string
+            X-OLDAP-Content-Type:
+              schema:
+                type: string
+            X-OLDAP-Content-Disposition:
+              schema:
+                type: string
+        '404':
+          description: Invalid variant or file not found
+        '403':
+          description: Forbidden
+        '502':
+          description: Upstream OLDAP API error
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    UploadSuccess:
+      type: object
+      properties:
+        identifier:
+          type: string
+        assetId:
+          type: string
+        imageId:
+          type: string
+        iri:
+          type: string
+        originalName:
+          type: string
+        derivativeName:
+          type: string
+        mediaType:
+          type: string
+          enum: [image, audio, video, document, other]
+        iiifInfoUrl:
+          type: string
+        assetUrl:
+          type: string
+        storedPath:
+          type: string
+      required:
+        - identifier
+        - assetId
+        - imageId
+        - iri
+        - originalName
+        - derivativeName
+        - mediaType
+        - iiifInfoUrl
+        - assetUrl
+        - storedPath
+
+    MessageError:
+      type: object
+      properties:
+        message:
+          type: string
+
+    ErrorMessage:
+      type: object
+      properties:
+        error:
+          type: string

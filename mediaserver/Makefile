@@ -8,6 +8,13 @@ help:
 	@echo "  docker-build      Build and push base image for kakadu"
 	@echo "  docker-run        Run docker image"
 
+# Repo root (pyproject.toml lives one level up)
+ROOT_DIR := $(abspath $(CURDIR)/..)
+
+# Image naming
+IMAGE ?= lrosenth/oldap-mediahelper
+VERSION ?= v0.0.7
+
 .PHONY: run
 run:
 	OLDAP_JWT_SECRET="56cbaa67af5bc403f1de9b7035e7c88239a853e4b40d6fc659ab4e4679b42785" \
@@ -18,21 +25,22 @@ run:
 
 .PHONY: docker-build-local
 docker-build-local:
-	poetry export --only main -f requirements.txt --without-hashes -o requirements.txt
 	docker buildx build \
 	    --load \
-	    -t lrosenth/oldap-mediahelper:v0.0.5 \
-	    -t lrosenth/oldap-mediahelper:latest \
-		.
+	    -f Dockerfile \
+	    -t $(IMAGE):$(VERSION) \
+	    -t $(IMAGE):latest \
+	    $(ROOT_DIR)
 
 .PHONY: docker-build
 docker-build:
-	poetry export --only main -f requirements.txt --without-hashes -o requirements.txt
 	docker buildx build \
 	    --platform linux/amd64,linux/arm64 \
-	    -t lrosenth/oldap-mediahelper:v0.0.5 \
-	    -t lrosenth/oldap-mediahelper:latest \
-	    --push .
+	    -f Dockerfile \
+	    -t $(IMAGE):$(VERSION) \
+	    -t $(IMAGE):latest \
+	    --push \
+	    $(ROOT_DIR)
 
 .PHONY: docker-run
 docker-run:
@@ -43,4 +51,4 @@ docker-run:
 	  -e OLDAP_API_URL=http://host.docker.internal:8000 \
 	  -e UPLOADER_IMGDIR="/data/images" \
 	  -v "$$(pwd)/../imageserver/test-images:/data/images" \
-	  lrosenth/oldap-mediahelper:v0.0.5
+	  $(IMAGE):$(VERSION)
