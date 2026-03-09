@@ -747,13 +747,25 @@ def create_app() -> Flask:
         if response.status_code < 200 or response.status_code >= 300:
             return jsonify({"error": f"Failed to delete OLDAP resource: {response.text}"}), 500
 
-        asset_basepath = res.get("shared:path", [''])[0]
+        raw_asset_basepath = res.get("shared:path", "")
+        if isinstance(raw_asset_basepath, list):
+            asset_basepath = raw_asset_basepath[0] if raw_asset_basepath else ""
+        else:
+            asset_basepath = raw_asset_basepath or ""
 
-        asset_root = IMAGE_ROOT / asset_basepath / asset_id
+        try:
+            safe_basepath = safe_subpath(str(asset_basepath))
+            asset_root = (IMAGE_ROOT / safe_basepath / asset_id).resolve()
+            asset_root.relative_to(IMAGE_ROOT.resolve())
+        except ValueError as exc:
+            return jsonify({"error": f"Invalid stored path: {exc}"}), 400
+        except Exception:
+            return jsonify({"error": "Resolved path escapes media root"}), 403
+
         if asset_root.exists():
             shutil.rmtree(asset_root)
 
-        return jsonify({"message": f"Deleted asset {asset_id}"}), 200
+        return jsonify({"message": f"Deleted asset {asset_id} at {asset_root}"}), 200
 
 
     return app
