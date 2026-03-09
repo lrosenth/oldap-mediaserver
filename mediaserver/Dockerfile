@@ -52,6 +52,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY mediaserver/app.py /app/app.py
 COPY mediaserver/oldap_client.py /app/oldap_client.py
 COPY mediaserver/__init__.py /app/__init__.py
+COPY mediaserver/Makefile /app/Makefile
 
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1

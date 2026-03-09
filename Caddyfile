@@ -55,9 +55,10 @@
 		}
 	}
 
-	# Optional: healthcheck
-	handle /health {
-		respond "ok" 200
+	# Health/status -> Flask mediahelper
+	@status path /health /status
+	handle @status {
+		reverse_proxy mediaserver:8000
 	}
 
 	# ----------------------------

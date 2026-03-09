@@ -4,6 +4,7 @@ import shutil
 import uuid
 import subprocess
 import mimetypes
+import re
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -167,6 +168,41 @@ def dcterms_type_for_media(media_type: MediaType) -> str:
         return "dcmitype:Text"
     return "dcmitype:Dataset"
 
+
+def _read_version_from_makefile(makefile_path: Path) -> Optional[str]:
+    """Read VERSION/Version assignment from a Makefile."""
+    try:
+        content = makefile_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"^(?:VERSION|Version)\s*(?:\?=|:=|=)\s*(.+)$", line)
+        if not match:
+            continue
+        value = match.group(1).split("#", 1)[0].strip()
+        if value:
+            return value
+    return None
+
+
+def detect_app_version() -> tuple[str, str]:
+    """Resolve app version with env override, then Makefile fallback."""
+    for env_name in ("MEDIAHELPER_VERSION", "MEDIASERVER_VERSION"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return value, f"env:{env_name}"
+
+    makefile_path = Path(__file__).resolve().parent / "Makefile"
+    value = _read_version_from_makefile(makefile_path)
+    if value:
+        return value, f"makefile:{makefile_path}"
+
+    return "unknown", "default"
+
 def create_app() -> Flask:
     app = Flask(__name__)
     # CORS: for uploads from the Svelte dev server (and later from production hosts).
@@ -194,6 +230,11 @@ def create_app() -> Flask:
     logger.info(f"Using IIIF base URL: {iiif_base_url}")
     logger.info(f"Using Media base URL: {media_base_url}")
     logger.info(f"Using Oldap API URL: {oldap_api_url}")
+
+    app_version, app_version_source = detect_app_version()
+    app.config["APP_VERSION"] = app_version
+    app.config["APP_VERSION_SOURCE"] = app_version_source
+    logger.info(f"Using app version: {app_version} ({app_version_source})")
 
     jwt_secret = os.getenv("OLDAP_JWT_SECRET", "You have to change this!!! +D&RWG+")
 
@@ -339,6 +380,18 @@ def create_app() -> Flask:
 
     def copy_file(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
+
+    @app.get("/health")
+    @app.get("/status")
+    def health_status():
+        return jsonify(
+            {
+                "status": "ok",
+                "service": "oldap-mediahelper",
+                "version": app.config.get("APP_VERSION", "unknown"),
+                "versionSource": app.config.get("APP_VERSION_SOURCE", "default"),
+            }
+        ), 200
 
 
     @app.get("/auth/asset/<asset_id>")

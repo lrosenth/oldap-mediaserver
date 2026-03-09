@@ -45,8 +45,9 @@
         reverse_proxy mediaserver:8000
     }
 
-    handle /health {
-        respond "ok" 200
+    @status path /health /status
+    handle @status {
+        reverse_proxy mediaserver:8000
     }
 
     @auth_any path /auth/*
