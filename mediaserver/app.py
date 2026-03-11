@@ -580,7 +580,10 @@ def create_app() -> Flask:
             # an OLDAP resource ID instead.
             identifier = str(generate(size=12))
 
-        roles = request.form.getlist("attachedToRole")
+        roles = {}
+        roles_json = request.form.get("attachedToRole")
+        if roles_json:
+            roles = json.loads(roles_json)
 
         # Temporary location
         tmp_dir = IMAGE_ROOT / "_tmp"
@@ -711,7 +714,7 @@ def create_app() -> Flask:
         iiif_info_url = f"{iiif_base_url}{iiif_id}/info.json"
         asset_url = f"{media_base_url}asset/{identifier}"
 
-        resource_data = {
+        resource_data : dict[str, str | list[str]] = {
             'dcterms:type': dcterms_type_for_media(media_type),
             'shared:originalName': upload_file.filename,
             'shared:originalMimeType': upload_file.mimetype,
@@ -726,9 +729,9 @@ def create_app() -> Flask:
         }
         if roles:
             resource_data['attachedToRole'] = roles
-        for key, value in request.form.items():
+        for key in request.form.keys():
             if key not in required_form_fields:
-                resource_data[key] = value
+                resource_data[key] = request.form.getlist(key)
         try:
             response = client.create_resource(resource=resource_class, resource_data=resource_data)
         except Exception as exc:
