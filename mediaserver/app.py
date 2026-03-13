@@ -29,17 +29,17 @@ from oldaplib.src.xsd.xsd_qname import Xsd_QName
 
 from oldap_client import OldapClient
 
-imgdir  = os.environ.get("UPLOADER_IMGDIR", "/data/images")
+imgdir  = os.environ.get("UPLOADER_IMGDIR", "/data/images").strip()
 # For local dev, Cantaloupe is usually on host:8182
 # In production, put your real hostname here
-iiif_base_url = os.environ.get("IIIF_BASE_URL", "http://localhost:8088/iiif/3/")
+iiif_base_url = os.environ.get("IIIF_BASE_URL", "http://localhost:8088/iiif/3/").strip()
 
 # Base URL for non-IIIF delivery (Caddy). Should end with a trailing slash.
-media_base_url = os.environ.get("MEDIA_BASE_URL", "http://localhost:8088/")
+media_base_url = os.environ.get("MEDIA_BASE_URL", "http://localhost:8088/").strip()
 if not media_base_url.endswith('/'):
     media_base_url += '/'
 
-oldap_api_url = os.environ.get("OLDAP_API_URL", "http://localhost:8000")
+oldap_api_url = os.environ.get("OLDAP_API_URL", "http://localhost:8000").strip()
 
 IMAGE_ROOT = Path(imgdir)   # shared volume with Cantaloupe
 IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -203,23 +203,34 @@ def detect_app_version() -> tuple[str, str]:
 
     return "unknown", "default"
 
+def env_list(name: str, default: str = "") -> list[str]:
+    value = os.environ.get(name, default)
+    return [v.strip() for v in value.split(",") if v.strip()]
+
 def create_app() -> Flask:
     app = Flask(__name__)
     # CORS: for uploads from the Svelte dev server (and later from production hosts).
     # Note: if supports_credentials=True, you MUST NOT use origins="*".
     # We do not rely on cookies here (we use Authorization: Bearer ...), so keep credentials disabled.
-    cors_origins = os.environ.get(
+    app = Flask(__name__)
+
+    cors_origins = env_list(
         "CORS_ORIGINS",
         "http://localhost:5173,http://127.0.0.1:5173"
-    ).split(",")
+    )
 
     CORS(
         app,
-        resources={r"/*": {"origins": cors_origins}},
-        supports_credentials=False,
-        expose_headers=["Content-Disposition"],
+        resources={
+            r"/upload/*": {"origins": cors_origins},
+            r"/delete/*": {"origins": cors_origins},
+            r"/asset/*": {"origins": cors_origins},
+            r"/health": {"origins": cors_origins},
+        },
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
-        methods=["GET", "POST", "OPTIONS", "DELETE"],
+        expose_headers=["Content-Disposition"],
+        supports_credentials=False,
     )
 
     app.logger.setLevel("INFO")  # <— enable INFO
@@ -236,7 +247,7 @@ def create_app() -> Flask:
     app.config["APP_VERSION_SOURCE"] = app_version_source
     logger.info(f"Using app version: {app_version} ({app_version_source})")
 
-    jwt_secret = os.getenv("OLDAP_JWT_SECRET", "You have to change this!!! +D&RWG+")
+    jwt_secret = os.getenv("OLDAP_JWT_SECRET", "You have to change this!!! +D&RWG+").strip()
 
     # ------------------------------------------------------------------
     # Simple auth helper (Bearer <token>)
