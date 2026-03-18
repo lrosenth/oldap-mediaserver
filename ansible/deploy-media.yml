@@ -93,6 +93,9 @@
         owner: root
         group: root
         mode: "0644"
+      notify:
+        - Reload Caddyfile
+        - Restart Caddy container
 
     - name: Render mediaserver.env
       ansible.builtin.template:
@@ -128,3 +131,15 @@
       ansible.builtin.debug:
         var: compose_result
       when: not rollback | bool
+
+  handlers:
+    - name: Reload Caddyfile
+      ansible.builtin.command:
+        cmd: docker exec oldap-media-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+      changed_when: true
+      failed_when: false
+
+    - name: Restart Caddy container
+      ansible.builtin.command:
+        cmd: docker restart oldap-media-caddy
+      changed_when: true

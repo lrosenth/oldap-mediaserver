@@ -13,7 +13,7 @@ ROOT_DIR := $(abspath $(CURDIR)/..)
 
 # Image naming
 IMAGE ?= lrosenth/oldap-mediahelper
-VERSION ?= v0.0.10
+VERSION ?= v0.0.11
 
 .PHONY: run
 run:
