@@ -1,5 +1,6 @@
 import json
 import os
+import pprint
 import shutil
 import uuid
 import subprocess
@@ -389,6 +390,35 @@ def create_app() -> Flask:
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg m4a failed (exit {result.returncode}): {result.stderr}")
 
+    # ------------------------------------------------------------------
+    # Helper: make square video thumbnail with ffmpeg
+    # ------------------------------------------------------------------
+    def create_video_thumbnail_with_ffmpeg(src: Path, dst: Path, size: int) -> None:
+        """Create a square thumbnail from a representative video frame.
+
+        Uses ffmpeg's `thumbnail` filter and pads the result to a square canvas
+        while preserving aspect ratio.
+        """
+        scale_pad = (
+            f"thumbnail,"
+            f"scale={size}:{size}:force_original_aspect_ratio=decrease,"
+            f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2"
+        )
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(src),
+            "-vf", scale_pad,
+            "-frames:v", "1",
+            str(dst),
+        ]
+        app.logger.debug("Running ffmpeg (video thumbnail %s): %s", size, " ".join(cmd))
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg thumbnail {size} failed (exit {result.returncode}): {result.stderr}"
+            )
+
     def copy_file(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
@@ -433,6 +463,7 @@ def create_app() -> Flask:
         derivative_name = None
         original_name = None
         protocol = None
+        requested_derivative = request.args.get("derivative", "").strip()
 
         if claims:
             def _first_claim(v):
@@ -486,9 +517,14 @@ def create_app() -> Flask:
             abort(403, description="Invalid stored path")
 
         if which == "derived":
-            if not derivative_name:
-                abort(404, description="Missing derivativeName")
-            filename = Path(str(derivative_name)).name
+            if requested_derivative:
+                filename = Path(requested_derivative).name
+                if filename != requested_derivative:
+                    abort(403, description="Invalid derivative filename")
+            else:
+                if not derivative_name:
+                    abort(404, description="Missing derivativeName")
+                filename = Path(str(derivative_name)).name
             internal = (IMAGE_ROOT / base_rel / asset_id / "derived" / filename).resolve()
         else:
             if not original_name:
@@ -502,6 +538,13 @@ def create_app() -> Flask:
         except Exception:
             abort(403, description="Resolved path escapes media root")
 
+        app.logger.info(
+            "auth_asset asset_id=%s which=%s requested_derivative=%s resolved=%s",
+            asset_id,
+            which,
+            requested_derivative or "<default>",
+            internal,
+        )
         if not internal.exists() or not internal.is_file():
             abort(404, description="Asset file not found")
 
@@ -614,6 +657,8 @@ def create_app() -> Flask:
         orig_ext = Path(upload_file.filename).suffix or ".dat"
         tmp_path = tmp_dir / f"{identifier}{orig_ext}"
         tmp_path2: Optional[Path] = None
+        thumb128_path: Optional[Path] = None
+        thumb256_path: Optional[Path] = None
 
         # Store original file (as received), sanitized for filename
         original_name = Path(upload_file.filename).name if upload_file.filename else f"{identifier}{orig_ext}"
@@ -635,6 +680,8 @@ def create_app() -> Flask:
             # Single web-friendly derivative
             out_ext = ".mp4"
             out_path = derived_dir / f"web{out_ext}"
+            thumb128_path = derived_dir / "thumb128.jpg"
+            thumb256_path = derived_dir / "thumb256.jpg"
 
         elif media_type == MediaType.AUDIO:
             if target_format == "mp3":
@@ -685,6 +732,8 @@ def create_app() -> Flask:
             elif media_type == MediaType.VIDEO:
                 # Always create a web MP4 derivative for now.
                 convert_to_mp4_with_ffmpeg(tmp_path, out_path)
+                create_video_thumbnail_with_ffmpeg(tmp_path, thumb128_path, 128)
+                create_video_thumbnail_with_ffmpeg(tmp_path, thumb256_path, 256)
 
             elif media_type == MediaType.AUDIO:
                 if target_format == "mp3":
@@ -712,6 +761,10 @@ def create_app() -> Flask:
             # Clean up on failure
             if out_path.exists():
                 out_path.unlink(missing_ok=True)
+            if thumb128_path is not None and thumb128_path.exists():
+                thumb128_path.unlink(missing_ok=True)
+            if thumb256_path is not None and thumb256_path.exists():
+                thumb256_path.unlink(missing_ok=True)
             return jsonify({"error": str(exc)}), 500
         finally:
             # Remove temp file
@@ -724,6 +777,8 @@ def create_app() -> Flask:
         # iiif_base_url is expected to already end with /iiif/3/ (see env default)
         iiif_info_url = f"{iiif_base_url}{iiif_id}/info.json"
         asset_url = f"{media_base_url}asset/{identifier}"
+        thumb128_url = f"{asset_url}?derivative=thumb128.jpg"
+        thumb256_url = f"{asset_url}?derivative=thumb256.jpg"
 
         resource_data : dict[str, str | list[str]] = {
             'dcterms:type': dcterms_type_for_media(media_type),
@@ -746,8 +801,12 @@ def create_app() -> Flask:
         try:
             response = client.create_resource(resource=resource_class, resource_data=resource_data)
         except Exception as exc:
-            # Keep the original, but remove the derived/master file to avoid orphaned derivatives
+            # Keep the original, but remove the derived files to avoid orphaned derivatives
             out_path.unlink(missing_ok=True)
+            if thumb128_path is not None:
+                thumb128_path.unlink(missing_ok=True)
+            if thumb256_path is not None:
+                thumb256_path.unlink(missing_ok=True)
             return jsonify({"error": f"Failed to create OLDAP resource: {exc}"}), 500
 
         return jsonify(
@@ -762,8 +821,11 @@ def create_app() -> Flask:
                 "iiifInfoUrl": iiif_info_url,
                 "assetUrl": asset_url,
                 "storedPath": asset_base_rel.as_posix(),
-            }
-        )
+                "thumb128Name": thumb128_path.name if thumb128_path is not None else None,
+                "thumb256Name": thumb256_path.name if thumb256_path is not None else None,
+                "thumb128Url": thumb128_url if thumb128_path is not None else None,
+                "thumb256Url": thumb256_url if thumb256_path is not None else None,
+            }        )
 
     @app.delete("/upload/<asset_id>")
     def delete(asset_id):
