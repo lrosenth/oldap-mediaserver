@@ -25,7 +25,7 @@ docker-build-local:
 docker-build:
 	docker buildx build \
 		--platform linux/amd64,linux/arm64 \
-		-t lrosenth/oldap-imageserver:v0.1.0 \
+		-t lrosenth/oldap-imageserver:v0.1.2 \
 		-t lrosenth/oldap-imageserver:latest \
 		--push .
 
