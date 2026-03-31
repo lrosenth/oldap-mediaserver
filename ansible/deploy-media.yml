@@ -77,6 +77,7 @@
         - "{{ caddy_data_dir }}"
         - "{{ caddy_config_dir }}"
         - "{{ media_root }}"
+        - "{{ media_root }}/cache"
 
     - name: Render docker-compose.yml
       ansible.builtin.template:

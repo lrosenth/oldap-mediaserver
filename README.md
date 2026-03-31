@@ -95,8 +95,21 @@ make -C imageserver docker-run-local
 docker rm -f oldap-imageserver
 ```
 
+## Cantaloupe cache
+
+Cantaloupe uses a filesystem-backed derivative cache.
+
+- Inside the container, the cache is stored in `/data/images/cache`.
+- In local Docker Compose, this maps to `./data/cache`.
+- In the server deployment, this maps to `<media_root>/cache` (for the current Ansible defaults: `/data/media/cache`).
+
+If you need to purge cached IIIF derivatives after changing image-processing settings or delegate logic, it is safe to remove the cache directory contents while the stack is stopped:
+
+```bash
+rm -rf data/cache/*
+```
+
 
 ## prerequisites
 - docker
 - poetry with export plugin: `poetry self add poetry-plugin-export`
-
