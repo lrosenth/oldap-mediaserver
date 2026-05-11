@@ -1,6 +1,6 @@
 ---
 - name: Deploy OLDAP media stack
-  hosts: mediaserver
+  hosts: "{{ target_hosts | default('mediaserver') }}"
   become: true
 
   tasks:

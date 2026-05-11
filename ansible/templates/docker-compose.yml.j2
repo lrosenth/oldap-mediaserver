@@ -14,6 +14,9 @@ services:
       - "8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+{% for extra_host in container_extra_hosts | default([]) %}
+      - "{{ extra_host }}"
+{% endfor %}
     restart: unless-stopped
     command:
       ["gunicorn",
@@ -40,6 +43,9 @@ services:
       - "8182"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+{% for extra_host in container_extra_hosts | default([]) %}
+      - "{{ extra_host }}"
+{% endfor %}
     restart: unless-stopped
 
   caddy:
