@@ -1,0 +1,22 @@
+# Test deployment target.
+ansible_python_interpreter: /usr/bin/python3.14
+ansible_become_exe: /usr/bin/sudo.ws
+ansible_become_method: sudo
+ansible_become_user: root
+ansible_become_flags: "-H -S"
+
+media_domain: media.home.org
+oldap_api_url: http://api.rosy.home.org
+container_extra_hosts:
+  - "api.rosy.home.org:192.168.1.10"
+  - "app.rosy.home.org:192.168.1.10"
+  - "graphdb.rosy.home.org:192.168.1.10"
+
+# media.home.org is not publicly resolvable, so Caddy must not request a
+# public ACME certificate. The explicit http:// address keeps HTTP available;
+# tls internal enables HTTPS with Caddy's local CA.
+caddy_auto_https: disable_redirects
+caddy_site_addresses:
+  - http://media.home.org
+  - https://media.home.org
+caddy_tls_internal: true

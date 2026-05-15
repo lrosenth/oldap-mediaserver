@@ -30,8 +30,8 @@ Layout (relative to the media root, e.g. `/data/images`):
     original/
         <original filename as uploaded>
     derived/
-        <derivativeName>        # e.g. iiif.jp2 or master.tif
-        (more derivatives later: preview.jpg, thumb.jpg, stream.mp4, ...)
+        <derivativeName>        # e.g. iiif.jp2, master.tif, web.mp4, web.mp3
+        (optional extra derivatives: preview.jpg, thumb128.jpg, thumb256.jpg, ...)
 ```
 
 Notes:
@@ -39,6 +39,8 @@ Notes:
 - `original/` always contains the exact uploaded file.
 - `derived/` contains generated representations used for delivery (IIIF, previews, etc.).
 - For images, the IIIF source file is typically stored as `derived/iiif.jp2` (JPEG2000) or `derived/master.tif` (pyramidal TIFF). Which one is used is declared in the MediaObject.
+- For video, the HTTP delivery derivative is `derived/web.mp4` (H.264/AAC).
+- For audio, the default HTTP delivery derivative is `derived/web.mp3`; `targetFormat=m4a` can produce `derived/web.m4a` when AAC/M4A is preferred.
 
 ## How IIIF resolution works
 
@@ -70,7 +72,7 @@ For image delivery via Cantaloupe, the `shared:MediaObject` (or subclass) must p
 - `shared:assetId` — stable key used in the IIIF URL and for efficient lookup in `oldap-api`
 - `shared:path` — base directory containing the `<assetId>/original` and `<imageId>/derived` folders
 - `shared:derivativeName` — filename of the served file inside `<assetId>/derived/` (e.g. `iiif.jp2` or `master.tif`)
-- `shared:protocol` — typically `iiif` for images (other media may use `http` later)
+- `shared:protocol` — `iiif` for images and `http` for Caddy-served audio/video/document assets
 
 ## Local development notes
 

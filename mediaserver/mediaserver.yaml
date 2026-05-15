@@ -44,7 +44,8 @@ paths:
                   type: string
                   description: |
                     Desired output format. Allowed values depend on detected media type.
-                    image: jp2|tiff|jpeg, video: mp4, audio: m4a|mp3, document: pdf.
+                    image: jp2|tiff|jpeg, video: mp4, audio: mp3|m4a, document: pdf.
+                    For audio, mp3 is the default browser-delivery derivative.
                 attachedToRole:
                   type: array
                   items:
@@ -253,6 +254,7 @@ components:
           type: string
         derivativeName:
           type: string
+          description: Filename inside the asset's derived directory, e.g. iiif.jp2, web.mp4, or web.mp3.
         mediaType:
           type: string
           enum: [image, audio, video, document, other]

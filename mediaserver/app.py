@@ -1,15 +1,12 @@
 import json
 import os
-import pprint
 import shutil
-import uuid
 import subprocess
 import mimetypes
 import re
 from enum import Enum
 from pathlib import Path
 from typing import Optional
-from unittest import case
 from urllib.parse import quote
 
 import jwt
@@ -136,9 +133,9 @@ def validate_target_format(media_type: MediaType, raw: str | None) -> str:
         return fmt
 
     if media_type == MediaType.AUDIO:
-        # Start simple: AAC in an M4A container.
+        # Default to the most broadly compatible browser delivery format.
         allowed = {"m4a", "mp3"}
-        fmt = fmt or "m4a"
+        fmt = fmt or "mp3"
         if fmt not in allowed:
             raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
         return fmt
@@ -372,17 +369,69 @@ def create_app() -> Flask:
 
 
     # ------------------------------------------------------------------
-    # Helper: make M4A (AAC) with ffmpeg
+    # Helpers: validate and transcode audio with ffprobe/ffmpeg
     # ------------------------------------------------------------------
-    def convert_to_m4a_with_ffmpeg(src: Path, dst: Path) -> None:
-        """Create an AAC-in-M4A derivative."""
+    def require_audio_stream_with_ffprobe(src: Path) -> None:
+        """Verify that `src` contains at least one readable audio stream.
+
+        This protects the audio upload path from relying only on MIME type or
+        filename extension detection, both of which can be supplied by clients.
+
+        Raises:
+            RuntimeError: If ffprobe is missing, fails, or finds no audio stream.
+        """
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            str(src),
+        ]
+        app.logger.debug("Running ffprobe (audio stream): %s", " ".join(cmd))
+        try:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except FileNotFoundError as exc:
+            raise RuntimeError("ffprobe is required for audio validation but was not found") from exc
+
+        if result.returncode != 0:
+            raise RuntimeError(f"ffprobe audio validation failed (exit {result.returncode}): {result.stderr}")
+        if "audio" not in {line.strip().lower() for line in result.stdout.splitlines()}:
+            raise RuntimeError("Uploaded audio file does not contain a readable audio stream")
+
+    def convert_to_mp3_with_ffmpeg(src: Path, dst: Path) -> None:
+        """Create an MP3 derivative for broad browser delivery.
+
+        The first audio stream is mapped explicitly and encoded with LAME VBR
+        quality level 2, which is a practical access-copy setting for speech
+        and music while keeping file sizes reasonable.
+        """
         cmd = [
             "ffmpeg",
             "-y",
             "-i", str(src),
+            "-map", "0:a:0",
+            "-vn",
+            "-c:a", "libmp3lame",
+            "-q:a", "2",
+            str(dst),
+        ]
+        app.logger.debug("Running ffmpeg (mp3): %s", " ".join(cmd))
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg mp3 failed (exit {result.returncode}): {result.stderr}")
+
+    def convert_to_m4a_with_ffmpeg(src: Path, dst: Path) -> None:
+        """Create an AAC-in-M4A derivative for clients that prefer AAC."""
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(src),
+            "-map", "0:a:0",
             "-vn",
             "-c:a", "aac",
             "-b:a", "128k",
+            "-movflags", "+faststart",
             str(dst),
         ]
         app.logger.debug("Running ffmpeg (m4a): %s", " ".join(cmd))
@@ -686,10 +735,10 @@ def create_app() -> Flask:
         elif media_type == MediaType.AUDIO:
             if target_format == "mp3":
                 out_ext = ".mp3"
-                out_path = derived_dir / f"audio{out_ext}"
+                out_path = derived_dir / f"web{out_ext}"
             else:
                 out_ext = ".m4a"
-                out_path = derived_dir / f"audio{out_ext}"
+                out_path = derived_dir / f"web{out_ext}"
 
         elif media_type == MediaType.DOCUMENT:
             # For now: keep as-is; derived is a copy for consistent layout
@@ -736,21 +785,9 @@ def create_app() -> Flask:
                 create_video_thumbnail_with_ffmpeg(tmp_path, thumb256_path, 256)
 
             elif media_type == MediaType.AUDIO:
+                require_audio_stream_with_ffprobe(tmp_path)
                 if target_format == "mp3":
-                    # Simple MP3 derivative
-                    cmd = [
-                        "ffmpeg",
-                        "-y",
-                        "-i", str(tmp_path),
-                        "-vn",
-                        "-c:a", "libmp3lame",
-                        "-b:a", "192k",
-                        str(out_path),
-                    ]
-                    app.logger.debug("Running ffmpeg (mp3): %s", " ".join(cmd))
-                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                    if result.returncode != 0:
-                        raise RuntimeError(f"ffmpeg mp3 failed (exit {result.returncode}): {result.stderr}")
+                    convert_to_mp3_with_ffmpeg(tmp_path, out_path)
                 else:
                     convert_to_m4a_with_ffmpeg(tmp_path, out_path)
 

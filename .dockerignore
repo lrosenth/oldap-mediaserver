@@ -1,0 +1,21 @@
+.git
+.gitignore
+.idea
+.venv
+__pycache__
+*.py[cod]
+
+# Local/runtime data must never be sent as Docker build context.
+data
+caddy-conf
+caddy-data
+tars
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# Keep the mediaserver build context small. The imageserver and kakadu-base
+# images have their own Dockerfiles/build contexts.
+imageserver/cantaloupe-5.0.7
+kakadu-base/v8_6_2-01727L
