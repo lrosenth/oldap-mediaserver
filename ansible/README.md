@@ -12,8 +12,8 @@ The inventory also contains a separate test target:
 - HTTPS uses Caddy's internal CA because the host has no public ACME/Let's Encrypt name
 
 ## What gets deployed
-- `lrosenth/oldap-mediahelper`
-- `lrosenth/oldap-imageserver`
+- `lrosenth/oldap-mediahelper:v0.0.12`
+- `lrosenth/oldap-imageserver:v0.1.3`
 - `caddy:2.8`
 
 Caddy exposes ports `80` and `443`.
@@ -176,6 +176,12 @@ Therefore, the test server is deployed only when explicitly requested with:
 ```
 
 ## Optional flags
+- Deploy a specific mediahelper image:
+
+```bash
+ansible-playbook -i inventory.ini deploy-media.yml -K -e oldap_mediahelper_tag=v0.0.12
+```
+
 - Force image refresh:
 
 ```bash

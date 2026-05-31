@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-05-31 23:35
+- Decisions: Pin the production mediahelper deployment to the released `v0.0.12` image instead of relying on a mutable local `latest` tag.
+- Implementation: Updated Ansible defaults and deployment documentation to use `lrosenth/oldap-mediahelper:v0.0.12`.
+- Open: Production still needs to be redeployed or force-pulled so `/status` reports `v0.0.12`.
+- Risks/Assumptions: Docker Hub shows `v0.0.12` and `latest` share the new digest; the observed production `v0.0.11` is assumed to be a stale local image/tag on the host.
+
 ### Update 2026-05-16 00:30
 - Decisions: Created the required project context files before substantial code changes.
 - Implementation: Added stable repository context in `codex.md` and initialized this technical work log.
