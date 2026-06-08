@@ -136,7 +136,9 @@ paths:
     get:
       summary: Resolve derived asset path for Caddy auth_request
       description: |
-        Returns status 204 and sets headers with internal path metadata for non-IIIF assets.
+        Returns status 204 and sets headers with internal path metadata for HTTP assets.
+        IIIF assets are only resolved here when the requested variant is `original`;
+        derived IIIF delivery remains the responsibility of the IIIF image server.
         Optional JWT query token can be supplied via `token`.
         An optional `derivative` query parameter can be used to request a specific file from the
         `derived/` directory instead of the default derivative recorded in OLDAP.
@@ -161,6 +163,13 @@ paths:
           schema:
             type: string
           description: Optional derived filename to resolve instead of the default derivativeName stored in OLDAP (for example `thumb128.jpg` or `thumb256.jpg`). Only valid for derived assets.
+        - name: download
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1']
+          description: When set to `1`, emits an attachment Content-Disposition for original downloads.
       responses:
         '204':
           description: Asset authorized and resolved
@@ -174,6 +183,9 @@ paths:
             X-OLDAP-Content-Disposition:
               schema:
                 type: string
+            X-OLDAP-Cors-Allow-Origin:
+              schema:
+                type: string
         '403':
           description: Forbidden (e.g., invalid protocol/path)
         '404':
@@ -184,7 +196,7 @@ paths:
   /auth/asset/{asset_id}/{which}:
     get:
       summary: Resolve asset path for selected variant
-      description: Same as `/auth/asset/{asset_id}` but explicit variant selection. When `which=derived`, an optional `derivative` query parameter can be used to request a specific file from the `derived/` directory.
+      description: Same as `/auth/asset/{asset_id}` but explicit variant selection. When `which=derived`, an optional `derivative` query parameter can be used to request a specific file from the `derived/` directory. For IIIF assets, only `which=original` is valid on this endpoint.
       tags:
         - auth
       security: []
@@ -212,6 +224,13 @@ paths:
           schema:
             type: string
           description: Optional derived filename to resolve instead of the default derivativeName stored in OLDAP (for example `thumb128.jpg` or `thumb256.jpg`). Only used when `which=derived`.
+        - name: download
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['1']
+          description: When set to `1`, emits an attachment Content-Disposition for original downloads.
       responses:
         '204':
           description: Asset authorized and resolved
@@ -223,6 +242,9 @@ paths:
               schema:
                 type: string
             X-OLDAP-Content-Disposition:
+              schema:
+                type: string
+            X-OLDAP-Cors-Allow-Origin:
               schema:
                 type: string
         '404':

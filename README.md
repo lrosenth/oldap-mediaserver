@@ -74,6 +74,33 @@ For image delivery via Cantaloupe, the `shared:MediaObject` (or subclass) must p
 - `shared:derivativeName` — filename of the served file inside `<assetId>/derived/` (e.g. `iiif.jp2` or `master.tif`)
 - `shared:protocol` — `iiif` for images and `http` for Caddy-served audio/video/document assets
 
+## Original asset downloads
+
+Original files are served through `/asset/<assetId>/original?token=<jwt>`. The token must authorize the asset and include the storage `path`; for original downloads it should also include `originalName`. IIIF media may use this original route, but IIIF derivatives stay on `/iiif/...` and are not served through `/asset/<assetId>` or `/asset/<assetId>/derived`.
+
+Add `download=1` to request an attachment response:
+
+```bash
+curl -I "http://localhost:8088/asset/<assetId>/original?token=<jwt>&download=1"
+```
+
+Expected checks:
+
+- `200 OK` for an authorized original.
+- `Content-Disposition: attachment; filename="<originalName>"` when `download=1` is present.
+- `Access-Control-Allow-Origin` is present only for configured `CORS_ORIGINS`.
+- `OPTIONS /asset/<assetId>/original` accepts `GET, HEAD, OPTIONS` for configured browser origins.
+- IIIF originals are allowed through `/asset/<assetId>/original`; IIIF derived delivery remains blocked on `/asset/<assetId>` and `/asset/<assetId>/derived`.
+
+Example CORS preflight check:
+
+```bash
+curl -i -X OPTIONS \
+  -H "Origin: http://localhost:5173" \
+  -H "Access-Control-Request-Method: GET" \
+  "http://localhost:8088/asset/<assetId>/original?token=<jwt>"
+```
+
 ## Local development notes
 
 When `oldap-api` runs on the host machine (not in Docker) and the image server runs in Docker, **do not use** `http://localhost:8000` inside the container.

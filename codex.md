@@ -27,6 +27,8 @@ Images are served through IIIF derivatives. Video and audio use HTTP delivery th
 - Keep originals bit-identical to the uploaded file where possible.
 - Store delivery files in `derived/` and record the selected filename in `shared:derivativeName`.
 - Use `shared:protocol = "iiif"` for images and `"http"` for media served by Caddy.
+- `/asset/<assetId>/original` may serve authorized originals for both HTTP and IIIF media. IIIF derived delivery remains blocked on `/asset/<assetId>` and `/asset/<assetId>/derived`; those derivatives are served through Cantaloupe.
+- Use `download=1` on original asset URLs when callers need `Content-Disposition: attachment`; otherwise originals remain inline.
 - For audio delivery, prefer MP3 as the default derivative because it is the broadest browser-compatible serving format.
 - Prefer explicit helpers for conversion logic and keep public functions/classes documented with concise docstrings.
 - Update `CODEX_LOG.md` after relevant code changes.

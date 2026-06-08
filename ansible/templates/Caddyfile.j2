@@ -20,29 +20,51 @@
 
     handle_path /asset/* {
         route {
-            @asset_methods not method GET HEAD
+            @asset_preflight method OPTIONS
+            handle @asset_preflight {
+                rewrite * /auth/asset{http.request.uri}
+                reverse_proxy mediaserver:8000
+            }
+
+            @asset_methods not method GET HEAD OPTIONS
             respond @asset_methods "method not allowed" 405
 
+            request_header -X-Oldap-Internal-Path
+            request_header -X-Oldap-Content-Type
+            request_header -X-Oldap-Content-Disposition
+            request_header -X-Oldap-Cors-Allow-Origin
             header -X-Oldap-Internal-Path
             header -X-Oldap-Content-Type
             header -X-Oldap-Content-Disposition
+            header -X-Oldap-Cors-Allow-Origin
 
             forward_auth mediaserver:8000 {
                 uri /auth/asset{http.request.uri}
-                copy_headers X-Oldap-Internal-Path X-Oldap-Content-Type X-Oldap-Content-Disposition
+                copy_headers X-Oldap-Internal-Path X-Oldap-Content-Type X-Oldap-Content-Disposition X-Oldap-Cors-Allow-Origin
             }
 
             @no_internal not header X-Oldap-Internal-Path *
             respond @no_internal "forbidden" 403
 
-            rewrite * {http.request.header.X-Oldap-Internal-Path}
-            root * /
-            file_server
-
             header {
                 Content-Type "{http.request.header.X-Oldap-Content-Type}"
                 Content-Disposition "{http.request.header.X-Oldap-Content-Disposition}"
+                defer
             }
+
+            @asset_cors header X-Oldap-Cors-Allow-Origin *
+            header @asset_cors {
+                Access-Control-Allow-Origin "{http.request.header.X-Oldap-Cors-Allow-Origin}"
+                Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+                Access-Control-Allow-Headers "Authorization, Content-Type"
+                Access-Control-Expose-Headers "Content-Disposition"
+                Vary "Origin"
+                defer
+            }
+
+            rewrite * {http.request.header.X-Oldap-Internal-Path}
+            root * /
+            file_server
         }
     }
 

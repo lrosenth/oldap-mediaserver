@@ -205,6 +205,12 @@ def env_list(name: str, default: str = "") -> list[str]:
     value = os.environ.get(name, default)
     return [v.strip() for v in value.split(",") if v.strip()]
 
+def content_disposition_header(disposition: str, filename: str) -> str:
+    """Build a safe Content-Disposition value for Caddy-served assets."""
+    cleaned = str(filename).replace("\r", "").replace("\n", "")
+    quoted_filename = cleaned.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{disposition}; filename="{quoted_filename}"'
+
 def create_app() -> Flask:
     app = Flask(__name__)
     # CORS: for uploads from the Svelte dev server (and later from production hosts).
@@ -222,7 +228,8 @@ def create_app() -> Flask:
         resources={
             r"/upload/*": {"origins": cors_origins},
             r"/delete/*": {"origins": cors_origins},
-            r"/asset/*": {"origins": cors_origins},
+            r"/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
+            r"/auth/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
             r"/health": {"origins": cors_origins},
         },
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -246,6 +253,17 @@ def create_app() -> Flask:
     logger.info(f"Using app version: {app_version} ({app_version_source})")
 
     jwt_secret = os.getenv("OLDAP_JWT_SECRET", "You have to change this!!! +D&RWG+").strip()
+
+    def allowed_cors_origin() -> Optional[str]:
+        """Return the response origin for this request when CORS is allowed."""
+        origin = request.headers.get("Origin", "").strip()
+        if not origin:
+            return None
+        if "*" in cors_origins:
+            return "*"
+        if origin in cors_origins:
+            return origin
+        return None
 
     # ------------------------------------------------------------------
     # Simple auth helper (Bearer <token>)
@@ -553,8 +571,11 @@ def create_app() -> Flask:
             original_name = _first(mo.get("shared:originalName") or mo.get("originalName"))
             protocol = _first(mo.get("shared:protocol") or mo.get("protocol"))
 
-        # Only non-IIIF assets should be served here
-        if protocol and str(protocol).lower() != "http":
+        # IIIF media may expose the uploaded original through /asset/.../original
+        # for download, while derived IIIF delivery stays delegated to Cantaloupe.
+        if protocol and str(protocol).lower() == "iiif" and which != "original":
+            abort(403, description="IIIF derivatives are not served via /asset")
+        if protocol and str(protocol).lower() not in ("http", "iiif"):
             abort(403, description="Asset not served via HTTP")
 
         if not resolved_path:
@@ -603,7 +624,10 @@ def create_app() -> Flask:
         resp = app.response_class(status=204)
         resp.headers["X-OLDAP-Internal-Path"] = str(internal)
         resp.headers["X-OLDAP-Content-Type"] = mime
-        resp.headers["X-OLDAP-Content-Disposition"] = f'inline; filename="{filename}"'
+        disposition = "attachment" if request.args.get("download") == "1" else "inline"
+        resp.headers["X-OLDAP-Content-Disposition"] = content_disposition_header(disposition, filename)
+        if cors_origin := allowed_cors_origin():
+            resp.headers["X-OLDAP-Cors-Allow-Origin"] = cors_origin
         return resp
 
     # ------------------------------------------------------------------

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "oldap-mediaserver"
-version = "0.1.4"
+version = "0.1.5"
 description = "An upload server for cantaloupe "
 authors = ["Lukas Rosenthaler <lukas.rosenthaler@unibas.ch>"]
 readme = "README.md"

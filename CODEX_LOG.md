@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-06-08 17:13
+- Decisions: Allow authorized `/asset/<assetId>/original` downloads for IIIF media while keeping IIIF derived delivery blocked on `/asset`; reuse the configured CORS origin list instead of opening asset delivery to arbitrary origins.
+- Implementation: Updated Flask asset auth to allow IIIF originals, emit attachment disposition for `download=1`, and pass a checked CORS origin to Caddy; updated Caddy and Ansible templates for OPTIONS preflight, final asset CORS headers, and request-header spoofing protection; documented curl checks and added focused pytest coverage.
+- Open: End-to-end browser/fetch verification still needs the deployed stack or local Docker Compose with real OLDAP-issued tokens and media files.
+- Risks/Assumptions: Caddy `forward_auth` continues to be the authorization gate for GET/HEAD asset delivery; OPTIONS only returns CORS preflight metadata and does not expose files.
+
 ### Update 2026-05-31 23:35
 - Decisions: Pin the production mediahelper deployment to the released `v0.0.12` image instead of relying on a mutable local `latest` tag.
 - Implementation: Updated Ansible defaults and deployment documentation to use `lrosenth/oldap-mediahelper:v0.0.12`.
