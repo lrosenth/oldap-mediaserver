@@ -853,6 +853,7 @@ def create_app() -> Flask:
             'shared:derivativeName': derivative_name,
             # Store the logical folder (relative to IMAGE_ROOT) for later retrieval / housekeeping
             'shared:path': asset_base_rel.as_posix(),
+            'shared:mediaAccessMode': "local",
         }
         if roles:
             resource_data['attachedToRole'] = roles

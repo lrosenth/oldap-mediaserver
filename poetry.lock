@@ -569,14 +569,14 @@ toml = ["tomli ; python_full_version <= \"3.11.0a6\""]
 
 [[package]]
 name = "elementpath"
-version = "5.1.1"
+version = "5.1.2"
 description = "XPath 1.0/2.0/3.0/3.1 parsers and selectors for ElementTree and lxml"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "elementpath-5.1.1-py3-none-any.whl", hash = "sha256:57637359065e60654422d8474c1749b09bb21348012b7197f868027e3c09c9b9"},
-    {file = "elementpath-5.1.1.tar.gz", hash = "sha256:c4d1bd6aed987258354d0ea004d965eb0a6818213326bd4fd9bde5dacdb20277"},
+    {file = "elementpath-5.1.2-py3-none-any.whl", hash = "sha256:dd35750b3f0d2b4df553d5ef2101011cde6a0e8080c51110765b5853e02aac8e"},
+    {file = "elementpath-5.1.2.tar.gz", hash = "sha256:43d67a38700153eb45349c6e14a4d4b3a06e390c31df06539f730a96baf9a7fc"},
 ]
 
 [package.extras]
@@ -609,14 +609,14 @@ dotenv = ["python-dotenv"]
 
 [[package]]
 name = "flask-cors"
-version = "6.0.4"
+version = "6.0.5"
 description = "A Flask extension simplifying CORS support"
 optional = false
 python-versions = "<4.0,>=3.9"
 groups = ["main"]
 files = [
-    {file = "flask_cors-6.0.4-py3-none-any.whl", hash = "sha256:adb537b3923788b327187dd375ddb09be4ed0b5595cab016bac2ed30a0de7b79"},
-    {file = "flask_cors-6.0.4.tar.gz", hash = "sha256:cf3db91a0874aecde0a276565bf4adf4a458edcfd42e668fb0a260549f129317"},
+    {file = "flask_cors-6.0.5-py3-none-any.whl", hash = "sha256:68fcf75693e961f3af26683b23c4b9a8fb6b64de17d20d0c37b95e8de7ab2ed8"},
+    {file = "flask_cors-6.0.5.tar.gz", hash = "sha256:30c5031552cd59f620ac0c8211dac45b345d3b2df310e7721879e4f46ef9c601"},
 ]
 
 [package.dependencies]
@@ -933,14 +933,14 @@ files = [
 
 [[package]]
 name = "oldaplib"
-version = "0.6.15"
+version = "0.6.19"
 description = "Open Media Access Server Library (Linked Open Data middleware/RESTApi)"
 optional = false
 python-versions = "<4.0,>=3.12"
 groups = ["main"]
 files = [
-    {file = "oldaplib-0.6.15-py3-none-any.whl", hash = "sha256:9e1c3e8dd5deb4bbec3043d4c78cd0bdd03190755fd70a9acecada5780274723"},
-    {file = "oldaplib-0.6.15.tar.gz", hash = "sha256:ef10525792158dc7c13b6543b1a8df48a5e991803d4bad3a50278ce7995c12ec"},
+    {file = "oldaplib-0.6.19-py3-none-any.whl", hash = "sha256:01918fe8b04ceea3767fa9704e2ae49439109ddbbaf95d17e90eef2244fa4cac"},
+    {file = "oldaplib-0.6.19.tar.gz", hash = "sha256:613bdd2f0433b5179b93efb329cd12b0226e2b9990265c05495cebd8c74df37c"},
 ]
 
 [package.dependencies]
@@ -1158,14 +1158,14 @@ files = [
 
 [[package]]
 name = "pytest"
-version = "9.0.3"
+version = "9.1.0"
 description = "pytest: simple powerful testing with Python"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "pytest-9.0.3-py3-none-any.whl", hash = "sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9"},
-    {file = "pytest-9.0.3.tar.gz", hash = "sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c"},
+    {file = "pytest-9.1.0-py3-none-any.whl", hash = "sha256:8ebb0e7888bdf2bdfc602ec51f8f62d50200af37356c74e503c79a94f5c81f32"},
+    {file = "pytest-9.1.0.tar.gz", hash = "sha256:41dd9148c08072446394cefd3d79701701335a9f4cae69ba92e39f6c7f5c061c"},
 ]
 
 [package.dependencies]
