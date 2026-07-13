@@ -41,6 +41,7 @@ Notes:
 - For images, the IIIF source file is typically stored as `derived/iiif.jp2` (JPEG2000) or `derived/master.tif` (pyramidal TIFF). Which one is used is declared in the MediaObject.
 - For video, the HTTP delivery derivative is `derived/web.mp4` (H.264/AAC).
 - For audio, the default HTTP delivery derivative is `derived/web.mp3`; `targetFormat=m4a` can produce `derived/web.m4a` when AAC/M4A is preferred.
+- For PDF documents, the HTTP delivery derivative is `derived/document.pdf`. The original filename is preserved in `original/`; the derivative name is stable for frontend integrations.
 
 ## How IIIF resolution works
 
@@ -73,6 +74,31 @@ For image delivery via Cantaloupe, the `shared:MediaObject` (or subclass) must p
 - `shared:path` — base directory containing the `<assetId>/original` and `<imageId>/derived` folders
 - `shared:derivativeName` — filename of the served file inside `<assetId>/derived/` (e.g. `iiif.jp2` or `master.tif`)
 - `shared:protocol` — `iiif` for images and `http` for Caddy-served audio/video/document assets
+
+## PDF document uploads
+
+The upload helper treats documents as **PDF-only** assets. A document upload is accepted when media detection identifies a PDF and the stored temporary file contains a PDF header plus EOF marker. This intentionally avoids accepting arbitrary office/document formats until a real conversion and security policy exists.
+
+For a successful PDF upload, the media server creates the same OLDAP-backed asset structure used by the other local media types:
+
+```text
+<projectShortName>/document/<optional/sub/path>/<assetId>/
+    original/
+        <uploaded filename>
+    derived/
+        document.pdf
+```
+
+The created MediaObject uses these integration-relevant values:
+
+- `dcterms:type = dcmitype:Text`
+- `shared:protocol = http`
+- `shared:derivativeName = document.pdf`
+- `shared:originalMimeType = application/pdf`
+- `shared:serverUrl = MEDIA_BASE_URL`
+- `shared:mediaAccessMode = local`
+
+The upload response also includes `mediaType: "document"`, `originalMimeType: "application/pdf"`, `dctermsType: "dcmitype:Text"`, `protocol: "http"`, `assetUrl`, and `derivativeName: "document.pdf"`. Frontends such as FasnachtsPage should render PDF documents from `assetUrl` through the normal `/asset/<assetId>` path. IIIF is not involved for PDF documents. Use `/asset/<assetId>/original?download=1` only when the unchanged original file should be downloaded explicitly.
 
 ## Original asset downloads
 
@@ -114,6 +140,9 @@ The `imageserver/Makefile` targets `docker-run` and `docker-run-local` set this 
 ### Common Docker commands
 
 ```bash
+# build the Flask media helper with a tiny Dockerfile-specific context
+make -C mediaserver docker-build-local
+
 # (re)build local multi-arch image
 make -C imageserver docker-build-local
 
@@ -123,6 +152,12 @@ make -C imageserver docker-run-local
 # stop/remove container
 docker rm -f oldap-imageserver
 ```
+
+The media helper Dockerfile uses the repository root as its build context only
+to read `pyproject.toml` and `poetry.lock`. `mediaserver/Dockerfile.dockerignore`
+whitelists just those manifests and the helper source files, so local media
+data, tar archives, Caddy runtime state, Cantaloupe bundles, and the Git object
+store are not sent to Docker during the media helper build.
 
 ## Cantaloupe cache
 

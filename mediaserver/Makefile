@@ -8,12 +8,13 @@ help:
 	@echo "  docker-build      Build and push base image for kakadu"
 	@echo "  docker-run        Run docker image"
 
-# Repo root (pyproject.toml lives one level up)
+# Repo root (pyproject.toml lives one level up). The media helper Dockerfile
+# has its own .dockerignore file, so this context stays intentionally tiny.
 ROOT_DIR := $(abspath $(CURDIR)/..)
 
 # Image naming
 IMAGE ?= lrosenth/oldap-mediahelper
-VERSION ?= v0.0.14
+VERSION ?= v0.0.16
 
 .PHONY: run
 run:

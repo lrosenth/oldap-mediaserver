@@ -42,6 +42,9 @@ oldap_api_url = os.environ.get("OLDAP_API_URL", "http://localhost:8000").strip()
 IMAGE_ROOT = Path(imgdir)   # shared volume with Cantaloupe
 IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
+DOCUMENT_DERIVATIVE_NAME = "document.pdf"
+PDF_MIME_TYPE = "application/pdf"
+
 class MediaType(str, Enum):
     IMAGE = "image"
     AUDIO = "audio"
@@ -89,7 +92,7 @@ def detect_media_type(upload_file) -> MediaType:
         return MediaType.AUDIO
     if mt.startswith("video/"):
         return MediaType.VIDEO
-    if mt == "application/pdf":
+    if mt == PDF_MIME_TYPE:
         return MediaType.DOCUMENT
 
     # Fallback: guess from filename
@@ -101,7 +104,7 @@ def detect_media_type(upload_file) -> MediaType:
         return MediaType.AUDIO
     if guessed.startswith("video/"):
         return MediaType.VIDEO
-    if guessed == "application/pdf":
+    if guessed == PDF_MIME_TYPE:
         return MediaType.DOCUMENT
 
     return MediaType.OTHER
@@ -153,6 +156,42 @@ def validate_target_format(media_type: MediaType, raw: str | None) -> str:
 # ------------------------------------------------------------
 # Metadata helpers
 # ------------------------------------------------------------
+
+def require_valid_pdf(src: Path) -> None:
+    """Validate that a stored upload looks like a PDF document.
+
+    This is intentionally a lightweight upload gate rather than a repair or
+    normalization step. It catches common MIME/extension spoofing mistakes
+    without adding a PDF toolchain dependency to the media helper runtime.
+
+    Args:
+        src: Path to the uploaded temporary file.
+
+    Raises:
+        ValueError: If the file does not contain a PDF header and EOF marker.
+    """
+    try:
+        with src.open("rb") as handle:
+            header = handle.read(1024)
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(size - 4096, 0), os.SEEK_SET)
+            tail = handle.read()
+    except OSError as exc:
+        raise ValueError(f"Could not read uploaded PDF: {exc}") from exc
+
+    if b"%PDF-" not in header:
+        raise ValueError("Uploaded document is not a PDF file")
+    if b"%%EOF" not in tail:
+        raise ValueError("Uploaded PDF is incomplete or malformed")
+
+
+def original_mime_type_for_media(media_type: MediaType, upload_file) -> str:
+    """Return the MIME type recorded on the MediaObject for an upload."""
+    if media_type == MediaType.DOCUMENT:
+        return PDF_MIME_TYPE
+    return upload_file.mimetype or "application/octet-stream"
+
 
 def dcterms_type_for_media(media_type: MediaType) -> str:
     """Return a DCMI Type IRI (as QName string) suitable for dcterms:type."""
@@ -719,6 +758,7 @@ def create_app() -> Flask:
         # Build storage layout for this asset
         asset_base_rel = Path(projectShortName) / media_type.value / safe_subpath(fpath)
         asset_root = IMAGE_ROOT / asset_base_rel / identifier
+        asset_root_existed = asset_root.exists()
 
         original_dir = asset_root / "original"
         derived_dir = asset_root / "derived"
@@ -765,9 +805,9 @@ def create_app() -> Flask:
                 out_path = derived_dir / f"web{out_ext}"
 
         elif media_type == MediaType.DOCUMENT:
-            # For now: keep as-is; derived is a copy for consistent layout
-            out_ext = Path(upload_file.filename).suffix or ".pdf"
-            out_path = derived_dir / f"document{out_ext}"
+            # PDF documents are not transformed for now; the derivative is a
+            # stable access copy with a canonical name for frontend consumers.
+            out_path = derived_dir / DOCUMENT_DERIVATIVE_NAME
 
         else:
             # Fallback: just store a derived copy
@@ -777,8 +817,16 @@ def create_app() -> Flask:
         # This is the filename inside <imageId>/derived/ that the delegate should serve
         derivative_name = out_path.name
 
-        # Save uploaded file (tmp) and store original
+        # Save uploaded file (tmp), validate document uploads, and store original.
         upload_file.save(tmp_path)
+        if media_type == MediaType.DOCUMENT:
+            try:
+                require_valid_pdf(tmp_path)
+            except ValueError as exc:
+                tmp_path.unlink(missing_ok=True)
+                if not asset_root_existed:
+                    shutil.rmtree(asset_root, ignore_errors=True)
+                return jsonify({"message": str(exc)}), 400
         copy_file(tmp_path, original_path)
 
         try:
@@ -815,9 +863,13 @@ def create_app() -> Flask:
                 else:
                     convert_to_m4a_with_ffmpeg(tmp_path, out_path)
 
-            else:
-                # DOCUMENT / OTHER: just keep a derived copy for now
+            elif media_type == MediaType.DOCUMENT:
+                # Keep a PDF access copy in derived/ so /asset/<assetId>
+                # behaves exactly like the other HTTP-delivered media types.
                 copy_file(tmp_path, out_path)
+
+            else:
+                raise ValueError(f"Unsupported media type: {media_type.value}")
         except Exception as exc:
             # Clean up on failure
             if out_path.exists():
@@ -844,7 +896,7 @@ def create_app() -> Flask:
         resource_data : dict[str, str | list[str]] = {
             'dcterms:type': dcterms_type_for_media(media_type),
             'shared:originalName': upload_file.filename,
-            'shared:originalMimeType': upload_file.mimetype,
+            'shared:originalMimeType': original_mime_type_for_media(media_type, upload_file),
             # For images, serverUrl is the IIIF base; for other media, it is the Caddy base.
             'shared:serverUrl': iiif_base_url if media_type == MediaType.IMAGE else media_base_url,
             # New canonical key
@@ -878,8 +930,11 @@ def create_app() -> Flask:
                 "imageId": identifier,  # backwards compatibility
                 "iri": response['iri'],
                 "originalName": upload_file.filename,
+                "originalMimeType": original_mime_type_for_media(media_type, upload_file),
                 "derivativeName": derivative_name,
                 "mediaType": media_type.value,
+                "dctermsType": dcterms_type_for_media(media_type),
+                "protocol": protocol_for_media(media_type),
                 "iiifInfoUrl": iiif_info_url,
                 "assetUrl": asset_url,
                 "storedPath": asset_base_rel.as_posix(),

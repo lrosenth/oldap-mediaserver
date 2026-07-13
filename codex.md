@@ -9,6 +9,7 @@
 - `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to Cantaloupe and `/asset/*` through Flask `forward_auth` before serving static files from the shared media volume.
 - `imageserver/` contains the Cantaloupe image server configuration and bundled runtime assets.
 - `mediaserver/Dockerfile` builds the upload helper runtime and installs `ffmpeg` for audio/video derivatives plus `libvips` for image derivatives.
+- `mediaserver/Dockerfile.dockerignore` keeps media-helper builds small even though the Dockerfile uses the repository root context for `pyproject.toml` and `poetry.lock`; only the dependency manifests and helper source files should enter that build context.
 
 ## Storage Model
 Assets are stored below the media root as:
@@ -21,12 +22,13 @@ Assets are stored below the media root as:
         <delivery derivative>
 ```
 
-Images are served through IIIF derivatives. Video and audio use HTTP delivery through Caddy and keep originals under `original/` with web derivatives under `derived/`. Video uses `web.mp4`; audio defaults to `web.mp3` and may use `web.m4a` when `targetFormat=m4a` is explicitly requested.
+Images are served through IIIF derivatives. Video, audio, and PDF documents use HTTP delivery through Caddy and keep originals under `original/` with access copies under `derived/`. Video uses `web.mp4`; audio defaults to `web.mp3` and may use `web.m4a` when `targetFormat=m4a` is explicitly requested. Documents are currently PDF-only and use the stable derivative name `document.pdf`.
 
 ## Development Conventions
 - Keep originals bit-identical to the uploaded file where possible.
 - Store delivery files in `derived/` and record the selected filename in `shared:derivativeName`.
 - Use `shared:protocol = "iiif"` for images and `"http"` for media served by Caddy.
+- PDF document uploads are stored as `mediaType=document`, `dcterms:type = dcmitype:Text`, `shared:protocol = "http"`, and `shared:derivativeName = "document.pdf"`; frontends should render them via `assetUrl` rather than IIIF.
 - `/asset/<assetId>/original` may serve authorized originals for both HTTP and IIIF media. IIIF derived delivery remains blocked on `/asset/<assetId>` and `/asset/<assetId>/derived`; those derivatives are served through Cantaloupe.
 - Use `download=1` on original asset URLs when callers need `Content-Disposition: attachment`; otherwise originals remain inline.
 - For audio delivery, prefer MP3 as the default derivative because it is the broadest browser-compatible serving format.

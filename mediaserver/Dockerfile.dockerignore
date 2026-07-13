@@ -1,0 +1,17 @@
+# Keep the media helper build context intentionally tiny.
+#
+# The Dockerfile is run with the repository root as context so it can export
+# runtime dependencies from pyproject.toml/poetry.lock, but the image only needs
+# the dependency manifests and the Flask helper sources below.
+**
+
+!pyproject.toml
+!poetry.lock
+
+!mediaserver/
+!mediaserver/Dockerfile
+!mediaserver/Dockerfile.dockerignore
+!mediaserver/Makefile
+!mediaserver/__init__.py
+!mediaserver/app.py
+!mediaserver/oldap_client.py

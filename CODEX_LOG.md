@@ -1,5 +1,23 @@
 # CODEX_LOG
 
+### Update 2026-07-13 14:34
+- Decisions: Preserve any pre-existing asset directory when rejecting an invalid PDF upload that reuses an `assetId`.
+- Implementation: Limited invalid-PDF cleanup to asset directories created by the current upload attempt and added a regression test for existing-asset preservation.
+- Open: None for this cleanup fix.
+- Risks/Assumptions: Existing upload semantics still allow callers to provide explicit identifiers; this change only prevents the new reject path from deleting prior files.
+
+### Update 2026-07-01 18:44
+- Decisions: Keep the media-helper Dockerfile on the repository-root context for Poetry manifest access, but make the effective context whitelist-only for this Dockerfile.
+- Implementation: Added `mediaserver/Dockerfile.dockerignore` to send only `pyproject.toml`, `poetry.lock`, and media-helper source files; documented the tiny-context build path in Dockerfile, Makefile, README, and project context.
+- Open: Full image build/push still depends on Docker Hub/base-image availability and the existing Python dependency install.
+- Risks/Assumptions: Docker BuildKit/buildx honors Dockerfile-specific ignore files; the root `.dockerignore` remains as a broader fallback for older build flows.
+
+### Update 2026-07-01 11:02
+- Decisions: Treat documents as PDF-only assets for now; keep the original bit-identical and expose a stable `derived/document.pdf` HTTP access copy instead of involving IIIF or accepting arbitrary office formats.
+- Implementation: Added lightweight PDF validation, canonical document derivative naming, normalized PDF MIME metadata, upload response fields for `dctermsType`/`protocol`, focused PDF upload/auth tests, and synchronized README/OpenAPI/project context for FasnachtsPage integration.
+- Open: End-to-end browser rendering in FasnachtsPage still needs a frontend integration pass and deployed media-server verification with real OLDAP-issued access tokens.
+- Risks/Assumptions: PDF validation is an upload gate based on header/EOF markers, not full PDF repair or sanitization; richer document formats should wait for an explicit conversion/security design.
+
 ### Update 2026-06-08 17:13
 - Decisions: Allow authorized `/asset/<assetId>/original` downloads for IIIF media while keeping IIIF derived delivery blocked on `/asset`; reuse the configured CORS origin list instead of opening asset delivery to arbitrary origins.
 - Implementation: Updated Flask asset auth to allow IIIF originals, emit attachment disposition for `download=1`, and pass a checked CORS origin to Caddy; updated Caddy and Ansible templates for OPTIONS preflight, final asset CORS headers, and request-header spoofing protection; documented curl checks and added focused pytest coverage.

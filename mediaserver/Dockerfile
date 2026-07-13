@@ -6,6 +6,8 @@ FROM lrosenth/kakadu-base:latest AS kakadu-base
 # --- Stage 1: export Python deps from Poetry (runs on a stable Python version) ---
 # IMPORTANT: This Dockerfile expects the *build context* to be the repository root
 # (the directory that contains `pyproject.toml` / `poetry.lock`).
+# `mediaserver/Dockerfile.dockerignore` keeps that root context limited to the
+# dependency manifests and the media helper source files.
 # Build from repo root like:
 #   docker build -f mediaserver/Dockerfile -t <tag> .
 FROM python:3.12-slim AS requirements

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OLDAP Media Server API
-  version: 1.0.0
+  version: 0.0.16
   description: OpenAPI definition generated from routes in mediaserver/app.py.
 servers:
   - url: http://localhost:8000
@@ -14,6 +14,8 @@ paths:
       description: |
         Uploads a file, generates a derived asset based on media type/target format,
         stores files on disk, and creates a MediaObject in OLDAP.
+        Documents are currently PDF-only. A PDF document is stored unchanged as
+        the original file and copied to `derived/document.pdf` for HTTP delivery.
       tags:
         - upload
       requestBody:
@@ -46,6 +48,8 @@ paths:
                     Desired output format. Allowed values depend on detected media type.
                     image: jp2|tiff|jpeg, video: mp4, audio: mp3|m4a, document: pdf.
                     For audio, mp3 is the default browser-delivery derivative.
+                    For documents, pdf is the only accepted value and produces
+                    the stable derivative filename `document.pdf`.
                 attachedToRole:
                   type: array
                   items:
@@ -274,16 +278,28 @@ components:
           type: string
         originalName:
           type: string
+        originalMimeType:
+          type: string
+          description: MIME type recorded on the MediaObject. PDF document uploads are normalized to application/pdf.
         derivativeName:
           type: string
-          description: Filename inside the asset's derived directory, e.g. iiif.jp2, web.mp4, or web.mp3.
+          description: Filename inside the asset's derived directory, e.g. iiif.jp2, web.mp4, web.mp3, or document.pdf.
         mediaType:
           type: string
           enum: [image, audio, video, document, other]
+        dctermsType:
+          type: string
+          description: DCMI Type QName written to the MediaObject, e.g. dcmitype:Text for PDF documents.
+        protocol:
+          type: string
+          enum: [iiif, http, custom]
+          description: Delivery protocol written to the MediaObject. PDF documents use http.
         iiifInfoUrl:
           type: string
+          description: IIIF info URL for image clients. Non-image clients should use assetUrl.
         assetUrl:
           type: string
+          description: HTTP asset URL for Caddy-served audio, video, and PDF documents.
         storedPath:
           type: string
         thumb128Name:
@@ -308,8 +324,11 @@ components:
         - imageId
         - iri
         - originalName
+        - originalMimeType
         - derivativeName
         - mediaType
+        - dctermsType
+        - protocol
         - iiifInfoUrl
         - assetUrl
         - storedPath
