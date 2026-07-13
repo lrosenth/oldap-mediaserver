@@ -1,5 +1,17 @@
 # CODEX_LOG
 
+### Update 2026-07-14 00:35
+- Decisions: Treat every asset identifier as a bounded URL-safe filesystem segment and atomically reserve each asset directory before writing; duplicate identifiers are conflicts rather than overwrite requests.
+- Implementation: Added NanoID-compatible URL-safe identifier validation to upload/auth/delete paths, reject symlink-resolved upload paths outside the media root, return `409 Conflict` for existing asset directories, clean failed storage/conversion/registration and partial directory initialization for all media types, closed Poppler-rendered images on all conversion exits, and added traversal/URL/collision/I/O regression tests plus API documentation.
+- Open: None for the identifier and collision invariants.
+- Risks/Assumptions: Existing clients that intentionally reused an `assetId` must now delete the old asset first or submit a new identifier; legacy non-traversing identifiers remain addressable through auth/delete even when they do not meet the stricter new-upload character set.
+
+### Update 2026-07-13 23:56
+- Decisions: Reuse the video thumbnail contract for PDFs; manage `pdf2image` and Pillow through Poetry while supplying native Poppler only inside the Docker runtime.
+- Implementation: Rendered the first PDF page at bounded size and timeout, generated square `thumb128.jpg`/`thumb256.jpg` derivatives, returned existing thumbnail fields for documents, added cleanup/error coverage, installed `poppler-utils` in the image, and synchronized README/OpenAPI/project context.
+- Open: FasnachtsPage still needs to consume `thumb256Url` (or construct the equivalent authorized derivative URL) in document overview cards.
+- Risks/Assumptions: PDF thumbnail generation remains synchronous; unusually complex PDFs may hit the 30-second render timeout and be rejected without creating an OLDAP object.
+
 ### Update 2026-07-13 14:34
 - Decisions: Preserve any pre-existing asset directory when rejecting an invalid PDF upload that reuses an `assetId`.
 - Implementation: Limited invalid-PDF cleanup to asset directories created by the current upload attempt and added a regression test for existing-asset preservation.

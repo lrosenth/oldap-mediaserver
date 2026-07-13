@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OLDAP Media Server API
-  version: 0.0.16
+  version: 0.0.17
   description: OpenAPI definition generated from routes in mediaserver/app.py.
 servers:
   - url: http://localhost:8000
@@ -15,7 +15,8 @@ paths:
         Uploads a file, generates a derived asset based on media type/target format,
         stores files on disk, and creates a MediaObject in OLDAP.
         Documents are currently PDF-only. A PDF document is stored unchanged as
-        the original file and copied to `derived/document.pdf` for HTTP delivery.
+        the original file, copied to `derived/document.pdf` for HTTP delivery,
+        and rendered from its first page as 128px and 256px JPEG thumbnails.
       tags:
         - upload
       requestBody:
@@ -41,7 +42,10 @@ paths:
                   description: Relative subpath under the project/media-type root.
                 identifier:
                   type: string
-                  description: Asset identifier. If omitted, server generates one.
+                  description: |
+                    Asset identifier. If omitted, the server generates one. Explicit
+                    identifiers must contain 1-128 URL-safe characters
+                    (`A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `-`) and must not already exist.
                 targetFormat:
                   type: string
                   description: |
@@ -82,6 +86,12 @@ paths:
                 $ref: '#/components/schemas/MessageError'
         '404':
           description: Project/resource lookup failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+        '409':
+          description: The requested asset identifier already exists
           content:
             application/json:
               schema:
@@ -305,19 +315,19 @@ components:
         thumb128Name:
           type: string
           nullable: true
-          description: Filename of 128px thumbnail (if applicable, e.g. for videos)
+          description: Filename of the square 128px thumbnail for video and PDF uploads.
         thumb256Name:
           type: string
           nullable: true
-          description: Filename of 256px thumbnail (if applicable, e.g. for videos)
+          description: Filename of the square 256px thumbnail for video and PDF uploads.
         thumb128Url:
           type: string
           nullable: true
-          description: URL to access 128px thumbnail via /asset endpoint
+          description: URL to access the 128px video or first-page PDF thumbnail via the /asset endpoint.
         thumb256Url:
           type: string
           nullable: true
-          description: URL to access 256px thumbnail via /asset endpoint
+          description: URL to access the 256px video or first-page PDF thumbnail via the /asset endpoint.
       required:
         - identifier
         - assetId

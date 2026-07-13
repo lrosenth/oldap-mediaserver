@@ -16,6 +16,14 @@ from flask import Flask, request, jsonify, abort, logging
 import pyvips  # make sure this is in requirements.txt
 from flask_cors import CORS
 from nanoid import generate
+from pdf2image import convert_from_path
+from pdf2image.exceptions import (
+    PDFInfoNotInstalledError,
+    PDFPageCountError,
+    PDFPopplerTimeoutError,
+    PDFSyntaxError,
+)
+from PIL import Image, ImageOps
 from oldaplib.src.enums.adminpermissions import AdminPermission
 from oldaplib.src.enums.datapermissions import DataPermission
 from oldaplib.src.helpers.observable_dict import ObservableDict
@@ -44,6 +52,14 @@ IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
 DOCUMENT_DERIVATIVE_NAME = "document.pdf"
 PDF_MIME_TYPE = "application/pdf"
+PDF_THUMBNAIL_SIZES = (128, 256)
+PDF_RENDER_SIZE = 512
+PDF_RENDER_TIMEOUT_SECONDS = 30
+ASSET_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
+
+
+class InvalidPdfError(ValueError):
+    """Raised when a PDF cannot be validated or rendered safely."""
 
 class MediaType(str, Enum):
     IMAGE = "image"
@@ -68,6 +84,40 @@ def safe_subpath(raw: str | None) -> Path:
     return p
 
 
+def validate_asset_path_segment(raw: str) -> str:
+    """Return an existing asset identifier that is safe as one path segment.
+
+    This structural check keeps legacy identifiers addressable while blocking
+    filesystem traversal. New uploads additionally use the stricter
+    URL-compatible validation in :func:`validate_asset_identifier`.
+    """
+    value = str(raw)
+    if not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value:
+        raise ValueError("asset identifier must be a single non-empty path segment")
+    return value
+
+
+def validate_asset_identifier(raw: str) -> str:
+    """Return a new asset identifier that is safe in paths and generated URLs.
+
+    Args:
+        raw: Client-provided or generated asset identifier.
+
+    Returns:
+        The validated identifier without modification.
+
+    Raises:
+        ValueError: If the identifier is not a bounded URL-safe path segment.
+    """
+    value = validate_asset_path_segment(raw)
+    if ASSET_IDENTIFIER_RE.fullmatch(value) is None:
+        raise ValueError(
+            "identifier must contain 1-128 URL-safe characters "
+            "(letters, digits, '.', '_', '~', or '-')"
+        )
+    return value
+
+
 def build_asset_root(project_short: str, media_type: MediaType, subpath: str | None, identifier: str) -> Path:
     """Compute the root folder for a single asset according to storage layout.
 
@@ -76,7 +126,12 @@ def build_asset_root(project_short: str, media_type: MediaType, subpath: str | N
         original/
         derived/
     """
-    rel = Path(project_short) / media_type.value / safe_subpath(subpath) / identifier
+    rel = (
+        Path(project_short)
+        / media_type.value
+        / safe_subpath(subpath)
+        / validate_asset_identifier(identifier)
+    )
     return IMAGE_ROOT / rel
 
 # ------------------------------------------------------------
@@ -162,13 +217,13 @@ def require_valid_pdf(src: Path) -> None:
 
     This is intentionally a lightweight upload gate rather than a repair or
     normalization step. It catches common MIME/extension spoofing mistakes
-    without adding a PDF toolchain dependency to the media helper runtime.
+    before Poppler performs the full first-page render validation.
 
     Args:
         src: Path to the uploaded temporary file.
 
     Raises:
-        ValueError: If the file does not contain a PDF header and EOF marker.
+        InvalidPdfError: If the file does not contain a PDF header and EOF marker.
     """
     try:
         with src.open("rb") as handle:
@@ -178,12 +233,12 @@ def require_valid_pdf(src: Path) -> None:
             handle.seek(max(size - 4096, 0), os.SEEK_SET)
             tail = handle.read()
     except OSError as exc:
-        raise ValueError(f"Could not read uploaded PDF: {exc}") from exc
+        raise InvalidPdfError(f"Could not read uploaded PDF: {exc}") from exc
 
     if b"%PDF-" not in header:
-        raise ValueError("Uploaded document is not a PDF file")
+        raise InvalidPdfError("Uploaded document is not a PDF file")
     if b"%%EOF" not in tail:
-        raise ValueError("Uploaded PDF is incomplete or malformed")
+        raise InvalidPdfError("Uploaded PDF is incomplete or malformed")
 
 
 def original_mime_type_for_media(media_type: MediaType, upload_file) -> str:
@@ -525,6 +580,63 @@ def create_app() -> Flask:
                 f"ffmpeg thumbnail {size} failed (exit {result.returncode}): {result.stderr}"
             )
 
+    def create_pdf_thumbnails_with_poppler(src: Path, destinations: dict[int, Path]) -> None:
+        """Render the first PDF page and create square JPEG thumbnails.
+
+        Poppler renders at a bounded intermediate size. Pillow then preserves
+        the page aspect ratio and centers it on a white square canvas.
+
+        Args:
+            src: Validated PDF upload.
+            destinations: Mapping from thumbnail edge length to output path.
+
+        Raises:
+            InvalidPdfError: If Poppler cannot parse or render the first page.
+            RuntimeError: If the Poppler runtime is missing from the container.
+        """
+        try:
+            pages = convert_from_path(
+                src,
+                first_page=1,
+                last_page=1,
+                fmt="png",
+                size=PDF_RENDER_SIZE,
+                single_file=True,
+                thread_count=1,
+                timeout=PDF_RENDER_TIMEOUT_SECONDS,
+                strict=True,
+            )
+        except PDFInfoNotInstalledError as exc:
+            raise RuntimeError("Poppler PDF rendering tools are not installed") from exc
+        except (PDFPageCountError, PDFPopplerTimeoutError, PDFSyntaxError) as exc:
+            raise InvalidPdfError(f"Could not render the first PDF page: {exc}") from exc
+
+        if not pages:
+            raise InvalidPdfError("Uploaded PDF does not contain a renderable first page")
+
+        page = None
+        try:
+            page = pages[0].convert("RGB")
+            for size, destination in destinations.items():
+                thumbnail = ImageOps.contain(
+                    page,
+                    (size, size),
+                    method=Image.Resampling.LANCZOS,
+                )
+                canvas = Image.new("RGB", (size, size), "white")
+                try:
+                    offset = ((size - thumbnail.width) // 2, (size - thumbnail.height) // 2)
+                    canvas.paste(thumbnail, offset)
+                    canvas.save(destination, format="JPEG", quality=85, optimize=True)
+                finally:
+                    thumbnail.close()
+                    canvas.close()
+        finally:
+            if page is not None:
+                page.close()
+            for rendered_page in pages:
+                rendered_page.close()
+
     def copy_file(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
@@ -557,6 +669,11 @@ def create_app() -> Flask:
           /asset/<assetId>/derived     -> derived
           /asset/<assetId>/original    -> original
         """
+        try:
+            asset_id = validate_asset_path_segment(asset_id)
+        except ValueError:
+            abort(403, description="Invalid asset identifier")
+
         which = (which or "derived").lower().strip()
         if which == "":
             which = "derived"
@@ -745,6 +862,10 @@ def create_app() -> Flask:
             # If none provided, just generate a UUID – you may want to use
             # an OLDAP resource ID instead.
             identifier = str(generate(size=12))
+        try:
+            identifier = validate_asset_identifier(identifier)
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
 
         roles = {}
         roles_json = request.form.get("attachedToRole")
@@ -757,14 +878,32 @@ def create_app() -> Flask:
 
         # Build storage layout for this asset
         asset_base_rel = Path(projectShortName) / media_type.value / safe_subpath(fpath)
-        asset_root = IMAGE_ROOT / asset_base_rel / identifier
-        asset_root_existed = asset_root.exists()
+        asset_base_dir = (IMAGE_ROOT / asset_base_rel).resolve()
+        try:
+            asset_base_dir.relative_to(IMAGE_ROOT.resolve())
+        except ValueError:
+            return jsonify({"message": "Asset path escapes media root"}), 403
+        try:
+            asset_base_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return jsonify({"error": f"Could not initialize asset base directory: {exc}"}), 500
+        asset_root = asset_base_dir / identifier
+        try:
+            asset_root.mkdir()
+        except FileExistsError:
+            return jsonify({"message": f'Asset identifier "{identifier}" already exists'}), 409
+        except OSError as exc:
+            return jsonify({"error": f"Could not reserve asset directory: {exc}"}), 500
 
         original_dir = asset_root / "original"
         derived_dir = asset_root / "derived"
 
-        for d in (original_dir, derived_dir):
-            d.mkdir(parents=True, exist_ok=True)
+        try:
+            for d in (original_dir, derived_dir):
+                d.mkdir()
+        except OSError as exc:
+            shutil.rmtree(asset_root, ignore_errors=True)
+            return jsonify({"error": f"Could not initialize asset directory: {exc}"}), 500
 
         # Keep original extension for tmp and store original as received
         orig_ext = Path(upload_file.filename).suffix or ".dat"
@@ -808,6 +947,8 @@ def create_app() -> Flask:
             # PDF documents are not transformed for now; the derivative is a
             # stable access copy with a canonical name for frontend consumers.
             out_path = derived_dir / DOCUMENT_DERIVATIVE_NAME
+            thumb128_path = derived_dir / "thumb128.jpg"
+            thumb256_path = derived_dir / "thumb256.jpg"
 
         else:
             # Fallback: just store a derived copy
@@ -818,16 +959,19 @@ def create_app() -> Flask:
         derivative_name = out_path.name
 
         # Save uploaded file (tmp), validate document uploads, and store original.
-        upload_file.save(tmp_path)
-        if media_type == MediaType.DOCUMENT:
-            try:
+        try:
+            upload_file.save(tmp_path)
+            if media_type == MediaType.DOCUMENT:
                 require_valid_pdf(tmp_path)
-            except ValueError as exc:
-                tmp_path.unlink(missing_ok=True)
-                if not asset_root_existed:
-                    shutil.rmtree(asset_root, ignore_errors=True)
-                return jsonify({"message": str(exc)}), 400
-        copy_file(tmp_path, original_path)
+            copy_file(tmp_path, original_path)
+        except InvalidPdfError as exc:
+            tmp_path.unlink(missing_ok=True)
+            shutil.rmtree(asset_root, ignore_errors=True)
+            return jsonify({"message": str(exc)}), 400
+        except Exception as exc:
+            tmp_path.unlink(missing_ok=True)
+            shutil.rmtree(asset_root, ignore_errors=True)
+            return jsonify({"error": f"Could not store uploaded file: {exc}"}), 500
 
         try:
             if media_type == MediaType.IMAGE:
@@ -867,9 +1011,19 @@ def create_app() -> Flask:
                 # Keep a PDF access copy in derived/ so /asset/<assetId>
                 # behaves exactly like the other HTTP-delivered media types.
                 copy_file(tmp_path, out_path)
+                create_pdf_thumbnails_with_poppler(
+                    tmp_path,
+                    {
+                        PDF_THUMBNAIL_SIZES[0]: thumb128_path,
+                        PDF_THUMBNAIL_SIZES[1]: thumb256_path,
+                    },
+                )
 
             else:
                 raise ValueError(f"Unsupported media type: {media_type.value}")
+        except InvalidPdfError as exc:
+            shutil.rmtree(asset_root, ignore_errors=True)
+            return jsonify({"message": str(exc)}), 400
         except Exception as exc:
             # Clean up on failure
             if out_path.exists():
@@ -878,6 +1032,7 @@ def create_app() -> Flask:
                 thumb128_path.unlink(missing_ok=True)
             if thumb256_path is not None and thumb256_path.exists():
                 thumb256_path.unlink(missing_ok=True)
+            shutil.rmtree(asset_root, ignore_errors=True)
             return jsonify({"error": str(exc)}), 500
         finally:
             # Remove temp file
@@ -915,12 +1070,9 @@ def create_app() -> Flask:
         try:
             response = client.create_resource(resource=resource_class, resource_data=resource_data)
         except Exception as exc:
-            # Keep the original, but remove the derived files to avoid orphaned derivatives
-            out_path.unlink(missing_ok=True)
-            if thumb128_path is not None:
-                thumb128_path.unlink(missing_ok=True)
-            if thumb256_path is not None:
-                thumb256_path.unlink(missing_ok=True)
+            # The directory is exclusively owned by this upload, so failed
+            # registration must not leave an unaddressable partial asset.
+            shutil.rmtree(asset_root, ignore_errors=True)
             return jsonify({"error": f"Failed to create OLDAP resource: {exc}"}), 500
 
         return jsonify(
@@ -948,6 +1100,10 @@ def create_app() -> Flask:
     def delete(asset_id):
         # we can only delete if we have a bearer token
         token = require_bearer_token()
+        try:
+            asset_id = validate_asset_path_segment(asset_id)
+        except ValueError:
+            return jsonify({"error": "Invalid asset identifier"}), 400
 
         #
         # now let's retieve the MediaObject from the OLDAP-API

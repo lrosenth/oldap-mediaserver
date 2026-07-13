@@ -16,6 +16,8 @@ nanoid = "^2.0.0"
 oldaplib = "^0.6.8"
 requests = "^2.32.5"
 #poetry-plugin-export = "^1.10.0"
+pdf2image = "^1.17.0"
+pillow = "^12.3.0"
 
 [tool.poetry.group.dev.dependencies]
 # Tooling used during development / CI only (must NOT go into runtime Docker images)

@@ -22,6 +22,7 @@ This keeps URLs stable even if derivatives are regenerated.
 ## Storage layout
 
 Files are stored under a project and media-type folder. Each uploaded item gets its own asset folder identified by `assetId` (or more generally `identifier`).
+Explicit identifiers must contain 1–128 URL-safe characters (`A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `-`). Uploads never overwrite an existing asset directory; duplicate identifiers return `409 Conflict` before any file is written. Failed storage, conversion, or OLDAP registration removes the exclusively reserved asset directory so the identifier can be retried safely.
 
 Layout (relative to the media root, e.g. `/data/images`):
 
@@ -41,7 +42,7 @@ Notes:
 - For images, the IIIF source file is typically stored as `derived/iiif.jp2` (JPEG2000) or `derived/master.tif` (pyramidal TIFF). Which one is used is declared in the MediaObject.
 - For video, the HTTP delivery derivative is `derived/web.mp4` (H.264/AAC).
 - For audio, the default HTTP delivery derivative is `derived/web.mp3`; `targetFormat=m4a` can produce `derived/web.m4a` when AAC/M4A is preferred.
-- For PDF documents, the HTTP delivery derivative is `derived/document.pdf`. The original filename is preserved in `original/`; the derivative name is stable for frontend integrations.
+- For PDF documents, the HTTP delivery derivative is `derived/document.pdf`. The original filename is preserved in `original/`; Poppler also renders first-page previews as `thumb128.jpg` and `thumb256.jpg`.
 
 ## How IIIF resolution works
 
@@ -87,6 +88,8 @@ For a successful PDF upload, the media server creates the same OLDAP-backed asse
         <uploaded filename>
     derived/
         document.pdf
+        thumb128.jpg
+        thumb256.jpg
 ```
 
 The created MediaObject uses these integration-relevant values:
@@ -98,7 +101,11 @@ The created MediaObject uses these integration-relevant values:
 - `shared:serverUrl = MEDIA_BASE_URL`
 - `shared:mediaAccessMode = local`
 
-The upload response also includes `mediaType: "document"`, `originalMimeType: "application/pdf"`, `dctermsType: "dcmitype:Text"`, `protocol: "http"`, `assetUrl`, and `derivativeName: "document.pdf"`. Frontends such as FasnachtsPage should render PDF documents from `assetUrl` through the normal `/asset/<assetId>` path. IIIF is not involved for PDF documents. Use `/asset/<assetId>/original?download=1` only when the unchanged original file should be downloaded explicitly.
+The first PDF page is rendered with Poppler at a bounded resolution and converted into square JPEG thumbnails. Page proportions are preserved and whitespace is added where needed. The upload response includes `thumb128Name`, `thumb256Name`, `thumb128Url`, and `thumb256Url` with the same semantics used for video uploads.
+
+The upload response also includes `mediaType: "document"`, `originalMimeType: "application/pdf"`, `dctermsType: "dcmitype:Text"`, `protocol: "http"`, `assetUrl`, and `derivativeName: "document.pdf"`. Frontends such as FasnachtsPage should use `thumb256Url` for overview previews and render the document itself from `assetUrl` through the normal `/asset/<assetId>` path. IIIF is not involved for PDF documents. Use `/asset/<assetId>/original?download=1` only when the unchanged original file should be downloaded explicitly.
+
+`pdf2image` and Pillow are managed through Poetry. The native Poppler commands cannot be installed by Poetry and are therefore installed as `poppler-utils` inside the media-helper Docker image. No Poppler installation is required on the Docker host.
 
 ## Original asset downloads
 
