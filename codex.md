@@ -10,6 +10,15 @@
 - `imageserver/` contains the Cantaloupe image server configuration and bundled runtime assets.
 - `mediaserver/Dockerfile` builds the upload helper runtime and installs `ffmpeg` for audio/video derivatives, `libvips` for image derivatives, and Poppler for first-page PDF previews.
 - `mediaserver/Dockerfile.dockerignore` keeps media-helper builds small even though the Dockerfile uses the repository root context for `pyproject.toml` and `poetry.lock`; only the dependency manifests and helper source files should enter that build context.
+- Media delivery and upload authentication are separate trust domains. Asset
+  and IIIF query capabilities use `typ=media`, audience `oldap-api-media`, and
+  `OLDAP_MEDIA_JWT_SECRET`; upload Bearer credentials use `typ=access`, audience
+  `oldap-api`, and `OLDAP_ACCESS_JWT_SECRET`. The values must match the
+  corresponding API deployment keys but must be distinct from one another.
+- Deployment renders the media key into `mediaserver.env` for the Flask helper
+  and Cantaloupe, and the access key into `mediahelper-access.env` for the Flask
+  helper only. Secrets come from ignored Ansible vars or Vault and are never
+  stored in `group_vars/all.yml`.
 
 ## Storage Model
 Assets are stored below the media root as:

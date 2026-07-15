@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-import jwt
 import requests
 from flask import Flask, request, jsonify, abort, logging
 
@@ -24,12 +23,10 @@ from pdf2image.exceptions import (
     PDFSyntaxError,
 )
 from PIL import Image, ImageOps
+from oldaplib.src.authentication import AuthorizationContext, TokenCodec
 from oldaplib.src.enums.adminpermissions import AdminPermission
 from oldaplib.src.enums.datapermissions import DataPermission
-from oldaplib.src.helpers.observable_dict import ObservableDict
-from oldaplib.src.helpers.oldaperror import OldapError
-from oldaplib.src.helpers.serializer import serializer
-from oldaplib.src.userdataclass import UserData
+from oldaplib.src.helpers.oldaperror import OldapError, OldapErrorConfiguration
 from oldaplib.src.xsd.iri import Iri
 from oldaplib.src.xsd.xsd_qname import Xsd_QName
 
@@ -346,7 +343,7 @@ def create_app() -> Flask:
     app.config["APP_VERSION_SOURCE"] = app_version_source
     logger.info(f"Using app version: {app_version} ({app_version_source})")
 
-    jwt_secret = os.getenv("OLDAP_JWT_SECRET", "You have to change this!!! +D&RWG+").strip()
+    token_codec = TokenCodec.from_environment()
 
     def allowed_cors_origin() -> Optional[str]:
         """Return the response origin for this request when CORS is allowed."""
@@ -360,20 +357,22 @@ def create_app() -> Flask:
         return None
 
     # ------------------------------------------------------------------
-    # Simple auth helper (Bearer <token>)
-    # Here we just check presence; you will plug in real validation
-    # against oldap-api or a JWKS later.
+    # Access-token authentication for upload operations.
     # ------------------------------------------------------------------
-    def require_bearer_token():
+    def require_access_token() -> tuple[str, AuthorizationContext]:
+        """Validate a Bearer access token and return its authorization context."""
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
+        parts = auth.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:
             abort(401, description="Missing or invalid Authorization header")
-        token = auth[7:]
-        if not token:
-            abort(401, description="Empty Bearer token")
-
-        # TODO: call oldap-api or verify JWT here
-        return token
+        token = parts[1]
+        try:
+            return token, token_codec.decode_access_token(token)
+        except OldapErrorConfiguration as error:
+            app.logger.error("Access-token verification is not configured: %s", error)
+            abort(503, description="Authentication service unavailable")
+        except OldapError:
+            abort(401, description="Invalid or expired access token")
 
     def decode_optional_query_token() -> Optional[dict]:
         """Decode optional JWT from `?token=` (HS256). Returns claims dict or None."""
@@ -381,8 +380,11 @@ def create_app() -> Flask:
         if not tok:
             return None
         try:
-            return jwt.decode(tok, jwt_secret, algorithms=["HS256"])
-        except Exception:
+            return token_codec.decode_media_token(tok)
+        except OldapErrorConfiguration as error:
+            app.logger.error("Media-token verification is not configured: %s", error)
+            abort(503, description="Media authorization unavailable")
+        except OldapError:
             return None
 
     # ------------------------------------------------------------------
@@ -801,11 +803,9 @@ def create_app() -> Flask:
         }
 
         #
-        # extract the baerer token and the userinformation therein
+        # Validate the access token and use its minimal authorization context.
         #
-        token = require_bearer_token()
-        tokendata = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-        userdata: UserData = json.loads(tokendata.get("userdata", "{}"), object_hook=serializer.decoder_hook)
+        token, authorization = require_access_token()
 
         resource_class = request.form.get("resourceClass", "shared:MediaObject")
 
@@ -827,7 +827,9 @@ def create_app() -> Flask:
 
         # check if the user has the permission to upload images (ADMIN_CREATE permission)
         try:
-            permissions =  userdata.inProject.get(Iri(projectIri, validate=True))
+            permissions = authorization.inProject.get(
+                Iri(projectIri, validate=True)
+            ) or set()
         except OldapError:
             return jsonify({"message": f'problem with projectIri "{projectIri}"'}), 404
         if AdminPermission.ADMIN_CREATE not in permissions:

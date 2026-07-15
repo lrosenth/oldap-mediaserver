@@ -19,9 +19,10 @@ compose_dir: "{{ deploy_root }}/compose"
 caddy_data_dir: "{{ deploy_root }}/caddy-data"
 caddy_config_dir: "{{ deploy_root }}/caddy-config"
 
-# Flask / OLDAP integration
-oldap_jwt_secret: "Xsjh-738@-789M-h%rS"
-oldap_jwt_iss: http://oldap.org
+# Flask / OLDAP integration. Secrets are supplied through an ignored vars file
+# or Ansible Vault and are deliberately absent from tracked group vars.
+oldap_jwt_issuer: https://oldap.org
+oldap_jwt_audience: oldap-api
 oldap_unknown_userid: unknown
 oldap_unknown_password: ""
 cors_origins: "*"

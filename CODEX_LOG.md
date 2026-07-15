@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-07-15 17:56
+- Decisions: Separate upload authentication from media delivery capabilities: uploads accept only OLDAP access tokens, while `/asset` and IIIF query tokens accept only independently signed media tokens.
+- Implementation: Replaced legacy raw JWT/UserData parsing with strict `oldaplib` token decoding, migrated media-helper tests to minimal access authorization claims, added cross-purpose rejection coverage, hardened the Cantaloupe delegate with algorithm/type/issuer/audience validation without cross-request payload caching, split access and media environment files by container need, added automatic ignored/Vault vars loading plus secret validation/examples, and documented both local and deployed API/media-server key sharing.
+- Open: Supply matching `oldap_access_jwt_secret` and `oldap_media_jwt_secret` values through ignored Ansible vars or Vault and deploy alongside the API change.
+- Risks/Assumptions: Query-string media capabilities can appear in logs and browser history; their one-hour default lifetime bounds but does not eliminate that exposure.
+
 ### Update 2026-07-14 00:35
 - Decisions: Treat every asset identifier as a bounded URL-safe filesystem segment and atomically reserve each asset directory before writing; duplicate identifiers are conflicts rather than overwrite requests.
 - Implementation: Added NanoID-compatible URL-safe identifier validation to upload/auth/delete paths, reject symlink-resolved upload paths outside the media root, return `409 Conflict` for existing asset directories, clean failed storage/conversion/registration and partial directory initialization for all media types, closed Poppler-rendered images on all conversion exits, and added traversal/URL/collision/I/O regression tests plus API documentation.

@@ -5,6 +5,7 @@ services:
     container_name: oldap-mediahelper
     env_file:
       - ./mediaserver.env
+      - ./mediahelper-access.env
     environment:
       - IIIF_BASE_URL=${IIIF_BASE_URL:-http://localhost:8088/iiif/3/}
       - MEDIA_BASE_URL=${MEDIA_BASE_URL:-http://localhost:8088/}

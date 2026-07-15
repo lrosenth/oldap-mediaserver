@@ -2,32 +2,31 @@
 
 import io
 import importlib
-import json
 import sys
 import types
 from pathlib import Path
 
-import jwt
 import pytest
 from PIL import Image
+from oldaplib.src.authentication import AuthorizationContext, TokenCodec, TokenSettings
 from oldaplib.src.enums.adminpermissions import AdminPermission
-from oldaplib.src.helpers.serializer import serializer
+from oldaplib.src.helpers.observable_dict import ObservableDict
 from oldaplib.src.in_project import InProjectClass
-from oldaplib.src.userdataclass import UserData
 from oldaplib.src.xsd.iri import Iri
-from oldaplib.src.xsd.xsd_boolean import Xsd_boolean
 from oldaplib.src.xsd.xsd_ncname import Xsd_NCName
-from oldaplib.src.xsd.xsd_string import Xsd_string
 
 
 PDF_BYTES = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+ACCESS_SECRET = "mediaserver-test-access-secret-at-least-32-bytes"
+MEDIA_SECRET = "mediaserver-test-media-secret-at-least-32-bytes"
 
 
 @pytest.fixture()
 def media_app(monkeypatch, tmp_path):
     """Import the Flask app with a temporary media root and mocked image runtime."""
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path))
-    monkeypatch.setenv("OLDAP_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("OLDAP_ACCESS_JWT_SECRET", ACCESS_SECRET)
+    monkeypatch.setenv("OLDAP_MEDIA_JWT_SECRET", MEDIA_SECRET)
     monkeypatch.setenv("MEDIA_BASE_URL", "http://media.example/")
     monkeypatch.setitem(sys.modules, "pyvips", types.SimpleNamespace(Image=types.SimpleNamespace()))
 
@@ -40,19 +39,34 @@ def media_app(monkeypatch, tmp_path):
     return module, module.app.test_client(), tmp_path
 
 
+def _codec() -> TokenCodec:
+    return TokenCodec(
+        TokenSettings(access_secret=ACCESS_SECRET, media_secret=MEDIA_SECRET)
+    )
+
+
 def _upload_token() -> str:
-    """Build a signed token whose embedded UserData has create permission."""
-    userdata = UserData(
+    """Build an access token whose authorization context permits creation."""
+    context = AuthorizationContext(
         userIri=Iri("https://example.test/users/tester"),
         userId=Xsd_NCName("tester"),
-        familyName=Xsd_string("Test"),
-        givenName=Xsd_string("User"),
-        email=Xsd_string("tester@example.test"),
-        isActive=Xsd_boolean(True),
         inProject=InProjectClass({Iri("oldap:TestProject"): {AdminPermission.ADMIN_CREATE}}),
+        hasRole=ObservableDict(),
     )
-    payload = {"userdata": json.dumps(userdata, default=serializer.encoder_default)}
-    return jwt.encode(payload, "test-secret", algorithm="HS256")
+    return _codec().issue_access_token(context)
+
+
+def test_upload_rejects_media_capability_as_bearer(media_app):
+    """A media delivery capability must not authenticate an upload request."""
+    _, client, _ = media_app
+    media_token = _codec().issue_media_token("tester", {"assetId": "asset-pdf"})
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+
+    assert response.status_code == 401
 
 
 class FakeOldapClient:
@@ -449,7 +463,8 @@ def test_pdf_derivative_resolves_as_http_asset(media_app):
     thumbnail = derived.parent / "thumb256.jpg"
     Image.new("RGB", (256, 256), "white").save(thumbnail, format="JPEG")
 
-    token = jwt.encode(
+    token = _codec().issue_media_token(
+        "tester",
         {
             "assetId": asset_id,
             "path": "fasnacht/document/archive",
@@ -457,8 +472,6 @@ def test_pdf_derivative_resolves_as_http_asset(media_app):
             "derivativeName": "document.pdf",
             "protocol": "http",
         },
-        "test-secret",
-        algorithm="HS256",
     )
     response = client.get(f"/auth/asset/{asset_id}?token={token}")
 

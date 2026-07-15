@@ -55,13 +55,21 @@ Cantaloupe calls the Ruby delegate to translate `<assetId>` into an on-disk file
 
 ### Fast path (token present)
 
-If the client supplies a `token` query parameter, the delegate reads the JWT payload and avoids API calls.
+If the client supplies a `token` query parameter, the delegate validates the
+short-lived media capability JWT and avoids API calls. It requires `typ=media`,
+issuer `OLDAP_JWT_ISSUER`, audience `OLDAP_MEDIA_JWT_AUDIENCE`, and a valid
+signature from `OLDAP_MEDIA_JWT_SECRET`; an API access token is not accepted.
 
 The token is expected to contain at least:
 
 - `id` (the `assetId`)
 - `path` (base folder, without `assetId`)
 - `derivativeName` (the filename inside `<assetId>/derived/`)
+
+The Flask upload endpoint has a separate trust path: its
+`Authorization: Bearer` token must be an OLDAP access token and is verified
+with `OLDAP_ACCESS_JWT_SECRET`. Both keys must match the corresponding values in
+the `oldap-api` deployment, but the two keys must never equal each other.
 
 ### Fallback path (no token)
 
@@ -109,7 +117,12 @@ The upload response also includes `mediaType: "document"`, `originalMimeType: "a
 
 ## Original asset downloads
 
-Original files are served through `/asset/<assetId>/original?token=<jwt>`. The token must authorize the asset and include the storage `path`; for original downloads it should also include `originalName`. IIIF media may use this original route, but IIIF derivatives stay on `/iiif/...` and are not served through `/asset/<assetId>` or `/asset/<assetId>/derived`.
+Original files are served through `/asset/<assetId>/original?token=<jwt>`. The
+token must be a valid `typ=media` capability for the asset and include the
+storage `path`; for original downloads it should also include `originalName`.
+IIIF media may use this original route, but IIIF derivatives stay on
+`/iiif/...` and are not served through `/asset/<assetId>` or
+`/asset/<assetId>/derived`.
 
 Add `download=1` to request an attachment response:
 
@@ -136,11 +149,25 @@ curl -i -X OPTIONS \
 
 ## Local development notes
 
+Create the two ignored environment files before starting the stack:
+
+```bash
+cp mediaserver.env.example mediaserver.env
+cp mediahelper-access.env.example mediahelper-access.env
+```
+
+Set `OLDAP_MEDIA_JWT_SECRET` in `mediaserver.env` to the same media key used by
+the local `oldap-api`. Set `OLDAP_ACCESS_JWT_SECRET` in
+`mediahelper-access.env` to the API's access key. Generate independent values
+with `openssl rand -hex 32`; never copy one key into both variables. Docker
+Compose gives Cantaloupe only `mediaserver.env`, while the Flask helper receives
+both files.
+
 When `oldap-api` runs on the host machine (not in Docker) and the image server runs in Docker, **do not use** `http://localhost:8000` inside the container.
 
 Use Docker Desktop’s host gateway instead:
 
-- `OLDAP_API_URLhttp://host.docker.internal:8000`
+- `OLDAP_API_URL=http://host.docker.internal:8000`
 
 The `imageserver/Makefile` targets `docker-run` and `docker-run-local` set this accordingly.
 

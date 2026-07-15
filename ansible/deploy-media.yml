@@ -3,6 +3,26 @@
   hosts: "{{ target_hosts | default('mediaserver') }}"
   become: true
 
+  pre_tasks:
+    - name: Load ignored or Vault-backed authentication secrets
+      ansible.builtin.include_vars:
+        file: "{{ auth_secrets_file | default(playbook_dir ~ '/auth-secrets.yml') }}"
+      when: >-
+        oldap_access_jwt_secret is not defined or
+        oldap_media_jwt_secret is not defined
+      no_log: true
+
+    - name: Validate OLDAP access and media token secrets
+      ansible.builtin.assert:
+        that:
+          - (oldap_access_jwt_secret | default('') | string | length) >= 32
+          - (oldap_media_jwt_secret | default('') | string | length) >= 32
+          - (oldap_access_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+        fail_msg: >-
+          Supply distinct OLDAP access and media JWT secrets of at least 32
+          bytes through auth-secrets.yml or Ansible Vault.
+      no_log: true
+
   tasks:
     - name: Optionally allow HTTP/HTTPS with UFW
       community.general.ufw:
@@ -105,6 +125,23 @@
         owner: root
         group: root
         mode: "0600"
+      no_log: true
+
+    - name: Render mediahelper access-token environment
+      ansible.builtin.template:
+        src: templates/mediahelper-access.env.j2
+        dest: "{{ compose_dir }}/mediahelper-access.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Validate rendered Docker Compose configuration
+      ansible.builtin.command:
+        cmd: docker compose config --quiet
+        chdir: "{{ compose_dir }}"
+      changed_when: false
+      no_log: true
 
     - name: Roll back stack
       community.docker.docker_compose_v2:

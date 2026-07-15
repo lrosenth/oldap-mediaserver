@@ -5,15 +5,20 @@ import sys
 import types
 from pathlib import Path
 
-import jwt
 import pytest
+from oldaplib.src.authentication import TokenCodec, TokenSettings
+
+
+ACCESS_SECRET = "mediaserver-test-access-secret-at-least-32-bytes"
+MEDIA_SECRET = "mediaserver-test-media-secret-at-least-32-bytes"
 
 
 @pytest.fixture()
 def media_app(monkeypatch, tmp_path):
     """Import the Flask app with a temporary media root and mocked image runtime."""
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path))
-    monkeypatch.setenv("OLDAP_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("OLDAP_ACCESS_JWT_SECRET", ACCESS_SECRET)
+    monkeypatch.setenv("OLDAP_MEDIA_JWT_SECRET", MEDIA_SECRET)
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,https://public.example")
     monkeypatch.setitem(sys.modules, "pyvips", types.SimpleNamespace(Image=types.SimpleNamespace()))
 
@@ -35,7 +40,10 @@ def _asset_token(asset_id: str, **claims) -> str:
         "protocol": "iiif",
     }
     payload.update(claims)
-    return jwt.encode(payload, "test-secret", algorithm="HS256")
+    codec = TokenCodec(
+        TokenSettings(access_secret=ACCESS_SECRET, media_secret=MEDIA_SECRET)
+    )
+    return codec.issue_media_token("tester", payload)
 
 
 def test_iiif_original_download_resolves_as_attachment(media_app):

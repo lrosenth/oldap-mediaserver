@@ -23,9 +23,10 @@ class CustomDelegate
     # ---------------------------
     # Configuration via environment
     # ---------------------------
-    JWT_SECRET = ENV.fetch("OLDAP_JWT_SECRET") # MUST be set
+    MEDIA_JWT_SECRET = ENV.fetch("OLDAP_MEDIA_JWT_SECRET") # MUST be set
     IMAGE_ROOT = ENV.fetch("OLDAP_IMAGE_ROOT", "/data/images")
-    JWT_ISS    = ENV.fetch("OLDAP_JWT_ISS", "http://oldap.org")
+    JWT_ISSUER = ENV.fetch("OLDAP_JWT_ISSUER", "https://oldap.org")
+    MEDIA_JWT_AUDIENCE = ENV.fetch("OLDAP_MEDIA_JWT_AUDIENCE", "oldap-api-media")
     OLDAP_API_URL = ENV.fetch("OLDAP_API_URL", "http://oldap-api")
     def oldap_api_url
         ENV.fetch("OLDAP_API_URL", "http://oldap-api")
@@ -129,26 +130,39 @@ class CustomDelegate
     # @ return [Hash<String,String>] key-value pairs of the content of the JWT payload
     #
     def jwt_payload_from_query_token(token)
-        unless @payload
-            @payload = jwt_decode_hs256(token, JWT_SECRET)
+        payload = jwt_decode_hs256(token, MEDIA_JWT_SECRET)
+        return nil unless payload
 
-            # iss check
-            iss = @payload["iss"].to_s
-            if iss != JWT_ISS
-                STDERR.puts "[delegate.jwt_payload_from_query_token] iss mismatch token_iss=#{iss.inspect} expected=#{JWT_ISS.inspect}"
-                return nil
-            end
-
-            # exp check (Python expiration.timestamp() -> float)
-            exp = @payload["exp"]
-            exp_i = exp.is_a?(Numeric) ? exp.to_i : exp.to_s.to_i
-            now_i = Time.now.to_i
-            if exp_i <= now_i
-                STDERR.puts "[delegate.jwt_payload_from_query_token] expired exp=#{exp_i} now=#{now_i}"
-                return nil
-            end
+        # Purpose, issuer, and audience checks keep media capabilities
+        # separate from normal OLDAP access and refresh tokens.
+        typ = payload["typ"].to_s
+        if typ != "media"
+            STDERR.puts "[delegate.jwt_payload_from_query_token] typ mismatch token_typ=#{typ.inspect}"
+            return nil
         end
-        return @payload
+
+        iss = payload["iss"].to_s
+        if iss != JWT_ISSUER
+            STDERR.puts "[delegate.jwt_payload_from_query_token] iss mismatch token_iss=#{iss.inspect} expected=#{JWT_ISSUER.inspect}"
+            return nil
+        end
+
+        aud = payload["aud"].to_s
+        if aud != MEDIA_JWT_AUDIENCE
+            STDERR.puts "[delegate.jwt_payload_from_query_token] aud mismatch token_aud=#{aud.inspect} expected=#{MEDIA_JWT_AUDIENCE.inspect}"
+            return nil
+        end
+
+        # exp check (Python expiration.timestamp() -> float)
+        exp = payload["exp"]
+        exp_i = exp.is_a?(Numeric) ? exp.to_i : exp.to_s.to_i
+        now_i = Time.now.to_i
+        if exp_i <= now_i
+            STDERR.puts "[delegate.jwt_payload_from_query_token] expired exp=#{exp_i} now=#{now_i}"
+            return nil
+        end
+
+        payload
 
         rescue => e
             STDERR.puts "[delegate.jwt_payload_from_query_token] exception #{e.class}: #{e.message}"
@@ -166,6 +180,12 @@ class CustomDelegate
     def jwt_decode_hs256(token, secret)
         header_b64, payload_b64, sig_b64 = token.split(".", 3)
         return nil unless header_b64 && payload_b64 && sig_b64
+
+        header = JSON.parse(b64url_decode(header_b64))
+        unless header["alg"] == "HS256"
+            STDERR.puts "[delegate ERROR:] Unsupported JWT algorithm #{header["alg"].inspect}"
+            return nil
+        end
 
         signing_input = "#{header_b64}.#{payload_b64}"
         expected = OpenSSL::HMAC.digest("sha256", secret, signing_input)

@@ -206,5 +206,32 @@ ansible-playbook -i inventory.ini deploy-media.yml -K -e rollback=true
 ansible-playbook -i inventory.ini deploy-media.yml -K -T 60 -e target_hosts=test_mediaserver -e rollback=true
 ```
 
-## Secrets
-`group_vars/all.yml` currently contains `oldap_jwt_secret` for convenience. Move secrets to Ansible Vault before broader/shared usage.
+## Authentication secrets
+
+The media deployment requires two independent signing keys:
+
+- `oldap_access_jwt_secret` verifies API Bearer tokens on `/upload`.
+- `oldap_media_jwt_secret` verifies `typ=media` capabilities on `/asset` and
+  IIIF requests.
+
+Both values must exactly match the corresponding `OLDAP_ACCESS_JWT_SECRET` and
+`OLDAP_MEDIA_JWT_SECRET` values deployed to `oldap-api`, and each must contain
+at least 32 bytes. They must not equal one another. No secret is stored in
+`group_vars/all.yml` or committed to Git.
+
+Copy `auth-secrets.example.yml` to the ignored `auth-secrets.yml` and populate
+it. The playbook loads that file automatically when the two variables were not
+already supplied. To use an external Ansible Vault file instead, select it with
+`auth_secrets_file` and provide the appropriate Vault option:
+
+```bash
+ansible-playbook -i inventory.ini deploy-media.yml -K \
+  -e auth_secrets_file=/secure/path/oldap-auth.vault.yml \
+  --ask-vault-pass
+```
+
+The playbook validates both keys before changing the host. It renders a shared
+root-only `mediaserver.env` containing the media key and a separate root-only
+`mediahelper-access.env` containing the access key. Only the Flask media-helper
+container receives the access-key file; Cantaloupe receives only the media-key
+environment.
