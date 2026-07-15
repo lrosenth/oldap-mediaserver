@@ -2,9 +2,9 @@
 media_domain: media.oldap.org
 oldap_api_url: https://api.oldap.org
 
-# Image tags (override with -e for emergency rollback or staged rollout)
+# Image tags. The imageserver tag is supplied explicitly by the repository-root
+# Makefile so build and deployment use imageserver/VERSION as their shared source.
 oldap_mediahelper_tag: v0.0.14
-oldap_imageserver_tag: v0.1.5
 caddy_image_tag: 2.8
 
 # Runtime behavior

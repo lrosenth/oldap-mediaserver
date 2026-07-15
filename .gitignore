@@ -213,3 +213,6 @@ __marimo__/
 /kakadu-base/v8_6_2-01727L
 fasnacht-media-*
 /tars
+/ansible/auth-secrets.yml
+/mediaserver.env
+/mediahelper-access.env

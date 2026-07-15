@@ -12,8 +12,8 @@ The inventory also contains a separate test target:
 - HTTPS uses Caddy's internal CA because the host has no public ACME/Let's Encrypt name
 
 ## What gets deployed
-- `lrosenth/oldap-mediahelper:v0.0.12`
-- `lrosenth/oldap-imageserver:v0.1.3`
+- `lrosenth/oldap-mediahelper:v0.0.14` by default
+- `lrosenth/oldap-imageserver:<explicit tag from imageserver/VERSION>`
 - `caddy:2.8`
 
 Caddy exposes ports `80` and `443`.
@@ -130,21 +130,26 @@ ssh media.home.org "command -v sudo.ws && sudo.ws -V | head -1"
 ## Deploy Production
 
 ```bash
-cd ansible
-ansible-playbook -i inventory.ini deploy-media.yml -K
+make show-versions
+make deploy-production
 ```
 
-This default command targets only the production group `mediaserver`, currently `dhlab-iii.dhlab.unibas.ch`.
+Run these commands from the repository root. `make deploy-production` derives
+the imageserver tag from `imageserver/VERSION`, passes it to Ansible as
+`oldap_imageserver_tag`, and targets only the production group `mediaserver`,
+currently `dhlab-iii.dhlab.unibas.ch`.
 `-K` prompts for the remote sudo password.
 
 ## Deploy Test Server
 
 ```bash
-cd ansible
-ansible-playbook -i inventory.ini deploy-media.yml -K -T 60 -e target_hosts=test_mediaserver
+make show-versions
+make deploy-test
 ```
 
-This targets only the test group `test_mediaserver`, currently `media.home.org`.
+Run these commands from the repository root. This targets only the test group
+`test_mediaserver`, currently `media.home.org`, and passes the same derived
+imageserver tag explicitly.
 
 The test server gets these host-specific overrides from `host_vars/media.home.org.yml`:
 - `media_domain: media.home.org`
@@ -168,42 +173,50 @@ The playbook defaults remain production-oriented:
 - `deploy-media.yml` defaults to `target_hosts=mediaserver`
 - `group_vars/all.yml` remains the shared/default configuration for `media.oldap.org`
 - `media.home.org` settings live in `host_vars/media.home.org.yml`
+- `oldap_imageserver_tag` has no silent Ansible default and must be supplied
+  explicitly; the repository-root Makefile provides it for normal deployments
 
 Therefore, the test server is deployed only when explicitly requested with:
 
 ```bash
--e target_hosts=test_mediaserver
+make deploy-test
 ```
 
 ## Optional flags
+- Deploy or roll back to a specific imageserver image:
+
+```bash
+make deploy-production IMAGESERVER_TAG=v0.1.5
+```
+
 - Deploy a specific mediahelper image:
 
 ```bash
-ansible-playbook -i inventory.ini deploy-media.yml -K -e oldap_mediahelper_tag=v0.0.12
+make deploy-production ANSIBLE_ARGS='-e oldap_mediahelper_tag=v0.0.12'
 ```
 
 - Force image refresh:
 
 ```bash
-ansible-playbook -i inventory.ini deploy-media.yml -K -e force_pull=true
+make deploy-production ANSIBLE_ARGS='-e force_pull=true'
 ```
 
 - Force image refresh on the test server:
 
 ```bash
-ansible-playbook -i inventory.ini deploy-media.yml -K -T 60 -e target_hosts=test_mediaserver -e force_pull=true
+make deploy-test ANSIBLE_ARGS='-e force_pull=true'
 ```
 
 - Stop/remove stack (rollback):
 
 ```bash
-ansible-playbook -i inventory.ini deploy-media.yml -K -e rollback=true
+make deploy-production ANSIBLE_ARGS='-e rollback=true'
 ```
 
 - Stop/remove stack on the test server:
 
 ```bash
-ansible-playbook -i inventory.ini deploy-media.yml -K -T 60 -e target_hosts=test_mediaserver -e rollback=true
+make deploy-test ANSIBLE_ARGS='-e rollback=true'
 ```
 
 ## Authentication secrets
@@ -225,9 +238,8 @@ already supplied. To use an external Ansible Vault file instead, select it with
 `auth_secrets_file` and provide the appropriate Vault option:
 
 ```bash
-ansible-playbook -i inventory.ini deploy-media.yml -K \
-  -e auth_secrets_file=/secure/path/oldap-auth.vault.yml \
-  --ask-vault-pass
+make deploy-production \
+  ANSIBLE_ARGS='-e auth_secrets_file=/secure/path/oldap-auth.vault.yml --ask-vault-pass'
 ```
 
 The playbook validates both keys before changing the host. It renders a shared

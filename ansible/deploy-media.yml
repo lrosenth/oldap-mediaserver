@@ -4,6 +4,14 @@
   become: true
 
   pre_tasks:
+    - name: Validate explicit imageserver deployment tag
+      ansible.builtin.assert:
+        that:
+          - (oldap_imageserver_tag | default('') | string | trim | length) > 0
+        fail_msg: >-
+          Supply oldap_imageserver_tag explicitly. The repository-root Makefile
+          derives it from imageserver/VERSION for normal deployments.
+
     - name: Load ignored or Vault-backed authentication secrets
       ansible.builtin.include_vars:
         file: "{{ auth_secrets_file | default(playbook_dir ~ '/auth-secrets.yml') }}"

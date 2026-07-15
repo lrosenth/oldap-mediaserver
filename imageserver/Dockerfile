@@ -1,7 +1,13 @@
 FROM lrosenth/kakadu-base:latest
 
-ARG CANTALOUPE_DIR=cantaloupe-5.0.7
-ARG CANTALOUPE_JAR=cantaloupe-5.0.7.jar
+ARG IMAGE_VERSION
+ARG CANTALOUPE_VERSION=5.0.7
+ARG CANTALOUPE_DIR=cantaloupe-${CANTALOUPE_VERSION}
+ARG CANTALOUPE_JAR=cantaloupe-${CANTALOUPE_VERSION}.jar
+
+LABEL org.opencontainers.image.title="OLDAP Imageserver"
+LABEL org.opencontainers.image.description="Cantaloupe IIIF image server for OLDAP"
+LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
 
 # Install Java runtime
 RUN apt-get update && apt-get install -y \

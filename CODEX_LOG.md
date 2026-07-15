@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-07-15 23:36
+- Decisions: Version the imageserver independently from Cantaloupe and other media-stack images, using `imageserver/VERSION` as the single source and a derived `v<version>` Docker tag; require explicit tag propagation into deployment.
+- Implementation: Added imageserver version `0.1.6`, reusable Make image/version variables and inspection targets, OCI build metadata, a repository-root Make deployment entry point, an Ansible tag assertion without a duplicated default, and synchronized release/deployment documentation and project context.
+- Open: Build and push `lrosenth/oldap-imageserver:v0.1.6` before deploying it; apply the same component-version pattern to mediahelper and Kakadu only when their release workflows are addressed.
+- Risks/Assumptions: Published version tags are immutable; `latest` remains a build convenience alias but is never selected by the documented deployment flow.
+
 ### Update 2026-07-15 17:56
 - Decisions: Separate upload authentication from media delivery capabilities: uploads accept only OLDAP access tokens, while `/asset` and IIIF query tokens accept only independently signed media tokens.
 - Implementation: Replaced legacy raw JWT/UserData parsing with strict `oldaplib` token decoding, migrated media-helper tests to minimal access authorization claims, added cross-purpose rejection coverage, hardened the Cantaloupe delegate with algorithm/type/issuer/audience validation without cross-request payload caching, split access and media environment files by container need, added automatic ignored/Vault vars loading plus secret validation/examples, and documented both local and deployed API/media-server key sharing.

@@ -187,6 +187,51 @@ make -C imageserver docker-run-local
 docker rm -f oldap-imageserver
 ```
 
+## Imageserver versioning and deployment
+
+`imageserver/VERSION` is the single source of truth for the independently
+released OLDAP imageserver component. It contains a plain semantic version such
+as `0.1.6`; the imageserver Makefile derives the Docker tag `v0.1.6` from it.
+This component version is separate from the bundled Cantaloupe version and from
+the mediahelper and Kakadu base-image versions.
+
+Inspect the effective values before building or deploying:
+
+```bash
+make -C imageserver show-version
+make -C imageserver show-tag
+make -C imageserver show-image
+make show-versions
+```
+
+Build and push the immutable version tag plus the convenience `latest` alias:
+
+```bash
+make -C imageserver docker-build
+```
+
+Production and test deployments use the repository-root Makefile. It reads the
+same imageserver version and passes the resulting tag explicitly to Ansible:
+
+```bash
+make deploy-production
+make deploy-test
+```
+
+Deployment never selects `latest`. To roll back or stage another already
+published imageserver tag, override the derived value explicitly:
+
+```bash
+make deploy-production IMAGESERVER_TAG=v0.1.5
+make deploy-test IMAGESERVER_TAG=v0.1.5
+```
+
+For a new imageserver release, update only `imageserver/VERSION`, review
+`make show-versions`, build and push the image, and then deploy it. Published
+version tags must be treated as immutable. An optional matching Git tag should
+be component-specific, for example `imageserver-v0.1.6`, because this repository
+contains several independently versioned images.
+
 The media helper Dockerfile uses the repository root as its build context only
 to read `pyproject.toml` and `poetry.lock`. `mediaserver/Dockerfile.dockerignore`
 whitelists just those manifests and the helper source files, so local media
