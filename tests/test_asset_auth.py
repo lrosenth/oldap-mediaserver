@@ -20,6 +20,8 @@ def media_app(monkeypatch, tmp_path):
     monkeypatch.setenv("OLDAP_ACCESS_JWT_SECRET", ACCESS_SECRET)
     monkeypatch.setenv("OLDAP_MEDIA_JWT_SECRET", MEDIA_SECRET)
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,https://public.example")
+    monkeypatch.delenv("MEDIAHELPER_VERSION", raising=False)
+    monkeypatch.delenv("MEDIASERVER_VERSION", raising=False)
     monkeypatch.setitem(sys.modules, "pyvips", types.SimpleNamespace(Image=types.SimpleNamespace()))
 
     media_path = str(Path.cwd() / "mediaserver")
@@ -36,7 +38,7 @@ def _asset_token(asset_id: str, **claims) -> str:
         "assetId": asset_id,
         "path": "fasnacht/image/archive",
         "originalName": "source.tif",
-        "derivativeName": "iiif.jp2",
+        "derivativeName": "master.tif",
         "protocol": "iiif",
     }
     payload.update(claims)
@@ -44,6 +46,43 @@ def _asset_token(asset_id: str, **claims) -> str:
         TokenSettings(access_secret=ACCESS_SECRET, media_secret=MEDIA_SECRET)
     )
     return codec.issue_media_token("tester", payload)
+
+
+def test_detect_app_version_reads_component_version_file(media_app, monkeypatch):
+    """Direct local runs report the checked-in mediahelper component version."""
+    module, _, _ = media_app
+    monkeypatch.delenv("MEDIAHELPER_VERSION", raising=False)
+    monkeypatch.delenv("MEDIASERVER_VERSION", raising=False)
+
+    version, source = module.detect_app_version()
+    version_path = Path(module.__file__).resolve().parent / "VERSION"
+
+    assert version == version_path.read_text(encoding="utf-8").strip()
+    assert source == f"file:{version_path}"
+
+
+def test_detect_app_version_prefers_image_environment(media_app, monkeypatch):
+    """Container metadata overrides the source-tree VERSION file at runtime."""
+    module, _, _ = media_app
+    monkeypatch.setenv("MEDIAHELPER_VERSION", "1.2.3")
+
+    assert module.detect_app_version() == ("1.2.3", "env:MEDIAHELPER_VERSION")
+
+
+def test_status_reports_mediahelper_component_version(media_app):
+    """The public status payload exposes the resolved component version."""
+    module, client, _ = media_app
+    version_path = Path(module.__file__).resolve().parent / "VERSION"
+
+    response = client.get("/status")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "service": "oldap-mediahelper",
+        "status": "ok",
+        "version": version_path.read_text(encoding="utf-8").strip(),
+        "versionSource": f"file:{version_path}",
+    }
 
 
 def test_iiif_original_download_resolves_as_attachment(media_app):

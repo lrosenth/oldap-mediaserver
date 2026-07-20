@@ -33,7 +33,7 @@ services:
        "--log-level", "${GUNICORN_LOG_LEVEL:-info}",
        "app:app"]
 
-  # IIIF image server (your custom Kakadu-based image)
+  # IIIF image server for pyramidal TIFF derivatives
   imageserver:
     image: lrosenth/oldap-imageserver:${OLDAP_IMAGESERVER_TAG:-latest}
     container_name: oldap-imageserver

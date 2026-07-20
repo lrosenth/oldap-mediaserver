@@ -1,0 +1,10 @@
+# The Cantaloupe distribution contains documentation and optional native
+# dependencies that are not part of the OLDAP image. Send only the runtime JAR
+# and OLDAP-owned configuration to the Docker builder.
+**
+!Dockerfile
+!cantaloupe-oldap/
+!cantaloupe-oldap/cantaloupe.properties
+!cantaloupe-oldap/delegates.rb
+!cantaloupe-*/
+!cantaloupe-*/cantaloupe-*.jar

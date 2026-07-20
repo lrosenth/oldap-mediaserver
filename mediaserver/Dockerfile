@@ -1,8 +1,5 @@
 # syntax=docker/dockerfile:1.6
 
-# Kakadu runtime image (contains /opt/kakadu)
-FROM lrosenth/kakadu-base:latest AS kakadu-base
-
 # --- Stage 1: export Python deps from Poetry (runs on a stable Python version) ---
 # IMPORTANT: This Dockerfile expects the *build context* to be the repository root
 # (the directory that contains `pyproject.toml` / `poetry.lock`).
@@ -29,10 +26,11 @@ RUN poetry export --only main -f requirements.txt --without-hashes -o requiremen
 # --- Stage 2: final runtime image ---
 FROM python:3.14-slim
 
-# Bring Kakadu runtime in
-COPY --from=kakadu-base /opt/kakadu /opt/kakadu
-ENV LD_LIBRARY_PATH=/opt/kakadu/lib
-ENV PATH="/opt/kakadu/bin:${PATH}"
+ARG MEDIAHELPER_VERSION
+
+LABEL org.opencontainers.image.title="OLDAP Mediahelper"
+LABEL org.opencontainers.image.description="Upload and asset authorization service for OLDAP media"
+LABEL org.opencontainers.image.version="${MEDIAHELPER_VERSION}"
 
 WORKDIR /app
 
@@ -56,10 +54,11 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY mediaserver/app.py /app/app.py
 COPY mediaserver/oldap_client.py /app/oldap_client.py
 COPY mediaserver/__init__.py /app/__init__.py
-COPY mediaserver/Makefile /app/Makefile
+COPY mediaserver/VERSION /app/VERSION
 
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
+ENV MEDIAHELPER_VERSION="${MEDIAHELPER_VERSION}"
 
 EXPOSE 8000
 

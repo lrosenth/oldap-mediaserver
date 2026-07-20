@@ -1,4 +1,4 @@
-FROM lrosenth/kakadu-base:latest
+FROM ubuntu:24.04
 
 ARG IMAGE_VERSION
 ARG CANTALOUPE_VERSION=5.0.7
@@ -9,11 +9,14 @@ LABEL org.opencontainers.image.title="OLDAP Imageserver"
 LABEL org.opencontainers.image.description="Cantaloupe IIIF image server for OLDAP"
 LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
 
-# Install Java runtime
-RUN apt-get update && apt-get install -y \
-    openjdk-21-jre-headless \
-    && rm -rf /var/lib/apt/lists/*
-RUN apt-get update && apt-get install -y ruby
+# Cantaloupe uses Java2D for pyramidal TIFF sources. Ruby is required by the
+# authorization and source-resolution delegate.
+RUN apt-get update -o Acquire::Retries=5 \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      openjdk-21-jre-headless \
+      ruby \
+ && rm -rf /var/lib/apt/lists/*
 
 RUN gem install --no-document jwt net-http net-http-persistent
 
@@ -24,9 +27,6 @@ RUN mkdir -p /opt/iiif /data/images
 COPY ${CANTALOUPE_DIR}/${CANTALOUPE_JAR} /opt/iiif/cantaloupe.jar
 COPY cantaloupe-oldap/cantaloupe.properties /opt/iiif/cantaloupe.properties
 COPY cantaloupe-oldap/delegates.rb /opt/iiif/delegates.rb
-
-# Optional hint for Cantaloupe itself
-ENV kakadu.native.path=/opt/kakadu/lib/libkdu_v86R.so
 
 ENV CANTALOUPE_HOME=/opt/iiif
 WORKDIR /opt/iiif

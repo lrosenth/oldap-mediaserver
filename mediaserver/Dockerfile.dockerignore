@@ -11,7 +11,7 @@
 !mediaserver/
 !mediaserver/Dockerfile
 !mediaserver/Dockerfile.dockerignore
-!mediaserver/Makefile
+!mediaserver/VERSION
 !mediaserver/__init__.py
 !mediaserver/app.py
 !mediaserver/oldap_client.py

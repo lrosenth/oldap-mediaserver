@@ -569,10 +569,10 @@ class CustomDelegate
 
         # Sanitize derivative filename and provide a safe default
         derivative_name = derivative_name.to_s
-        derivative_name = "iiif.jp2" if derivative_name.empty?
+        derivative_name = "master.tif" if derivative_name.empty?
         derivative_name = File.basename(derivative_name.tr("\\", "/"))
         if derivative_name == "." || derivative_name == ".." || derivative_name.include?("/")
-            derivative_name = "iiif.jp2"
+            derivative_name = "master.tif"
         end
 
         # Sanitize identifier used in the filesystem path

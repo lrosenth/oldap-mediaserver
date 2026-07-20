@@ -69,6 +69,38 @@ def test_upload_rejects_media_capability_as_bearer(media_app):
     assert response.status_code == 401
 
 
+def test_delete_requires_access_token(media_app):
+    """Asset deletion rejects missing credentials and media capabilities."""
+    _, client, _ = media_app
+    media_token = _codec().issue_media_token("tester", {"assetId": "asset-pdf"})
+
+    missing = client.delete("/upload/asset-pdf")
+    media_capability = client.delete(
+        "/upload/asset-pdf",
+        headers={"Authorization": f"Bearer {media_token}"},
+    )
+
+    assert missing.status_code == 401
+    assert media_capability.status_code == 401
+
+
+@pytest.mark.parametrize("target_format", [None, "tiff", "TIFF"])
+def test_image_target_format_normalizes_to_tiff(media_app, target_format):
+    """Images use pyramidal TIFF whether the target is omitted or explicit."""
+    module, _, _ = media_app
+
+    assert module.validate_target_format(module.MediaType.IMAGE, target_format) == "tiff"
+
+
+@pytest.mark.parametrize("target_format", ["jp2", "j2k", "jpeg"])
+def test_image_target_format_rejects_non_tiff_formats(media_app, target_format):
+    """Removed image targets fail explicitly instead of changing storage silently."""
+    module, _, _ = media_app
+
+    with pytest.raises(ValueError, match="allowed: \\['tiff'\\]"):
+        module.validate_target_format(module.MediaType.IMAGE, target_format)
+
+
 class FakeOldapClient:
     """Capture media resource creation without contacting oldap-api."""
 
@@ -90,6 +122,55 @@ class FailingCreateOldapClient(FakeOldapClient):
 
     def create_resource(self, resource: str, resource_data: dict) -> dict:
         raise RuntimeError("OLDAP create failed")
+
+
+def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
+    """An image upload creates the canonical master.tif IIIF derivative."""
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+
+    class FakeVipsImage:
+        def tiffsave(self, destination: str, **options) -> None:
+            assert options == {
+                "tile": True,
+                "pyramid": True,
+                "compression": "none",
+                "tile_width": 256,
+                "tile_height": 256,
+                "bigtiff": True,
+            }
+            Path(destination).write_bytes(b"pyramidal tiff")
+
+    def fake_vips_load(source: str, *, access: str):
+        assert Path(source).read_bytes() == b"image bytes"
+        assert access == "sequential"
+        return FakeVipsImage()
+
+    monkeypatch.setattr(module.pyvips.Image, "new_from_file", fake_vips_load, raising=False)
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "archive",
+            "identifier": "asset-image",
+            "file": (io.BytesIO(b"image bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["mediaType"] == "image"
+    assert payload["derivativeName"] == "master.tif"
+    assert payload["protocol"] == "iiif"
+
+    asset_root = media_root / "testproject" / "image" / "archive" / "asset-image"
+    assert (asset_root / "original" / "scan.png").read_bytes() == b"image bytes"
+    assert (asset_root / "derived" / "master.tif").read_bytes() == b"pyramidal tiff"
+    assert FakeOldapClient.created[0][1]["shared:derivativeName"] == "master.tif"
 
 
 @pytest.mark.parametrize("identifier", ["-nanoid-style", "_nanoid-style", "asset.id~1"])

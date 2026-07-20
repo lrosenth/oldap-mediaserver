@@ -1,5 +1,29 @@
 # CODEX_LOG
 
+### Update 2026-07-16 23:02
+- Decisions: Use the same protected central Vault file as `oldap-setup` for test and production media deployments while retaining explicit overrides.
+- Implementation: Added Make defaults for `$HOME/ProgDev/OLDAP/auth/auth.vault.yml` and `--ask-vault-pass`, a preflight file check, automatic `auth_secrets_file` propagation to both deployment targets, and synchronized deployment documentation.
+- Open: Run `make deploy-test` or `make deploy-production` and enter the Vault and sudo passwords when prompted.
+- Risks/Assumptions: The central Vault contains the access and media JWT variables expected by `deploy-media.yml`, and those values match the API deployment.
+
+### Update 2026-07-16 12:00
+- Decisions: Treat asset deletion as an upload-domain mutation that requires the same strictly validated OLDAP access token as asset creation; never accept a media delivery capability for deletion.
+- Implementation: Replaced the stale deleted `require_bearer_token()` call in `DELETE /upload/<asset_id>` with `require_access_token()` and added regression coverage for missing credentials and cross-purpose media tokens.
+- Open: Rebuild and redeploy the mediahelper image before verifying MediaLibrary deletion through FasnachtsPage.
+- Risks/Assumptions: The frontend already sends the current Bearer access token; the existing OLDAP permission check remains authoritative for `DATA_DELETE`.
+
+### Update 2026-07-16 00:17
+- Decisions: Standardize image delivery on tiled pyramidal BigTIFF and remove JPEG 2000 plus the proprietary codec runtime from the supported upload and IIIF architecture; bump both affected pre-1.0 components to `0.2.0` for the breaking target-format change.
+- Implementation: Made TIFF the default and only image target, fixed the derivative contract to `master.tif`, removed proprietary conversion/build stages and the tracked base-image scaffold, restricted the imageserver build context to the Cantaloupe JAR and OLDAP files, configured Cantaloupe ManualSelectionStrategy with Java2dProcessor for TIFF, and updated delegate fallbacks, tests, OpenAPI, Compose comments, README, and stable project context.
+- Open: Build and push `lrosenth/oldap-mediahelper:v0.2.0` and `lrosenth/oldap-imageserver:v0.2.0`, then deploy the pinned tags; delete the obsolete private base image and any local licensed artifacts manually after confirming they are no longer needed.
+- Risks/Assumptions: The deployment has no existing JPEG 2000 derivatives; TIFF output remains uncompressed, so storage usage may be higher than with a lossless compressed TIFF profile.
+
+### Update 2026-07-15 23:49
+- Decisions: Version the Flask mediahelper independently from the repository Python package and other images, using `mediaserver/VERSION` as its single source and requiring explicit deployment propagation alongside the imageserver tag.
+- Implementation: Added mediahelper version `0.1.0`, strict Make version/tag/image derivation and inspection targets, OCI/runtime version metadata, VERSION-file runtime fallback with focused tests, Root-Make and Ansible propagation without a duplicated default, and synchronized release/deployment documentation and project context.
+- Open: Build and push `lrosenth/oldap-mediahelper:v0.1.0` before deploying it; Kakadu base-image versioning remains separate future work.
+- Risks/Assumptions: The existing `pyproject.toml` version remains a repository/Python packaging concern and does not define the mediahelper image tag; published component image tags remain immutable.
+
 ### Update 2026-07-15 23:36
 - Decisions: Version the imageserver independently from Cantaloupe and other media-stack images, using `imageserver/VERSION` as the single source and a derived `v<version>` Docker tag; require explicit tag propagation into deployment.
 - Implementation: Added imageserver version `0.1.6`, reusable Make image/version variables and inspection targets, OCI build metadata, a repository-root Make deployment entry point, an Ansible tag assertion without a duplicated default, and synchronized release/deployment documentation and project context.

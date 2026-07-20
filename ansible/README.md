@@ -12,7 +12,7 @@ The inventory also contains a separate test target:
 - HTTPS uses Caddy's internal CA because the host has no public ACME/Let's Encrypt name
 
 ## What gets deployed
-- `lrosenth/oldap-mediahelper:v0.0.14` by default
+- `lrosenth/oldap-mediahelper:<explicit tag from mediaserver/VERSION>`
 - `lrosenth/oldap-imageserver:<explicit tag from imageserver/VERSION>`
 - `caddy:2.8`
 
@@ -135,7 +135,8 @@ make deploy-production
 ```
 
 Run these commands from the repository root. `make deploy-production` derives
-the imageserver tag from `imageserver/VERSION`, passes it to Ansible as
+the mediahelper and imageserver tags from their component `VERSION` files,
+passes them to Ansible as `oldap_mediahelper_tag` and
 `oldap_imageserver_tag`, and targets only the production group `mediaserver`,
 currently `dhlab-iii.dhlab.unibas.ch`.
 `-K` prompts for the remote sudo password.
@@ -148,8 +149,8 @@ make deploy-test
 ```
 
 Run these commands from the repository root. This targets only the test group
-`test_mediaserver`, currently `media.home.org`, and passes the same derived
-imageserver tag explicitly.
+`test_mediaserver`, currently `media.home.org`, and passes both derived
+component tags explicitly.
 
 The test server gets these host-specific overrides from `host_vars/media.home.org.yml`:
 - `media_domain: media.home.org`
@@ -173,8 +174,9 @@ The playbook defaults remain production-oriented:
 - `deploy-media.yml` defaults to `target_hosts=mediaserver`
 - `group_vars/all.yml` remains the shared/default configuration for `media.oldap.org`
 - `media.home.org` settings live in `host_vars/media.home.org.yml`
-- `oldap_imageserver_tag` has no silent Ansible default and must be supplied
-  explicitly; the repository-root Makefile provides it for normal deployments
+- `oldap_mediahelper_tag` and `oldap_imageserver_tag` have no silent Ansible
+  defaults and must be supplied explicitly; the repository-root Makefile
+  provides both for normal deployments
 
 Therefore, the test server is deployed only when explicitly requested with:
 
@@ -189,10 +191,10 @@ make deploy-test
 make deploy-production IMAGESERVER_TAG=v0.1.5
 ```
 
-- Deploy a specific mediahelper image:
+- Deploy or roll back to a specific mediahelper image:
 
 ```bash
-make deploy-production ANSIBLE_ARGS='-e oldap_mediahelper_tag=v0.0.12'
+make deploy-production MEDIAHELPER_TAG=v0.0.14
 ```
 
 - Force image refresh:
@@ -232,14 +234,22 @@ Both values must exactly match the corresponding `OLDAP_ACCESS_JWT_SECRET` and
 at least 32 bytes. They must not equal one another. No secret is stored in
 `group_vars/all.yml` or committed to Git.
 
-Copy `auth-secrets.example.yml` to the ignored `auth-secrets.yml` and populate
-it. The playbook loads that file automatically when the two variables were not
-already supplied. To use an external Ansible Vault file instead, select it with
-`auth_secrets_file` and provide the appropriate Vault option:
+The repository-root Makefile defaults to the shared encrypted
+`$HOME/ProgDev/OLDAP/auth/auth.vault.yml`, passes it as `auth_secrets_file`, and
+uses `--ask-vault-pass`. Consequently, the normal commands need no additional
+secret arguments:
+
+```bash
+make deploy-test
+make deploy-production
+```
+
+The path and Vault arguments remain overridable when required:
 
 ```bash
 make deploy-production \
-  ANSIBLE_ARGS='-e auth_secrets_file=/secure/path/oldap-auth.vault.yml --ask-vault-pass'
+  AUTH_SECRETS_FILE=/secure/path/oldap-auth.vault.yml \
+  ANSIBLE_VAULT_ARGS='--vault-id production@prompt'
 ```
 
 The playbook validates both keys before changing the host. It renders a shared

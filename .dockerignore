@@ -15,7 +15,7 @@ tars
 *.tgz
 *.zip
 
-# Keep the mediaserver build context small. The imageserver and kakadu-base
-# images have their own Dockerfiles/build contexts.
+# Keep the mediaserver build context small. The imageserver has its own build
+# context; retired licensed artifacts remain excluded as a safety measure.
 imageserver/cantaloupe-5.0.7
 kakadu-base/v8_6_2-01727L

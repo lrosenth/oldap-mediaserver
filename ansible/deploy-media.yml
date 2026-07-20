@@ -4,13 +4,15 @@
   become: true
 
   pre_tasks:
-    - name: Validate explicit imageserver deployment tag
+    - name: Validate explicit component deployment tags
       ansible.builtin.assert:
         that:
           - (oldap_imageserver_tag | default('') | string | trim | length) > 0
+          - (oldap_mediahelper_tag | default('') | string | trim | length) > 0
         fail_msg: >-
-          Supply oldap_imageserver_tag explicitly. The repository-root Makefile
-          derives it from imageserver/VERSION for normal deployments.
+          Supply oldap_imageserver_tag and oldap_mediahelper_tag explicitly.
+          The repository-root Makefile derives them from the component VERSION
+          files for normal deployments.
 
     - name: Load ignored or Vault-backed authentication secrets
       ansible.builtin.include_vars:

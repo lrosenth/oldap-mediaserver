@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OLDAP Media Server API
-  version: 0.1.0
+  version: 0.2.0
   description: OpenAPI definition generated from routes in mediaserver/app.py.
 servers:
   - url: http://localhost:8000
@@ -50,7 +50,9 @@ paths:
                   type: string
                   description: |
                     Desired output format. Allowed values depend on detected media type.
-                    image: jp2|tiff|jpeg, video: mp4, audio: mp3|m4a, document: pdf.
+                    image: tiff, video: mp4, audio: mp3|m4a, document: pdf.
+                    TIFF is the default and only image target; it produces a
+                    pyramidal tiled `derived/master.tif` IIIF source.
                     For audio, mp3 is the default browser-delivery derivative.
                     For documents, pdf is the only accepted value and produces
                     the stable derivative filename `document.pdf`.
@@ -293,7 +295,7 @@ components:
           description: MIME type recorded on the MediaObject. PDF document uploads are normalized to application/pdf.
         derivativeName:
           type: string
-          description: Filename inside the asset's derived directory, e.g. iiif.jp2, web.mp4, web.mp3, or document.pdf.
+          description: Filename inside the asset's derived directory, e.g. master.tif, web.mp4, web.mp3, or document.pdf.
         mediaType:
           type: string
           enum: [image, audio, video, document, other]

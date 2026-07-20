@@ -173,8 +173,10 @@ def validate_target_format(media_type: MediaType, raw: str | None) -> str:
     fmt = (raw or "").lower().strip()
 
     if media_type == MediaType.IMAGE:
-        allowed = {"jp2", "tiff", "jpeg"}
-        fmt = fmt or "jp2"
+        # One canonical IIIF derivative keeps the storage contract predictable
+        # and avoids codec-specific native runtime dependencies.
+        allowed = {"tiff"}
+        fmt = fmt or "tiff"
         if fmt not in allowed:
             raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
         return fmt
@@ -258,49 +260,55 @@ def dcterms_type_for_media(media_type: MediaType) -> str:
     return "dcmitype:Dataset"
 
 
-def _read_version_from_makefile(makefile_path: Path) -> Optional[str]:
-    """Read VERSION/Version assignment from a Makefile."""
+def _read_version_file(version_path: Path) -> Optional[str]:
+    """Return a non-empty component version from a plain text file.
+
+    Args:
+        version_path: Path to the component ``VERSION`` file.
+
+    Returns:
+        The stripped version string, or ``None`` when the file is unavailable
+        or empty.
+    """
     try:
-        content = makefile_path.read_text(encoding="utf-8")
+        value = version_path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
-
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = re.match(r"^(?:VERSION|Version)\s*(?:\?=|:=|=)\s*(.+)$", line)
-        if not match:
-            continue
-        value = match.group(1).split("#", 1)[0].strip()
-        if value:
-            return value
-    return None
+    return value or None
 
 
 def detect_app_version() -> tuple[str, str]:
-    """Resolve app version with env override, then Makefile fallback."""
+    """Resolve the runtime version from the image environment or VERSION file.
+
+    Returns:
+        A tuple containing the component version and a diagnostic source name.
+        Container builds set ``MEDIAHELPER_VERSION`` explicitly; direct local
+        runs fall back to the checked-in component ``VERSION`` file.
+    """
     for env_name in ("MEDIAHELPER_VERSION", "MEDIASERVER_VERSION"):
         value = os.environ.get(env_name, "").strip()
         if value:
             return value, f"env:{env_name}"
 
-    makefile_path = Path(__file__).resolve().parent / "Makefile"
-    value = _read_version_from_makefile(makefile_path)
+    version_path = Path(__file__).resolve().parent / "VERSION"
+    value = _read_version_file(version_path)
     if value:
-        return value, f"makefile:{makefile_path}"
+        return value, f"file:{version_path}"
 
     return "unknown", "default"
+
 
 def env_list(name: str, default: str = "") -> list[str]:
     value = os.environ.get(name, default)
     return [v.strip() for v in value.split(",") if v.strip()]
+
 
 def content_disposition_header(disposition: str, filename: str) -> str:
     """Build a safe Content-Disposition value for Caddy-served assets."""
     cleaned = str(filename).replace("\r", "").replace("\n", "")
     quoted_filename = cleaned.replace("\\", "\\\\").replace('"', '\\"')
     return f'{disposition}; filename="{quoted_filename}"'
+
 
 def create_app() -> Flask:
     app = Flask(__name__)
@@ -388,43 +396,6 @@ def create_app() -> Flask:
             return None
 
     # ------------------------------------------------------------------
-    # Helper: run kdu_compress to JPEG2000
-    # ------------------------------------------------------------------
-    def convert_to_jp2_with_kakadu(src: Path, dst: Path) -> None:
-        """
-        Convert `src` (e.g. TIFF) to JPEG2000 using Kakadu's kdu_compress.
-        Tune parameters as needed for your preservation / access profile.
-        """
-        cmd = [
-            "/opt/kakadu/bin/kdu_compress",
-            f"-i", str(src),
-            f"-o", str(dst),
-            # Example parameters – adjust to your liking:
-            # "-rate", "8",             # visually lossless-ish, tune or remove
-            "Clayers=8",
-            "Clevels=6",
-            "Cprecincts={256,256}",
-            "Cblk={64,64}",
-            "Corder=RLCP",
-            "Cuse_precincts=yes",
-            "ORGgen_plt=yes",
-            "ORGtparts=R",
-            "Stiles={1024,1024}"
-        ]
-        app.logger.debug("Running kdu_compress: %s", " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"kdu_compress failed (exit {result.returncode}): "
-                f"{result.stderr}"
-            )
-
-    # ------------------------------------------------------------------
     # Helper: make pyramidal tiled TIFF with vips (no compression)
     # ------------------------------------------------------------------
     def convert_to_pyramidal_tiff_with_vips(src: Path, dst: Path) -> None:
@@ -441,18 +412,6 @@ def create_app() -> Flask:
             tile_height=256,
             bigtiff=True          # safer for large CH images
         )
-
-    # ------------------------------------------------------------------
-    # Helper: make JPEG with vips
-    # ------------------------------------------------------------------
-    def convert_to_jpeg_with_vips(src: Path, dst: Path) -> None:
-        """Create a JPEG derivative with vips.
-
-        Note: JPEG is *lossy* by default. If you want near-lossless, pass a high `Q` (quality)
-        and/or use JPEG-LS/JPEG2000 instead.
-        """
-        image = pyvips.Image.new_from_file(str(src), access="sequential")
-        image.jpegsave(str(dst))
 
     # ------------------------------------------------------------------
     # Helper: make MP4 (H.264 + AAC) with ffmpeg
@@ -910,7 +869,6 @@ def create_app() -> Flask:
         # Keep original extension for tmp and store original as received
         orig_ext = Path(upload_file.filename).suffix or ".dat"
         tmp_path = tmp_dir / f"{identifier}{orig_ext}"
-        tmp_path2: Optional[Path] = None
         thumb128_path: Optional[Path] = None
         thumb256_path: Optional[Path] = None
 
@@ -920,15 +878,7 @@ def create_app() -> Flask:
 
         # Decide where the produced file goes
         if media_type == MediaType.IMAGE:
-            if target_format == "jp2":
-                out_ext = ".jp2"
-                out_path = derived_dir / f"iiif{out_ext}"
-            elif target_format == "jpeg":
-                out_ext = ".jpg"
-                out_path = derived_dir / f"preview{out_ext}"
-            else:
-                out_ext = ".tif"
-                out_path = derived_dir / f"master{out_ext}"
+            out_path = derived_dir / "master.tif"
 
         elif media_type == MediaType.VIDEO:
             # Single web-friendly derivative
@@ -977,24 +927,7 @@ def create_app() -> Flask:
 
         try:
             if media_type == MediaType.IMAGE:
-                if target_format == "jp2":
-                    src_for_kakadu = tmp_path
-                    if upload_file.mimetype != "image/tiff":
-                        # Kakadu can only read TIFF
-                        tmp_path2 = tmp_dir / f"{identifier}.tif"
-                        image = pyvips.Image.new_from_file(str(tmp_path), access="sequential")
-                        image.tiffsave(str(tmp_path2), bigtiff=True)
-                        src_for_kakadu = tmp_path2
-                    convert_to_jp2_with_kakadu(src_for_kakadu, out_path)
-                elif target_format == "jpeg":
-                    # simple JPEG – if input is already JPEG, just copy the file
-                    if upload_file.mimetype == "image/jpeg":
-                        copy_file(tmp_path, out_path)
-                    else:
-                        convert_to_jpeg_with_vips(tmp_path, out_path)
-                else:
-                    # pyramidal tiled TIFF (no compression)
-                    convert_to_pyramidal_tiff_with_vips(tmp_path, out_path)
+                convert_to_pyramidal_tiff_with_vips(tmp_path, out_path)
 
             elif media_type == MediaType.VIDEO:
                 # Always create a web MP4 derivative for now.
@@ -1039,8 +972,6 @@ def create_app() -> Flask:
         finally:
             # Remove temp file
             tmp_path.unlink(missing_ok=True)
-            if tmp_path2 is not None:
-                tmp_path2.unlink(missing_ok=True)
 
         # Cantaloupe identifier is the relative path from IMAGE_ROOT
         iiif_id = identifier
@@ -1100,8 +1031,10 @@ def create_app() -> Flask:
 
     @app.delete("/upload/<asset_id>")
     def delete(asset_id):
-        # we can only delete if we have a bearer token
-        token = require_bearer_token()
+        """Delete an OLDAP media resource and its local asset files."""
+        # Deletion is a mutating upload operation and therefore accepts only a
+        # strictly validated OLDAP access token, never a media capability.
+        token, _ = require_access_token()
         try:
             asset_id = validate_asset_path_segment(asset_id)
         except ValueError:
