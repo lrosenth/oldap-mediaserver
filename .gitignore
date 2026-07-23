@@ -216,3 +216,4 @@ fasnacht-media-*
 /ansible/auth-secrets.yml
 /mediaserver.env
 /mediahelper-access.env
+/root.crt

@@ -24,10 +24,10 @@ oldap_jwt_issuer: https://oldap.org
 oldap_jwt_audience: oldap-api
 oldap_unknown_userid: unknown
 oldap_unknown_password: ""
-cors_origins: "*"
+cors_origins: "https://app.oldap.org,https://fasnacht.oldap.org"
 
-# Optional ACME contact address for Caddy (recommended)
-caddy_acme_email: ""
+# ACME contact address used by the production Caddy instance.
+caddy_acme_email: lukas.rosenthaler@unibas.ch
 
 # Optional firewall management via UFW
 manage_ufw: false

@@ -229,6 +229,12 @@ make deploy-production
 make deploy-test
 ```
 
+`deploy-production` is limited to the production inventory group and renders
+`media.oldap.org` with public ACME TLS. `deploy-test` is independently limited
+to `media.home.org`, uses Caddy's internal CA for HTTPS, and calls the separate
+home API at `http://api.home.org`. Both deployments load the matching access
+and media JWT keys from the shared encrypted authentication Vault.
+
 Deployment never selects `latest`. To roll back or stage other already
 published component tags, override the derived values explicitly:
 

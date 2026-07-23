@@ -6,11 +6,12 @@ ansible_become_user: root
 ansible_become_flags: "-H -S"
 
 media_domain: media.home.org
-oldap_api_url: http://api.rosy.home.org
-container_extra_hosts:
-  - "api.rosy.home.org:192.168.1.10"
-  - "app.rosy.home.org:192.168.1.10"
-  - "graphdb.rosy.home.org:192.168.1.10"
+# The API is hosted on a separate home VM. Use HTTP for this server-to-server
+# call so the media containers do not need to trust the API Caddy instance's
+# private certificate authority. Public browser traffic remains HTTPS.
+oldap_api_url: http://api.home.org
+cors_origins: >-
+  https://app.home.org,https://fasnacht.home.org,http://app.home.org,http://fasnacht.home.org
 
 # media.home.org is not publicly resolvable, so Caddy must not request a
 # public ACME certificate. The explicit http:// address keeps HTTP available;

@@ -138,7 +138,8 @@ Run these commands from the repository root. `make deploy-production` derives
 the mediahelper and imageserver tags from their component `VERSION` files,
 passes them to Ansible as `oldap_mediahelper_tag` and
 `oldap_imageserver_tag`, and targets only the production group `mediaserver`,
-currently `dhlab-iii.dhlab.unibas.ch`.
+currently `dhlab-iii.dhlab.unibas.ch`. Both the play host expression and an
+Ansible inventory limit protect this production target explicitly.
 `-K` prompts for the remote sudo password.
 
 ## Deploy Test Server
@@ -150,21 +151,23 @@ make deploy-test
 
 Run these commands from the repository root. This targets only the test group
 `test_mediaserver`, currently `media.home.org`, and passes both derived
-component tags explicitly.
+component tags explicitly. Both the play host expression and an Ansible
+inventory limit protect this test target explicitly.
 
 The test server gets these host-specific overrides from `host_vars/media.home.org.yml`:
 - `media_domain: media.home.org`
-- `oldap_api_url: http://api.rosy.home.org`
-- Docker container host aliases:
-  - `api.rosy.home.org:192.168.1.10`
-  - `app.rosy.home.org:192.168.1.10`
-  - `graphdb.rosy.home.org:192.168.1.10`
+- `oldap_api_url: http://api.home.org`
+- exact CORS origins for `app.home.org` and `fasnacht.home.org`, over both
+  local HTTP and HTTPS
 - Caddy site addresses: `http://media.home.org` and `https://media.home.org`
 - `caddy_tls_internal: true`
 - `caddy_auto_https: disable_redirects`
 
-The `oldap-mediahelper` and `oldap-imageserver` containers receive this as `OLDAP_API_URL=http://api.rosy.home.org` in `mediaserver.env`.
-The Docker Compose file also adds the `*.rosy.home.org` names to the containers via `extra_hosts`, so they resolve inside the containers even if Docker does not inherit the host's `/etc/hosts` entries.
+The `oldap-mediahelper` and `oldap-imageserver` containers receive this as
+`OLDAP_API_URL=http://api.home.org` in `mediaserver.env`. The containers use
+the home network's DNS rather than pinning changing VM addresses through
+Docker `extra_hosts`. Verify that `api.home.org` resolves from the test host
+and from a deployed container before exercising uploads.
 
 The important consequence is that Caddy serves both HTTP and HTTPS for `media.home.org`, but HTTPS uses Caddy's internal CA instead of Let's Encrypt. Browsers will not trust that certificate automatically unless the Caddy internal root CA is trusted on the client.
 

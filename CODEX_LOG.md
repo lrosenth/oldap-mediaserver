@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-07-20 22:27
+- Decisions: Treat `media.home.org` as a separate VM from the home API, rely on authoritative home DNS instead of stale Docker host aliases, keep private-CA HTTPS for browser parity, and constrain each deployment target twice through its play host expression and inventory limit.
+- Implementation: Pointed the test media stack at `http://api.home.org`, added exact per-environment CORS origins, configured the production ACME contact, added explicit Make target limits for test and production, and synchronized deployment documentation and project context.
+- Open: Run `make deploy-test`, trust the media Caddy root CA on test clients, and verify DNS from the deployed containers before promoting the same image tags with `make deploy-production`.
+- Risks/Assumptions: Home DNS keeps `media.home.org` and `api.home.org` on their separate VMs and is reachable through Docker's resolver; access and media JWT keys in the shared Vault match the API deployment.
+
 ### Update 2026-07-16 23:02
 - Decisions: Use the same protected central Vault file as `oldap-setup` for test and production media deployments while retaining explicit overrides.
 - Implementation: Added Make defaults for `$HOME/ProgDev/OLDAP/auth/auth.vault.yml` and `--ask-vault-pass`, a preflight file check, automatic `auth_secrets_file` propagation to both deployment targets, and synchronized deployment documentation.

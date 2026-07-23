@@ -35,6 +35,12 @@
 - Both media deployment targets default to the shared encrypted
   `$HOME/ProgDev/OLDAP/auth/auth.vault.yml` and prompt for its Vault password;
   `AUTH_SECRETS_FILE` and `ANSIBLE_VAULT_ARGS` remain overridable.
+- Production and home media targets are separate hosts. Production serves
+  `media.oldap.org` with public ACME TLS and calls `https://api.oldap.org`;
+  the home target serves `media.home.org` with Caddy's internal CA and calls
+  the separate API VM at `http://api.home.org`. Home containers rely on local
+  DNS rather than fixed `extra_hosts` addresses. The Make targets apply both
+  explicit play host expressions and inventory limits.
 
 ## Storage Model
 Assets are stored below the media root as:

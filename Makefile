@@ -31,6 +31,8 @@ deploy-production: check-auth-secrets
 		-i inventory.ini \
 		deploy-media.yml \
 		-K \
+		-l mediaserver \
+		-e target_hosts=mediaserver \
 		-e "auth_secrets_file=$(AUTH_SECRETS_FILE)" $(ANSIBLE_VAULT_ARGS) \
 		-e oldap_imageserver_tag="$(IMAGESERVER_TAG)" \
 		-e oldap_mediahelper_tag="$(MEDIAHELPER_TAG)" $(ANSIBLE_ARGS)
@@ -41,6 +43,7 @@ deploy-test: check-auth-secrets
 		deploy-media.yml \
 		-K \
 		-T 60 \
+		-l test_mediaserver \
 		-e target_hosts=test_mediaserver \
 		-e "auth_secrets_file=$(AUTH_SECRETS_FILE)" $(ANSIBLE_VAULT_ARGS) \
 		-e oldap_imageserver_tag="$(IMAGESERVER_TAG)" \
