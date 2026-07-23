@@ -142,6 +142,12 @@ currently `dhlab-iii.dhlab.unibas.ch`. Both the play host expression and an
 Ansible inventory limit protect this production target explicitly.
 `-K` prompts for the remote sudo password.
 
+The production media CORS allowlist includes `app.oldap.org`,
+`fasnacht.oldap.org`, and the public `fasnacht.digital` frontend. This is
+separate from the API refresh-cookie origin policy: browser PDF rendering and
+other direct media reads require CORS even though media authorization does not
+use the API refresh cookie.
+
 ## Deploy Test Server
 
 ```bash
@@ -180,6 +186,11 @@ The playbook defaults remain production-oriented:
 - `oldap_mediahelper_tag` and `oldap_imageserver_tag` have no silent Ansible
   defaults and must be supplied explicitly; the repository-root Makefile
   provides both for normal deployments
+- Compose must report the services as running, and the public `/health`
+  endpoint must return the requested mediahelper version before Ansible reports
+  a successful deployment
+- a tokenless probe through the public IIIF route must reach Cantaloupe and be
+  rejected with `401`, verifying both routing and the authorization boundary
 
 Therefore, the test server is deployed only when explicitly requested with:
 

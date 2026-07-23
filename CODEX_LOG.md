@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-07-23 17:41
+- Decisions: Treat production media CORS separately from API refresh-cookie CORS, require post-deploy health/version verification, and suppress Caddy handlers during intentional rollback.
+- Implementation: Restored `https://fasnacht.digital` to the production media allowlist, made Compose wait for running services, added retried public mediahelper health/version and tokenless IIIF authorization probes after flushing Caddy handlers, guarded rollback handlers, ignored local Caddy/Cantaloupe runtime artifacts, documented the deployment contract, and added focused target/inventory regression tests.
+- Open: Confirm that the shared production Vault contains rotated access/media keys, then deploy test before production and verify a real IIIF image plus PDF asset in addition to the automated mediahelper health check.
+- Risks/Assumptions: The deployment host can resolve its public media domain; internal-CA certificate validation is disabled only for the home target, while production keeps normal TLS validation.
+
 ### Update 2026-07-20 22:27
 - Decisions: Treat `media.home.org` as a separate VM from the home API, rely on authoritative home DNS instead of stale Docker host aliases, keep private-CA HTTPS for browser parity, and constrain each deployment target twice through its play host expression and inventory limit.
 - Implementation: Pointed the test media stack at `http://api.home.org`, added exact per-environment CORS origins, configured the production ACME contact, added explicit Make target limits for test and production, and synchronized deployment documentation and project context.

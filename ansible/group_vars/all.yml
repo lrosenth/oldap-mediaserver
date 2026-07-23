@@ -24,7 +24,7 @@ oldap_jwt_issuer: https://oldap.org
 oldap_jwt_audience: oldap-api
 oldap_unknown_userid: unknown
 oldap_unknown_password: ""
-cors_origins: "https://app.oldap.org,https://fasnacht.oldap.org"
+cors_origins: "https://app.oldap.org,https://fasnacht.oldap.org,https://fasnacht.digital"
 
 # ACME contact address used by the production Caddy instance.
 caddy_acme_email: lukas.rosenthaler@unibas.ch

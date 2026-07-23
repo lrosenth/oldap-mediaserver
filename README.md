@@ -233,7 +233,11 @@ make deploy-test
 `media.oldap.org` with public ACME TLS. `deploy-test` is independently limited
 to `media.home.org`, uses Caddy's internal CA for HTTPS, and calls the separate
 home API at `http://api.home.org`. Both deployments load the matching access
-and media JWT keys from the shared encrypted authentication Vault.
+and media JWT keys from the shared encrypted authentication Vault. A deployment
+finishes only after Compose reports the services as running and the public
+`/health` endpoint reports the expected mediahelper component version. A
+tokenless IIIF probe must also reach Cantaloupe and be rejected with `401`,
+confirming that the public image path and its authorization boundary are active.
 
 Deployment never selects `latest`. To roll back or stage other already
 published component tags, override the derived values explicitly:

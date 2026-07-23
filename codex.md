@@ -41,6 +41,11 @@
   the separate API VM at `http://api.home.org`. Home containers rely on local
   DNS rather than fixed `extra_hosts` addresses. The Make targets apply both
   explicit play host expressions and inventory limits.
+- Ansible waits for Compose to report running services, flushes pending Caddy
+  handlers, and then verifies the public media `/health` response including the
+  requested mediahelper version. A tokenless public IIIF probe must also reach
+  Cantaloupe and return `401`. Rollback suppresses Caddy handlers because the
+  stack has intentionally been removed.
 
 ## Storage Model
 Assets are stored below the media root as:
