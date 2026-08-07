@@ -1,0 +1,64 @@
+{
+  "documentType": "oldap.zip-import.report",
+  "schemaVersion": "1.0.0",
+  "importId": "018f6f9e-6f93-7c32-a29f-1a8e247f9200",
+  "generatedAt": "2026-08-04T16:40:01Z",
+  "status": "INVALID",
+  "canConfirm": false,
+  "target": {
+    "projectShortName": "fasnacht",
+    "stagingAreaIri": "urn:uuid:53b9bc61-2416-41e1-a887-8b9502d83a11",
+    "stagingAreaName": "BMG staging area",
+    "targetRootFolderIri": "urn:uuid:53eb9294-cace-4a95-844d-bbe0d3e85f13",
+    "targetRootFolderName": "Photographs"
+  },
+  "sip": {
+    "originalFileName": "unsupported-document.zip",
+    "sizeBytes": 25000,
+    "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "summary": {
+    "entriesObserved": 1,
+    "entriesDeclared": 1,
+    "inventoryComplete": true,
+    "files": 1,
+    "directories": 0,
+    "importableFiles": 0,
+    "importableDirectories": 0,
+    "ignoredEntries": 0,
+    "rejectedEntries": 1,
+    "warningCount": 0,
+    "errorCount": 1,
+    "compressedBytes": 25000,
+    "extractedBytes": 100000,
+    "maxDepth": 0
+  },
+  "issues": [],
+  "entries": [
+    {
+      "entryIndex": 0,
+      "sourcePath": "inventar.docx",
+      "normalizedPath": "inventar.docx",
+      "entryType": "file",
+      "disposition": "REJECT",
+      "sizeBytes": 100000,
+      "detectedCategory": "unsupported",
+      "detectedMimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "issues": [
+        {
+          "code": "UNSUPPORTED_MEDIA_TYPE",
+          "severity": "ERROR",
+          "blocking": true,
+          "messageKey": "zipImport.issue.unsupportedMediaType",
+          "entryIndex": 0,
+          "path": "inventar.docx",
+          "details": {
+            "detectedMimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          }
+        }
+      ]
+    }
+  ],
+  "manifestSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+  "manifestCanonicalization": "RFC8785"
+}

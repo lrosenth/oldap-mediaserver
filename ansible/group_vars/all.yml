@@ -8,11 +8,22 @@ caddy_image_tag: 2.8
 
 # Runtime behavior
 app_env: Prod
+import_callback_reconcile_seconds: 60
+ingest_part_max_age_seconds: 86400
+ingest_worker_id: media-ingest-1
+ingest_worker_poll_seconds: 10
+ingest_worker_heartbeat_seconds: 60
+ingest_worker_lease_seconds: 300
+# The frozen 20% filesystem reserve always applies. Set this byte count only
+# when operations require a larger absolute reserve.
+storage_absolute_reserve_bytes: 0
 force_pull: false
 rollback: false
 
 # Host filesystem layout
 media_root: /data/media
+media_ingest_root: /data/oldap-ingest
+media_import_records_root: /data/oldap-import-records
 deploy_root: /opt/oldap-mediaserver
 compose_dir: "{{ deploy_root }}/compose"
 caddy_data_dir: "{{ deploy_root }}/caddy-data"
@@ -22,6 +33,7 @@ caddy_config_dir: "{{ deploy_root }}/caddy-config"
 # or Ansible Vault and are deliberately absent from tracked group vars.
 oldap_jwt_issuer: https://oldap.org
 oldap_jwt_audience: oldap-api
+oldap_import_service_subject: media.oldap.org
 oldap_unknown_userid: unknown
 oldap_unknown_password: ""
 cors_origins: "https://app.oldap.org,https://fasnacht.oldap.org,https://fasnacht.digital"

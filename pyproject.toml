@@ -18,6 +18,7 @@ requests = "^2.32.5"
 #poetry-plugin-export = "^1.10.0"
 pdf2image = "^1.17.0"
 pillow = "^12.3.0"
+rfc8785 = "^0.1.4"
 
 [tool.poetry.group.dev.dependencies]
 # Tooling used during development / CI only (must NOT go into runtime Docker images)
@@ -25,6 +26,7 @@ pillow = "^12.3.0"
 pytest = "^9.0.0"
 coverage = "^7.4.0"
 black = "^25.0.0"
+jsonschema = "^4.26.0"
 
 [build-system]
 requires = ["poetry-core"]

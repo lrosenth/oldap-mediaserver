@@ -1,0 +1,85 @@
+{
+  "documentType": "oldap.zip-import.report",
+  "schemaVersion": "1.0.0",
+  "importId": "018f6f9e-6f93-7c32-a29f-1a8e247f9100",
+  "generatedAt": "2026-08-04T16:30:01Z",
+  "status": "READY",
+  "canConfirm": true,
+  "expiresAt": "2026-08-11T16:30:00Z",
+  "target": {
+    "projectShortName": "fasnacht",
+    "stagingAreaIri": "urn:uuid:53b9bc61-2416-41e1-a887-8b9502d83a11",
+    "stagingAreaName": "BMG staging area",
+    "targetRootFolderIri": "urn:uuid:53eb9294-cace-4a95-844d-bbe0d3e85f13",
+    "targetRootFolderName": "Photographs"
+  },
+  "sip": {
+    "originalFileName": "bmg-photographs-part-01.zip",
+    "sizeBytes": 123456,
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "summary": {
+    "entriesObserved": 3,
+    "entriesDeclared": 3,
+    "inventoryComplete": true,
+    "files": 2,
+    "directories": 1,
+    "importableFiles": 2,
+    "importableDirectories": 1,
+    "ignoredEntries": 0,
+    "rejectedEntries": 0,
+    "warningCount": 1,
+    "errorCount": 0,
+    "compressedBytes": 123456,
+    "extractedBytes": 350000,
+    "maxDepth": 1
+  },
+  "issues": [],
+  "entries": [
+    {
+      "entryIndex": 0,
+      "sourcePath": "Fotos/",
+      "normalizedPath": "Fotos",
+      "entryType": "directory",
+      "disposition": "IMPORT",
+      "sizeBytes": 0,
+      "issues": []
+    },
+    {
+      "entryIndex": 1,
+      "sourcePath": "Fotos/umzug.jpg",
+      "normalizedPath": "Fotos/umzug.jpg",
+      "entryType": "file",
+      "disposition": "IMPORT",
+      "sizeBytes": 300000,
+      "detectedCategory": "image",
+      "detectedMimeType": "image/jpeg",
+      "issues": [
+        {
+          "code": "TARGET_MEDIA_NAME_COLLISION",
+          "severity": "WARNING",
+          "blocking": false,
+          "messageKey": "zipImport.issue.targetMediaNameCollision",
+          "entryIndex": 1,
+          "path": "Fotos/umzug.jpg",
+          "details": {
+            "canonicalName": "umzug.jpg"
+          }
+        }
+      ]
+    },
+    {
+      "entryIndex": 2,
+      "sourcePath": "notizen.txt",
+      "normalizedPath": "notizen.txt",
+      "entryType": "file",
+      "disposition": "IMPORT",
+      "sizeBytes": 50000,
+      "detectedCategory": "document",
+      "detectedMimeType": "text/plain",
+      "issues": []
+    }
+  ],
+  "manifestSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "manifestCanonicalization": "RFC8785"
+}

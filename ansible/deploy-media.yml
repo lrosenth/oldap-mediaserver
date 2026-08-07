@@ -19,19 +19,55 @@
         file: "{{ auth_secrets_file | default(playbook_dir ~ '/auth-secrets.yml') }}"
       when: >-
         oldap_access_jwt_secret is not defined or
-        oldap_media_jwt_secret is not defined
+        oldap_media_jwt_secret is not defined or
+        oldap_import_upload_jwt_secret is not defined or
+        oldap_import_service_jwt_secret is not defined or
+        oldap_import_records_jwt_secret is not defined
       no_log: true
 
-    - name: Validate OLDAP access and media token secrets
+    - name: Validate purpose-specific mediahelper token secrets
       ansible.builtin.assert:
         that:
           - (oldap_access_jwt_secret | default('') | string | length) >= 32
           - (oldap_media_jwt_secret | default('') | string | length) >= 32
+          - (oldap_import_upload_jwt_secret | default('') | string | length) >= 32
+          - (oldap_import_service_jwt_secret | default('') | string | length) >= 32
+          - (oldap_import_records_jwt_secret | default('') | string | length) >= 32
           - (oldap_access_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+          - (oldap_import_upload_jwt_secret | default('')) != (oldap_access_jwt_secret | default(''))
+          - (oldap_import_upload_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+          - (oldap_import_service_jwt_secret | default('')) != (oldap_access_jwt_secret | default(''))
+          - (oldap_import_service_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+          - (oldap_import_service_jwt_secret | default('')) != (oldap_import_upload_jwt_secret | default(''))
+          - (oldap_import_records_jwt_secret | default('')) != (oldap_access_jwt_secret | default(''))
+          - (oldap_import_records_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+          - (oldap_import_records_jwt_secret | default('')) != (oldap_import_upload_jwt_secret | default(''))
+          - (oldap_import_records_jwt_secret | default('')) != (oldap_import_service_jwt_secret | default(''))
         fail_msg: >-
-          Supply distinct OLDAP access and media JWT secrets of at least 32
-          bytes through auth-secrets.yml or Ansible Vault.
+          Supply distinct OLDAP access, media, ZIP-upload, import-service, and
+          import-records JWT secrets of at least 32 bytes through auth-secrets.yml
+          or Ansible Vault.
       no_log: true
+
+    - name: Validate private ingest storage separation
+      ansible.builtin.assert:
+        that:
+          - media_ingest_root != media_root
+          - not (media_ingest_root.startswith(media_root.rstrip('/') + '/'))
+        fail_msg: >-
+          media_ingest_root must be outside media_root so Caddy and Cantaloupe
+          cannot read quarantine data through their delivery-volume mount.
+
+    - name: Validate retained import-record storage separation
+      ansible.builtin.assert:
+        that:
+          - media_import_records_root != media_root
+          - media_import_records_root != media_ingest_root
+          - not (media_import_records_root.startswith(media_root.rstrip('/') + '/'))
+          - not (media_import_records_root.startswith(media_ingest_root.rstrip('/') + '/'))
+        fail_msg: >-
+          Retained import records must be outside media delivery and temporary
+          ingest roots.
 
   tasks:
     - name: Optionally allow HTTP/HTTPS with UFW
@@ -109,6 +145,22 @@
         - "{{ media_root }}"
         - "{{ media_root }}/cache"
 
+    - name: Create private ingest directory
+      ansible.builtin.file:
+        path: "{{ media_ingest_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create private retained import-record directory
+      ansible.builtin.file:
+        path: "{{ media_import_records_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
     - name: Render docker-compose.yml
       ansible.builtin.template:
         src: templates/docker-compose.yml.j2
@@ -141,6 +193,15 @@
       ansible.builtin.template:
         src: templates/mediahelper-access.env.j2
         dest: "{{ compose_dir }}/mediahelper-access.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Render restricted ingest-worker environment
+      ansible.builtin.template:
+        src: templates/ingest-worker.env.j2
+        dest: "{{ compose_dir }}/ingest-worker.env"
         owner: root
         group: root
         mode: "0600"

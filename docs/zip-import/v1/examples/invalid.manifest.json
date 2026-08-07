@@ -1,0 +1,127 @@
+{
+  "documentType": "oldap.zip-import.manifest",
+  "schemaVersion": "1.0.0",
+  "importId": "018f6f9e-6f93-7c32-a29f-1a8e247f9200",
+  "generatedAt": "2026-08-04T16:40:00Z",
+  "validator": {
+    "component": "oldap-mediahelper",
+    "version": "0.2.0",
+    "policyVersion": "zip-import-mvp-1"
+  },
+  "validationOutcome": "INVALID",
+  "job": {
+    "createdAt": "2026-08-04T16:35:00Z",
+    "requestedByIri": "urn:uuid:7e3e62a2-b8d4-4ae2-82c1-f53d20a4864d",
+    "target": {
+      "projectShortName": "fasnacht",
+      "stagingAreaIri": "urn:uuid:53b9bc61-2416-41e1-a887-8b9502d83a11",
+      "stagingAreaName": "BMG staging area",
+      "targetRootFolderIri": "urn:uuid:53eb9294-cace-4a95-844d-bbe0d3e85f13",
+      "targetRootFolderName": "Photographs"
+    }
+  },
+  "sip": {
+    "originalFileName": "unsupported-document.zip",
+    "sizeBytes": 25000,
+    "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "zip": {
+      "singleDisk": true,
+      "zip64": false,
+      "encrypted": false,
+      "selfExtractingPreamble": false,
+      "archiveCommentPresent": false,
+      "compressionMethodsObserved": [8]
+    }
+  },
+  "limits": {
+    "maxCompressedBytes": 500000000,
+    "maxExtractedBytes": 3000000000,
+    "maxIndividualFileBytes": 3000000000,
+    "maxEntries": 10000,
+    "maxCompressionRatioPerFile": 100,
+    "maxAggregateCompressionRatio": 50,
+    "maxDirectoryDepth": 5,
+    "maxPathSegmentUtf8Bytes": 255,
+    "maxRelativePathUtf8Bytes": 1024,
+    "maxImagePixels": 100000000,
+    "maxImageAxisPixels": 30000,
+    "maxTextBytes": 1048576,
+    "maxAudioChannels": 2,
+    "minAudioSampleRateHz": 8000,
+    "maxWavPcmSampleRateHz": 192000,
+    "allowedWavPcmBitsPerSample": [8, 16, 24, 32],
+    "maxFlacSampleRateHz": 192000,
+    "allowedFlacBitsPerSample": [8, 16, 24],
+    "maxMp3SampleRateHz": 48000,
+    "allowedH264Profiles": ["Baseline", "Main", "High"],
+    "maxH264Level": 5.2,
+    "allowedVideoPixelFormats": ["yuv420p"],
+    "allowedAacProfiles": ["LC"],
+    "maxVideoWidth": 3840,
+    "maxVideoHeight": 2160,
+    "maxVideoFramesPerSecond": 60,
+    "maxVideoDurationSeconds": 7200,
+    "maxValidationSeconds": 21600,
+    "maxConcurrentValidationOrImportJobs": 1
+  },
+  "summary": {
+    "entriesObserved": 1,
+    "entriesDeclared": 1,
+    "inventoryComplete": true,
+    "files": 1,
+    "directories": 0,
+    "importableFiles": 0,
+    "importableDirectories": 0,
+    "ignoredEntries": 0,
+    "rejectedEntries": 1,
+    "warningCount": 0,
+    "errorCount": 1,
+    "compressedBytes": 25000,
+    "extractedBytes": 100000,
+    "maxDepth": 0
+  },
+  "issues": [],
+  "entries": [
+    {
+      "entryIndex": 0,
+      "sourcePath": "inventar.docx",
+      "sourcePathBytesBase64": "aW52ZW50YXIuZG9jeA==",
+      "normalizedPath": "inventar.docx",
+      "parentNormalizedPath": "",
+      "normalizedName": "inventar.docx",
+      "entryType": "file",
+      "disposition": "REJECT",
+      "depth": 0,
+      "archive": {
+        "compressionMethodCode": 8,
+        "compressionMethod": "deflate",
+        "generalPurposeBitFlags": 2048,
+        "externalAttributes": 0,
+        "compressedSizeBytes": 25000,
+        "declaredUncompressedSizeBytes": 100000,
+        "actualUncompressedSizeBytes": 100000,
+        "crc32Declared": "c1d2e3f4",
+        "crc32Actual": "c1d2e3f4"
+      },
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "detectedContent": {
+        "category": "unsupported",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "format": "DOCX"
+      },
+      "issues": [
+        {
+          "code": "UNSUPPORTED_MEDIA_TYPE",
+          "severity": "ERROR",
+          "blocking": true,
+          "messageKey": "zipImport.issue.unsupportedMediaType",
+          "entryIndex": 0,
+          "path": "inventar.docx",
+          "details": {
+            "detectedMimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          }
+        }
+      ]
+    }
+  ]
+}

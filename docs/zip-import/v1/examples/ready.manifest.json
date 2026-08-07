@@ -1,0 +1,206 @@
+{
+  "documentType": "oldap.zip-import.manifest",
+  "schemaVersion": "1.0.0",
+  "importId": "018f6f9e-6f93-7c32-a29f-1a8e247f9100",
+  "generatedAt": "2026-08-04T16:30:00Z",
+  "validator": {
+    "component": "oldap-mediahelper",
+    "version": "0.2.0",
+    "policyVersion": "zip-import-mvp-1"
+  },
+  "validationOutcome": "READY",
+  "job": {
+    "createdAt": "2026-08-04T16:25:00Z",
+    "requestedByIri": "urn:uuid:7e3e62a2-b8d4-4ae2-82c1-f53d20a4864d",
+    "target": {
+      "projectShortName": "fasnacht",
+      "stagingAreaIri": "urn:uuid:53b9bc61-2416-41e1-a887-8b9502d83a11",
+      "stagingAreaName": "BMG staging area",
+      "targetRootFolderIri": "urn:uuid:53eb9294-cace-4a95-844d-bbe0d3e85f13",
+      "targetRootFolderName": "Photographs"
+    }
+  },
+  "sip": {
+    "originalFileName": "bmg-photographs-part-01.zip",
+    "sizeBytes": 123456,
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "zip": {
+      "singleDisk": true,
+      "zip64": false,
+      "encrypted": false,
+      "selfExtractingPreamble": false,
+      "archiveCommentPresent": false,
+      "compressionMethodsObserved": [0, 8]
+    }
+  },
+  "limits": {
+    "maxCompressedBytes": 500000000,
+    "maxExtractedBytes": 3000000000,
+    "maxIndividualFileBytes": 3000000000,
+    "maxEntries": 10000,
+    "maxCompressionRatioPerFile": 100,
+    "maxAggregateCompressionRatio": 50,
+    "maxDirectoryDepth": 5,
+    "maxPathSegmentUtf8Bytes": 255,
+    "maxRelativePathUtf8Bytes": 1024,
+    "maxImagePixels": 100000000,
+    "maxImageAxisPixels": 30000,
+    "maxTextBytes": 1048576,
+    "maxAudioChannels": 2,
+    "minAudioSampleRateHz": 8000,
+    "maxWavPcmSampleRateHz": 192000,
+    "allowedWavPcmBitsPerSample": [8, 16, 24, 32],
+    "maxFlacSampleRateHz": 192000,
+    "allowedFlacBitsPerSample": [8, 16, 24],
+    "maxMp3SampleRateHz": 48000,
+    "allowedH264Profiles": ["Baseline", "Main", "High"],
+    "maxH264Level": 5.2,
+    "allowedVideoPixelFormats": ["yuv420p"],
+    "allowedAacProfiles": ["LC"],
+    "maxVideoWidth": 3840,
+    "maxVideoHeight": 2160,
+    "maxVideoFramesPerSecond": 60,
+    "maxVideoDurationSeconds": 7200,
+    "maxValidationSeconds": 21600,
+    "maxConcurrentValidationOrImportJobs": 1
+  },
+  "summary": {
+    "entriesObserved": 3,
+    "entriesDeclared": 3,
+    "inventoryComplete": true,
+    "files": 2,
+    "directories": 1,
+    "importableFiles": 2,
+    "importableDirectories": 1,
+    "ignoredEntries": 0,
+    "rejectedEntries": 0,
+    "warningCount": 1,
+    "errorCount": 0,
+    "compressedBytes": 123456,
+    "extractedBytes": 350000,
+    "maxDepth": 1
+  },
+  "issues": [],
+  "entries": [
+    {
+      "entryIndex": 0,
+      "sourcePath": "Fotos/",
+      "sourcePathBytesBase64": "Rm90b3Mv",
+      "normalizedPath": "Fotos",
+      "parentNormalizedPath": "",
+      "normalizedName": "Fotos",
+      "entryType": "directory",
+      "disposition": "IMPORT",
+      "depth": 1,
+      "archive": {
+        "compressionMethodCode": 0,
+        "compressionMethod": "stored",
+        "generalPurposeBitFlags": 2048,
+        "externalAttributes": 16,
+        "compressedSizeBytes": 0,
+        "declaredUncompressedSizeBytes": 0,
+        "actualUncompressedSizeBytes": 0,
+        "crc32Declared": "00000000",
+        "crc32Actual": "00000000"
+      },
+      "plannedResource": {
+        "kind": "folder",
+        "resourceClass": "shared:StagingFolder",
+        "name": "Fotos"
+      },
+      "issues": []
+    },
+    {
+      "entryIndex": 1,
+      "sourcePath": "Fotos/umzug.jpg",
+      "sourcePathBytesBase64": "Rm90b3MvdW16dWcuanBn",
+      "normalizedPath": "Fotos/umzug.jpg",
+      "parentNormalizedPath": "Fotos",
+      "normalizedName": "umzug.jpg",
+      "entryType": "file",
+      "disposition": "IMPORT",
+      "depth": 1,
+      "archive": {
+        "compressionMethodCode": 8,
+        "compressionMethod": "deflate",
+        "generalPurposeBitFlags": 2048,
+        "externalAttributes": 0,
+        "compressedSizeBytes": 70000,
+        "declaredUncompressedSizeBytes": 300000,
+        "actualUncompressedSizeBytes": 300000,
+        "crc32Declared": "a1b2c3d4",
+        "crc32Actual": "a1b2c3d4"
+      },
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "detectedContent": {
+        "category": "image",
+        "mimeType": "image/jpeg",
+        "format": "JPEG",
+        "width": 2400,
+        "height": 1600,
+        "pageCount": 1
+      },
+      "plannedResource": {
+        "kind": "media",
+        "resourceClass": "shared:StagingMediaObject",
+        "originalName": "umzug.jpg",
+        "originalMimeType": "image/jpeg",
+        "dctermsType": "dcmitype:StillImage",
+        "protocol": "iiif",
+        "derivativeName": "master.tif"
+      },
+      "issues": [
+        {
+          "code": "TARGET_MEDIA_NAME_COLLISION",
+          "severity": "WARNING",
+          "blocking": false,
+          "messageKey": "zipImport.issue.targetMediaNameCollision",
+          "entryIndex": 1,
+          "path": "Fotos/umzug.jpg",
+          "details": {
+            "canonicalName": "umzug.jpg"
+          }
+        }
+      ]
+    },
+    {
+      "entryIndex": 2,
+      "sourcePath": "notizen.txt",
+      "sourcePathBytesBase64": "bm90aXplbi50eHQ=",
+      "normalizedPath": "notizen.txt",
+      "parentNormalizedPath": "",
+      "normalizedName": "notizen.txt",
+      "entryType": "file",
+      "disposition": "IMPORT",
+      "depth": 0,
+      "archive": {
+        "compressionMethodCode": 8,
+        "compressionMethod": "deflate",
+        "generalPurposeBitFlags": 2048,
+        "externalAttributes": 0,
+        "compressedSizeBytes": 10000,
+        "declaredUncompressedSizeBytes": 50000,
+        "actualUncompressedSizeBytes": 50000,
+        "crc32Declared": "b1c2d3e4",
+        "crc32Actual": "b1c2d3e4"
+      },
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "detectedContent": {
+        "category": "document",
+        "mimeType": "text/plain",
+        "format": "TEXT",
+        "charset": "UTF-8"
+      },
+      "plannedResource": {
+        "kind": "media",
+        "resourceClass": "shared:StagingMediaObject",
+        "originalName": "notizen.txt",
+        "originalMimeType": "text/plain",
+        "dctermsType": "dcmitype:Text",
+        "protocol": "http",
+        "derivativeName": "document.txt"
+      },
+      "issues": []
+    }
+  ]
+}

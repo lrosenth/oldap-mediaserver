@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api.oldap.org/schemas/zip-import/v1/manifest.schema.json",
+  "title": "OLDAP ZIP import validation manifest v1",
+  "description": "Complete bounded technical inventory and validation result for one ZIP submission. It contains no host filesystem paths and no access tokens.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "documentType": {
+      "const": "oldap.zip-import.manifest"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "importId": {
+      "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/ImportId"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "validator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "component": { "const": "oldap-mediahelper" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "policyVersion": { "const": "zip-import-mvp-1" }
+      },
+      "required": ["component", "version", "policyVersion"]
+    },
+    "validationOutcome": {
+      "type": "string",
+      "enum": ["READY", "INVALID"]
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": { "type": "string", "format": "date-time" },
+        "requestedByIri": {
+          "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/Iri"
+        },
+        "target": {
+          "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/TargetSnapshot"
+        }
+      },
+      "required": ["createdAt", "requestedByIri", "target"]
+    },
+    "sip": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "originalFileName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "sha256": {
+          "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/Sha256"
+        },
+        "zip": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "singleDisk": { "type": "boolean" },
+            "zip64": { "type": "boolean" },
+            "encrypted": { "type": "boolean" },
+            "selfExtractingPreamble": { "type": "boolean" },
+            "archiveCommentPresent": { "type": "boolean" },
+            "compressionMethodsObserved": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "integer", "minimum": 0, "maximum": 65535 }
+            }
+          },
+          "required": [
+            "singleDisk",
+            "zip64",
+            "encrypted",
+            "selfExtractingPreamble",
+            "archiveCommentPresent",
+            "compressionMethodsObserved"
+          ]
+        }
+      },
+      "required": ["originalFileName", "sizeBytes", "sha256", "zip"]
+    },
+    "limits": {
+      "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/LimitsSnapshot"
+    },
+    "summary": {
+      "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/ValidationSummary"
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/Issue"
+      }
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/ManifestEntry" }
+    }
+  },
+  "required": [
+    "documentType",
+    "schemaVersion",
+    "importId",
+    "generatedAt",
+    "validator",
+    "validationOutcome",
+    "job",
+    "sip",
+    "limits",
+    "summary",
+    "issues",
+    "entries"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "validationOutcome": { "const": "READY" } },
+        "required": ["validationOutcome"]
+      },
+      "then": {
+        "properties": {
+          "summary": {
+            "properties": {
+              "inventoryComplete": { "const": true },
+              "errorCount": { "const": 0 },
+              "rejectedEntries": { "const": 0 }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "ArchiveFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compressionMethodCode": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "compressionMethod": { "type": "string", "enum": ["stored", "deflate", "unsupported"] },
+        "generalPurposeBitFlags": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "externalAttributes": { "type": "integer", "minimum": 0 },
+        "compressedSizeBytes": { "type": "integer", "minimum": 0 },
+        "declaredUncompressedSizeBytes": { "type": "integer", "minimum": 0 },
+        "actualUncompressedSizeBytes": { "type": "integer", "minimum": 0 },
+        "crc32Declared": { "type": "string", "pattern": "^[0-9a-f]{8}$" },
+        "crc32Actual": { "type": "string", "pattern": "^[0-9a-f]{8}$" }
+      },
+      "required": [
+        "compressionMethodCode",
+        "compressionMethod",
+        "generalPurposeBitFlags",
+        "externalAttributes",
+        "compressedSizeBytes",
+        "declaredUncompressedSizeBytes",
+        "actualUncompressedSizeBytes",
+        "crc32Declared"
+      ]
+    },
+    "FolderPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "folder" },
+        "resourceClass": { "const": "shared:StagingFolder" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 }
+      },
+      "required": ["kind", "resourceClass", "name"]
+    },
+    "MediaPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "media" },
+        "resourceClass": { "const": "shared:StagingMediaObject" },
+        "originalName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "originalMimeType": { "type": "string", "minLength": 1, "maxLength": 127 },
+        "dctermsType": {
+          "type": "string",
+          "enum": ["dcmitype:StillImage", "dcmitype:MovingImage", "dcmitype:Sound", "dcmitype:Text"]
+        },
+        "protocol": { "type": "string", "enum": ["iiif", "http"] },
+        "derivativeName": { "type": "string", "minLength": 1, "maxLength": 255 }
+      },
+      "required": [
+        "kind",
+        "resourceClass",
+        "originalName",
+        "originalMimeType",
+        "dctermsType",
+        "protocol"
+      ]
+    },
+    "ManifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entryIndex": { "type": "integer", "minimum": 0, "maximum": 9999 },
+        "sourcePath": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "sourcePathBytesBase64": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "normalizedPath": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "parentNormalizedPath": { "type": "string", "maxLength": 1024 },
+        "normalizedName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "entryType": { "type": "string", "enum": ["file", "directory"] },
+        "disposition": { "type": "string", "enum": ["IMPORT", "IGNORE", "REJECT"] },
+        "depth": { "type": "integer", "minimum": 0 },
+        "archive": { "$ref": "#/$defs/ArchiveFacts" },
+        "sha256": {
+          "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/Sha256"
+        },
+        "detectedContent": {
+          "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/DetectedContent"
+        },
+        "plannedResource": {
+          "oneOf": [
+            { "$ref": "#/$defs/FolderPlan" },
+            { "$ref": "#/$defs/MediaPlan" }
+          ]
+        },
+        "issues": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json#/$defs/Issue"
+          }
+        }
+      },
+      "required": [
+        "entryIndex",
+        "sourcePath",
+        "sourcePathBytesBase64",
+        "normalizedPath",
+        "parentNormalizedPath",
+        "normalizedName",
+        "entryType",
+        "disposition",
+        "depth",
+        "archive",
+        "issues"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "entryType": { "const": "file" },
+              "disposition": { "const": "IMPORT" }
+            },
+            "required": ["entryType", "disposition"]
+          },
+          "then": {
+            "required": ["sha256", "detectedContent", "plannedResource"],
+            "properties": {
+              "plannedResource": { "$ref": "#/$defs/MediaPlan" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entryType": { "const": "directory" },
+              "disposition": { "const": "IMPORT" }
+            },
+            "required": ["entryType", "disposition"]
+          },
+          "then": {
+            "required": ["plannedResource"],
+            "properties": {
+              "plannedResource": { "$ref": "#/$defs/FolderPlan" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

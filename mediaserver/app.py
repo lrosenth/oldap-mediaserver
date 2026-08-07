@@ -1,28 +1,17 @@
 import json
 import os
 import shutil
-import subprocess
 import mimetypes
-import re
-from enum import Enum
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
+from uuid import UUID, uuid4
 
 import requests
-from flask import Flask, request, jsonify, abort, logging
+from flask import Flask, request, jsonify, abort, logging, Response
 
-import pyvips  # make sure this is in requirements.txt
 from flask_cors import CORS
 from nanoid import generate
-from pdf2image import convert_from_path
-from pdf2image.exceptions import (
-    PDFInfoNotInstalledError,
-    PDFPageCountError,
-    PDFPopplerTimeoutError,
-    PDFSyntaxError,
-)
-from PIL import Image, ImageOps
 from oldaplib.src.authentication import AuthorizationContext, TokenCodec
 from oldaplib.src.enums.adminpermissions import AdminPermission
 from oldaplib.src.enums.datapermissions import DataPermission
@@ -31,233 +20,76 @@ from oldaplib.src.xsd.iri import Iri
 from oldaplib.src.xsd.xsd_qname import Xsd_QName
 
 from oldap_client import OldapClient
+from config import MediahelperSettings, ZipImportLimits
+from derivatives import DerivativeProcessor
+from media import (
+    InvalidPdfError,
+    MediaType,
+    classify_upload,
+    probe_pdf_structure,
+    validate_target_format,
+)
+from ingest_auth import (
+    InvalidUploadCapability,
+    UploadAuthenticationUnavailable,
+    UploadCapabilityMismatch,
+    decode_upload_capability,
+)
+from ingest_callback import (
+    CallbackError,
+    ImportApiNotifier,
+    PeriodicCallbackReconciler,
+    deliver_pending_receipt,
+)
+from import_records import (
+    ImportRecordAuthorizationError,
+    ImportRecordError,
+    ImportRecordStore,
+    authorize_record_token,
+    digest_header,
+)
+from quarantine import (
+    FinalizedUploadConflict,
+    InvalidZipContent,
+    QuarantineStore,
+    UploadLengthMismatch,
+    UploadTooLarge,
+)
+from storage_capacity import (
+    PhysicalCapacityInsufficient,
+    StorageCapacityGuard,
+    potential_extracted_bytes,
+)
+from storage import (
+    AssetAlreadyExistsError,
+    StoragePathEscapeError,
+    operation_workspace,
+    reserve_asset_layout,
+    safe_subpath,
+    store_original_with_sha256,
+    validate_asset_identifier,
+    validate_asset_path_segment,
+)
 
-imgdir  = os.environ.get("UPLOADER_IMGDIR", "/data/images").strip()
-# For local dev, Cantaloupe is usually on host:8182
-# In production, put your real hostname here
-iiif_base_url = os.environ.get("IIIF_BASE_URL", "http://localhost:8088/iiif/3/").strip()
+SETTINGS = MediahelperSettings.from_environment()
+iiif_base_url = SETTINGS.iiif_base_url
+media_base_url = SETTINGS.media_base_url
+oldap_api_url = SETTINGS.oldap_api_url
 
-# Base URL for non-IIIF delivery (Caddy). Should end with a trailing slash.
-media_base_url = os.environ.get("MEDIA_BASE_URL", "http://localhost:8088/").strip()
-if not media_base_url.endswith('/'):
-    media_base_url += '/'
-
-oldap_api_url = os.environ.get("OLDAP_API_URL", "http://localhost:8000").strip()
-
-IMAGE_ROOT = Path(imgdir)   # shared volume with Cantaloupe
+IMAGE_ROOT = SETTINGS.media_root  # shared volume with Cantaloupe
 IMAGE_ROOT.mkdir(parents=True, exist_ok=True)
+INGEST_ROOT = SETTINGS.ingest_root  # private: never mounted into delivery services
+CAPACITY_GUARD = StorageCapacityGuard(SETTINGS.storage_absolute_reserve_bytes)
+QUARANTINE_STORE = QuarantineStore(INGEST_ROOT, capacity_guard=CAPACITY_GUARD)
+IMPORT_RECORD_STORE = ImportRecordStore(SETTINGS.import_records_root)
 
-DOCUMENT_DERIVATIVE_NAME = "document.pdf"
-PDF_MIME_TYPE = "application/pdf"
-PDF_THUMBNAIL_SIZES = (128, 256)
-PDF_RENDER_SIZE = 512
-PDF_RENDER_TIMEOUT_SECONDS = 30
-ASSET_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
-
-
-class InvalidPdfError(ValueError):
-    """Raised when a PDF cannot be validated or rendered safely."""
-
-class MediaType(str, Enum):
-    IMAGE = "image"
-    AUDIO = "audio"
-    VIDEO = "video"
-    DOCUMENT = "document"
-    OTHER = "other"
-
-# ------------------------------------------------------------
-# Storage layout helpers
-# ------------------------------------------------------------
-
-def safe_subpath(raw: str | None) -> Path:
-    """Return a safe relative Path for user-provided subpaths (no absolute paths, no '..')."""
-    if not raw:
-        return Path()
-    p = Path(raw)
-    if p.is_absolute():
-        raise ValueError("path must be a relative path")
-    if any(part in ("..", "") for part in p.parts):
-        raise ValueError("path contains invalid segments")
-    return p
+DERIVATIVE_PROCESSOR = DerivativeProcessor()
 
 
-def validate_asset_path_segment(raw: str) -> str:
-    """Return an existing asset identifier that is safe as one path segment.
-
-    This structural check keeps legacy identifiers addressable while blocking
-    filesystem traversal. New uploads additionally use the stricter
-    URL-compatible validation in :func:`validate_asset_identifier`.
-    """
-    value = str(raw)
-    if not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value:
-        raise ValueError("asset identifier must be a single non-empty path segment")
-    return value
-
-
-def validate_asset_identifier(raw: str) -> str:
-    """Return a new asset identifier that is safe in paths and generated URLs.
-
-    Args:
-        raw: Client-provided or generated asset identifier.
-
-    Returns:
-        The validated identifier without modification.
-
-    Raises:
-        ValueError: If the identifier is not a bounded URL-safe path segment.
-    """
-    value = validate_asset_path_segment(raw)
-    if ASSET_IDENTIFIER_RE.fullmatch(value) is None:
-        raise ValueError(
-            "identifier must contain 1-128 URL-safe characters "
-            "(letters, digits, '.', '_', '~', or '-')"
-        )
-    return value
-
-
-def build_asset_root(project_short: str, media_type: MediaType, subpath: str | None, identifier: str) -> Path:
-    """Compute the root folder for a single asset according to storage layout.
-
-    Layout:
-      <IMAGE_ROOT>/<projectShortName>/<media_type>/<subpath>/<identifier>/
-        original/
-        derived/
-    """
-    rel = (
-        Path(project_short)
-        / media_type.value
-        / safe_subpath(subpath)
-        / validate_asset_identifier(identifier)
-    )
-    return IMAGE_ROOT / rel
-
-# ------------------------------------------------------------
-# Media-type detection + target format validation
-# ------------------------------------------------------------
-
-def detect_media_type(upload_file) -> MediaType:
-    """Best-effort media type detection based on mimetype (preferred) and filename."""
-    mt = (upload_file.mimetype or "").lower()
-    if mt.startswith("image/"):
-        return MediaType.IMAGE
-    if mt.startswith("audio/"):
-        return MediaType.AUDIO
-    if mt.startswith("video/"):
-        return MediaType.VIDEO
-    if mt == PDF_MIME_TYPE:
-        return MediaType.DOCUMENT
-
-    # Fallback: guess from filename
-    guessed, _ = mimetypes.guess_type(upload_file.filename or "")
-    guessed = (guessed or "").lower()
-    if guessed.startswith("image/"):
-        return MediaType.IMAGE
-    if guessed.startswith("audio/"):
-        return MediaType.AUDIO
-    if guessed.startswith("video/"):
-        return MediaType.VIDEO
-    if guessed == PDF_MIME_TYPE:
-        return MediaType.DOCUMENT
-
-    return MediaType.OTHER
-
-def protocol_for_media(media_type: MediaType) -> str:
-    if media_type == MediaType.IMAGE:
-        return "iiif"
-    if media_type in (MediaType.DOCUMENT, MediaType.AUDIO, MediaType.VIDEO):
-        return "http"
-    return "custom"
-
-def validate_target_format(media_type: MediaType, raw: str | None) -> str:
-    """Validate and normalize targetFormat per media type."""
-    fmt = (raw or "").lower().strip()
-
-    if media_type == MediaType.IMAGE:
-        # One canonical IIIF derivative keeps the storage contract predictable
-        # and avoids codec-specific native runtime dependencies.
-        allowed = {"tiff"}
-        fmt = fmt or "tiff"
-        if fmt not in allowed:
-            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
-        return fmt
-
-    if media_type == MediaType.VIDEO:
-        # Single, highly compatible web derivative.
-        allowed = {"mp4"}
-        fmt = fmt or "mp4"
-        if fmt not in allowed:
-            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
-        return fmt
-
-    if media_type == MediaType.AUDIO:
-        # Default to the most broadly compatible browser delivery format.
-        allowed = {"m4a", "mp3"}
-        fmt = fmt or "mp3"
-        if fmt not in allowed:
-            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
-        return fmt
-
-    if media_type == MediaType.DOCUMENT:
-        # For now: keep original; allow only pdf when we add conversions later.
-        allowed = {"pdf"}
-        fmt = fmt or "pdf"
-        if fmt not in allowed:
-            raise ValueError(f"Invalid targetFormat '{fmt}' (allowed: {sorted(allowed)})")
-        return fmt
-
-    raise ValueError(f"Unsupported media type: {media_type}")
-
-# ------------------------------------------------------------
-# Metadata helpers
-# ------------------------------------------------------------
-
-def require_valid_pdf(src: Path) -> None:
-    """Validate that a stored upload looks like a PDF document.
-
-    This is intentionally a lightweight upload gate rather than a repair or
-    normalization step. It catches common MIME/extension spoofing mistakes
-    before Poppler performs the full first-page render validation.
-
-    Args:
-        src: Path to the uploaded temporary file.
-
-    Raises:
-        InvalidPdfError: If the file does not contain a PDF header and EOF marker.
-    """
-    try:
-        with src.open("rb") as handle:
-            header = handle.read(1024)
-            handle.seek(0, os.SEEK_END)
-            size = handle.tell()
-            handle.seek(max(size - 4096, 0), os.SEEK_SET)
-            tail = handle.read()
-    except OSError as exc:
-        raise InvalidPdfError(f"Could not read uploaded PDF: {exc}") from exc
-
-    if b"%PDF-" not in header:
-        raise InvalidPdfError("Uploaded document is not a PDF file")
-    if b"%%EOF" not in tail:
-        raise InvalidPdfError("Uploaded PDF is incomplete or malformed")
-
-
-def original_mime_type_for_media(media_type: MediaType, upload_file) -> str:
-    """Return the MIME type recorded on the MediaObject for an upload."""
-    if media_type == MediaType.DOCUMENT:
-        return PDF_MIME_TYPE
-    return upload_file.mimetype or "application/octet-stream"
-
-
-def dcterms_type_for_media(media_type: MediaType) -> str:
-    """Return a DCMI Type IRI (as QName string) suitable for dcterms:type."""
-    if media_type == MediaType.IMAGE:
-        return "dcmitype:StillImage"
-    if media_type == MediaType.AUDIO:
-        return "dcmitype:Sound"
-    if media_type == MediaType.VIDEO:
-        return "dcmitype:MovingImage"
-    if media_type == MediaType.DOCUMENT:
-        return "dcmitype:Text"
-    return "dcmitype:Dataset"
+def deliver_import_receipt(receipt):
+    """Deliver one retained callback and persist its acknowledgement."""
+    notifier = ImportApiNotifier.from_environment()
+    return deliver_pending_receipt(QUARANTINE_STORE, notifier, receipt)
 
 
 def _read_version_file(version_path: Path) -> Optional[str]:
@@ -298,11 +130,6 @@ def detect_app_version() -> tuple[str, str]:
     return "unknown", "default"
 
 
-def env_list(name: str, default: str = "") -> list[str]:
-    value = os.environ.get(name, default)
-    return [v.strip() for v in value.split(",") if v.strip()]
-
-
 def content_disposition_header(disposition: str, filename: str) -> str:
     """Build a safe Content-Disposition value for Caddy-served assets."""
     cleaned = str(filename).replace("\r", "").replace("\n", "")
@@ -317,10 +144,7 @@ def create_app() -> Flask:
     # We do not rely on cookies here (we use Authorization: Bearer ...), so keep credentials disabled.
     app = Flask(__name__)
 
-    cors_origins = env_list(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
-    )
+    cors_origins = list(SETTINGS.cors_origins)
 
     CORS(
         app,
@@ -330,10 +154,14 @@ def create_app() -> Flask:
             r"/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
             r"/auth/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
             r"/health": {"origins": cors_origins},
+            r"/imports/*": {
+                "origins": cors_origins,
+                "methods": ["PUT", "OPTIONS"],
+            },
         },
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-        expose_headers=["Content-Disposition"],
+        allow_headers=["Authorization", "Content-Type", "X-Upload-Request-Id"],
+        expose_headers=["Content-Disposition", "Location"],
         supports_credentials=False,
     )
 
@@ -342,6 +170,8 @@ def create_app() -> Flask:
     logger = app.logger
 
     logger.info(f"Using image root: {IMAGE_ROOT}")
+    logger.info(f"Using private ingest root: {INGEST_ROOT}")
+    logger.info(f"Using retained import records root: {SETTINGS.import_records_root}")
     logger.info(f"Using IIIF base URL: {iiif_base_url}")
     logger.info(f"Using Media base URL: {media_base_url}")
     logger.info(f"Using Oldap API URL: {oldap_api_url}")
@@ -395,212 +225,6 @@ def create_app() -> Flask:
         except OldapError:
             return None
 
-    # ------------------------------------------------------------------
-    # Helper: make pyramidal tiled TIFF with vips (no compression)
-    # ------------------------------------------------------------------
-    def convert_to_pyramidal_tiff_with_vips(src: Path, dst: Path) -> None:
-        """
-        Use pyvips to create a pyramidal tiled TIFF *without compression*.
-        """
-        image = pyvips.Image.new_from_file(str(src), access="sequential")
-        image.tiffsave(
-            str(dst),
-            tile=True,
-            pyramid=True,
-            compression="none",   # no compression, as requested
-            tile_width=256,
-            tile_height=256,
-            bigtiff=True          # safer for large CH images
-        )
-
-    # ------------------------------------------------------------------
-    # Helper: make MP4 (H.264 + AAC) with ffmpeg
-    # ------------------------------------------------------------------
-    def convert_to_mp4_with_ffmpeg(src: Path, dst: Path) -> None:
-        """Create a broadly compatible MP4 derivative.
-
-        H.264 video + AAC audio, with faststart for progressive download.
-        """
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(src),
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "22",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-ac", "2",
-            "-movflags", "+faststart",
-            str(dst),
-        ]
-        app.logger.debug("Running ffmpeg (mp4): %s", " ".join(cmd))
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg mp4 failed (exit {result.returncode}): {result.stderr}")
-
-
-    # ------------------------------------------------------------------
-    # Helpers: validate and transcode audio with ffprobe/ffmpeg
-    # ------------------------------------------------------------------
-    def require_audio_stream_with_ffprobe(src: Path) -> None:
-        """Verify that `src` contains at least one readable audio stream.
-
-        This protects the audio upload path from relying only on MIME type or
-        filename extension detection, both of which can be supplied by clients.
-
-        Raises:
-            RuntimeError: If ffprobe is missing, fails, or finds no audio stream.
-        """
-        cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=codec_type",
-            "-of", "csv=p=0",
-            str(src),
-        ]
-        app.logger.debug("Running ffprobe (audio stream): %s", " ".join(cmd))
-        try:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        except FileNotFoundError as exc:
-            raise RuntimeError("ffprobe is required for audio validation but was not found") from exc
-
-        if result.returncode != 0:
-            raise RuntimeError(f"ffprobe audio validation failed (exit {result.returncode}): {result.stderr}")
-        if "audio" not in {line.strip().lower() for line in result.stdout.splitlines()}:
-            raise RuntimeError("Uploaded audio file does not contain a readable audio stream")
-
-    def convert_to_mp3_with_ffmpeg(src: Path, dst: Path) -> None:
-        """Create an MP3 derivative for broad browser delivery.
-
-        The first audio stream is mapped explicitly and encoded with LAME VBR
-        quality level 2, which is a practical access-copy setting for speech
-        and music while keeping file sizes reasonable.
-        """
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(src),
-            "-map", "0:a:0",
-            "-vn",
-            "-c:a", "libmp3lame",
-            "-q:a", "2",
-            str(dst),
-        ]
-        app.logger.debug("Running ffmpeg (mp3): %s", " ".join(cmd))
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg mp3 failed (exit {result.returncode}): {result.stderr}")
-
-    def convert_to_m4a_with_ffmpeg(src: Path, dst: Path) -> None:
-        """Create an AAC-in-M4A derivative for clients that prefer AAC."""
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(src),
-            "-map", "0:a:0",
-            "-vn",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            str(dst),
-        ]
-        app.logger.debug("Running ffmpeg (m4a): %s", " ".join(cmd))
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg m4a failed (exit {result.returncode}): {result.stderr}")
-
-    # ------------------------------------------------------------------
-    # Helper: make square video thumbnail with ffmpeg
-    # ------------------------------------------------------------------
-    def create_video_thumbnail_with_ffmpeg(src: Path, dst: Path, size: int) -> None:
-        """Create a square thumbnail from a representative video frame.
-
-        Uses ffmpeg's `thumbnail` filter and pads the result to a square canvas
-        while preserving aspect ratio.
-        """
-        scale_pad = (
-            f"thumbnail,"
-            f"scale={size}:{size}:force_original_aspect_ratio=decrease,"
-            f"pad={size}:{size}:(ow-iw)/2:(oh-ih)/2"
-        )
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", str(src),
-            "-vf", scale_pad,
-            "-frames:v", "1",
-            str(dst),
-        ]
-        app.logger.debug("Running ffmpeg (video thumbnail %s): %s", size, " ".join(cmd))
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg thumbnail {size} failed (exit {result.returncode}): {result.stderr}"
-            )
-
-    def create_pdf_thumbnails_with_poppler(src: Path, destinations: dict[int, Path]) -> None:
-        """Render the first PDF page and create square JPEG thumbnails.
-
-        Poppler renders at a bounded intermediate size. Pillow then preserves
-        the page aspect ratio and centers it on a white square canvas.
-
-        Args:
-            src: Validated PDF upload.
-            destinations: Mapping from thumbnail edge length to output path.
-
-        Raises:
-            InvalidPdfError: If Poppler cannot parse or render the first page.
-            RuntimeError: If the Poppler runtime is missing from the container.
-        """
-        try:
-            pages = convert_from_path(
-                src,
-                first_page=1,
-                last_page=1,
-                fmt="png",
-                size=PDF_RENDER_SIZE,
-                single_file=True,
-                thread_count=1,
-                timeout=PDF_RENDER_TIMEOUT_SECONDS,
-                strict=True,
-            )
-        except PDFInfoNotInstalledError as exc:
-            raise RuntimeError("Poppler PDF rendering tools are not installed") from exc
-        except (PDFPageCountError, PDFPopplerTimeoutError, PDFSyntaxError) as exc:
-            raise InvalidPdfError(f"Could not render the first PDF page: {exc}") from exc
-
-        if not pages:
-            raise InvalidPdfError("Uploaded PDF does not contain a renderable first page")
-
-        page = None
-        try:
-            page = pages[0].convert("RGB")
-            for size, destination in destinations.items():
-                thumbnail = ImageOps.contain(
-                    page,
-                    (size, size),
-                    method=Image.Resampling.LANCZOS,
-                )
-                canvas = Image.new("RGB", (size, size), "white")
-                try:
-                    offset = ((size - thumbnail.width) // 2, (size - thumbnail.height) // 2)
-                    canvas.paste(thumbnail, offset)
-                    canvas.save(destination, format="JPEG", quality=85, optimize=True)
-                finally:
-                    thumbnail.close()
-                    canvas.close()
-        finally:
-            if page is not None:
-                page.close()
-            for rendered_page in pages:
-                rendered_page.close()
-
-    def copy_file(src: Path, dst: Path) -> None:
-        shutil.copy2(src, dst)
-
     @app.get("/health")
     @app.get("/status")
     def health_status():
@@ -612,6 +236,154 @@ def create_app() -> Flask:
                 "versionSource": app.config.get("APP_VERSION_SOURCE", "default"),
             }
         ), 200
+
+    def import_error(status: int, code: str, message: str):
+        """Return the closed media-ingest error contract without sensitive data."""
+        supplied = request.headers.get("X-Upload-Request-Id", "")
+        try:
+            request_id = str(UUID(supplied)) if supplied else str(uuid4())
+        except ValueError:
+            request_id = str(uuid4())
+        response = jsonify(
+            {"code": code, "message": message[:500], "requestId": request_id}
+        )
+        response.status_code = status
+        response.headers["Cache-Control"] = "no-store"
+        if status == 401:
+            response.headers["WWW-Authenticate"] = "Bearer"
+        return response
+
+    @app.get("/internal/imports/<import_id>/records/<record_type>")
+    def get_import_record(import_id: str, record_type: str):
+        """Return exact immutable validation JSON to authenticated oldap-api."""
+
+        try:
+            authorize_record_token(request.headers.get("Authorization"), import_id)
+        except (ImportRecordAuthorizationError, ValueError):
+            response = jsonify({"message": "Import records authorization required."})
+            response.status_code = 401
+            response.headers["WWW-Authenticate"] = "Bearer"
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        try:
+            content, digest = IMPORT_RECORD_STORE.read(import_id, record_type)
+        except ValueError:
+            return jsonify({"message": "Unknown import record type."}), 404
+        except FileNotFoundError:
+            return jsonify({"message": "Import record not found."}), 404
+        except ImportRecordError:
+            app.logger.error("import_record_inconsistent importId=%s", import_id)
+            return jsonify({"message": "Import record unavailable."}), 409
+        response = Response(content, status=200, content_type="application/json")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Digest"] = digest_header(digest)
+        return response
+
+    def upload_bearer_token() -> str | None:
+        """Parse a strict Authorization Bearer header for SIP upload only."""
+        parts = request.headers.get("Authorization", "").split()
+        if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:
+            return None
+        return parts[1]
+
+    @app.put("/imports/<import_id>/sip")
+    def put_import_sip(import_id: str):
+        """Stream one authorized ZIP into atomically finalized quarantine."""
+        token = upload_bearer_token()
+        if token is None:
+            return import_error(401, "UPLOAD_AUTH_REQUIRED", "Upload authorization required.")
+        try:
+            capability = decode_upload_capability(token, import_id)
+        except UploadAuthenticationUnavailable:
+            app.logger.error("ZIP upload authentication is not safely configured.")
+            return import_error(503, "UPLOAD_AUTH_UNAVAILABLE", "Upload service unavailable.")
+        except InvalidUploadCapability:
+            return import_error(401, "UPLOAD_AUTH_INVALID", "Invalid or expired upload authorization.")
+        except UploadCapabilityMismatch:
+            return import_error(403, "UPLOAD_AUTH_MISMATCH", "Upload authorization does not match this import.")
+        except ValueError:
+            return import_error(400, "IMPORT_ID_INVALID", "importId must be a canonical UUID.")
+
+        if request.mimetype != "application/zip":
+            return import_error(415, "ZIP_MEDIA_TYPE_REQUIRED", "Content-Type must be application/zip.")
+        raw_length = request.headers.get("Content-Length")
+        raw_request_id = request.headers.get("X-Upload-Request-Id")
+        try:
+            declared_size = int(raw_length or "")
+            if str(UUID(str(raw_request_id))) != str(raw_request_id).lower():
+                raise ValueError
+        except (TypeError, ValueError):
+            return import_error(400, "UPLOAD_HEADERS_INVALID", "Valid Content-Length and X-Upload-Request-Id headers are required.")
+        if not 1 <= declared_size <= capability.max_bytes:
+            return import_error(413, "UPLOAD_SIZE_LIMIT", "Upload exceeds its authorized byte limit.")
+
+        try:
+            validation_bytes = potential_extracted_bytes(
+                declared_size,
+                maximum_bytes=ZipImportLimits().max_extracted_bytes,
+            )
+            receipt, replay = QUARANTINE_STORE.store(
+                import_id,
+                str(raw_request_id).lower(),
+                request.stream,
+                declared_size_bytes=declared_size,
+                max_bytes=capability.max_bytes,
+                required_capacity_bytes=declared_size + validation_bytes,
+            )
+        except UploadTooLarge:
+            return import_error(413, "UPLOAD_SIZE_LIMIT", "Upload exceeds its authorized byte limit.")
+        except InvalidZipContent:
+            return import_error(415, "ZIP_CONTENT_INVALID", "Uploaded content is not a supported ZIP.")
+        except UploadLengthMismatch:
+            return import_error(400, "UPLOAD_LENGTH_MISMATCH", "Uploaded bytes differ from Content-Length.")
+        except FinalizedUploadConflict:
+            return import_error(409, "UPLOAD_ALREADY_FINALIZED", "Import SIP is already finalized.")
+        except PhysicalCapacityInsufficient as error:
+            facts = error.snapshot
+            app.logger.warning(
+                "import_capacity_rejected importId=%s phase=UPLOAD "
+                "requiredBytes=%d freeBytes=%d reserveBytes=%d",
+                import_id,
+                facts.required_bytes,
+                facts.free_bytes,
+                facts.reserve_bytes,
+            )
+            return import_error(
+                507,
+                "IMPORT_PHYSICAL_CAPACITY_INSUFFICIENT",
+                "The import cannot be stored while the required disk reserve is maintained.",
+            )
+        except OSError as error:
+            app.logger.error(
+                "Could not finalize import SIP importId=%s error=%s",
+                import_id,
+                type(error).__name__,
+            )
+            return import_error(500, "UPLOAD_STORAGE_FAILED", "SIP could not be durably stored.")
+
+        if receipt.state_notification == "PENDING":
+            try:
+                receipt = deliver_import_receipt(receipt)
+            except CallbackError as error:
+                app.logger.warning(
+                    "import_callback_pending importId=%s error=%s",
+                    import_id,
+                    type(error).__name__,
+                )
+
+        app.logger.info(
+            "import_upload importId=%s sizeBytes=%d replay=%s requestId=%s",
+            import_id,
+            receipt.size_bytes,
+            replay,
+            receipt.upload_request_id,
+        )
+        response = jsonify(receipt.to_dict())
+        response.status_code = 200 if replay else 201
+        response.headers["Cache-Control"] = "no-store"
+        if not replay:
+            response.headers["Location"] = f"/imports/{import_id}/sip"
+        return response
 
 
     @app.get("/auth/asset/<asset_id>")
@@ -810,12 +582,17 @@ def create_app() -> Flask:
         except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
 
-        # Decide media type + output format
-        media_type = detect_media_type(upload_file)
+        # Preserve legacy request routing while representing it explicitly as
+        # untrusted MIME/filename classification rather than content evidence.
         try:
-            target_format = validate_target_format(media_type, request.form.get("targetFormat"))
+            classification = classify_upload(
+                upload_file.filename,
+                upload_file.mimetype,
+                request.form.get("targetFormat"),
+            )
         except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
+        media_type = classification.media_type
 
         # Identifier to be used for IIIF
         identifier = request.form.get("identifier")
@@ -833,145 +610,78 @@ def create_app() -> Flask:
         if roles_json:
             roles = json.loads(roles_json)
 
-        # Temporary location
-        tmp_dir = IMAGE_ROOT / "_tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-
-        # Build storage layout for this asset
-        asset_base_rel = Path(projectShortName) / media_type.value / safe_subpath(fpath)
-        asset_base_dir = (IMAGE_ROOT / asset_base_rel).resolve()
+        # Reserve a create-only asset directory before writing any bitstreams.
         try:
-            asset_base_dir.relative_to(IMAGE_ROOT.resolve())
-        except ValueError:
-            return jsonify({"message": "Asset path escapes media root"}), 403
-        try:
-            asset_base_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            return jsonify({"error": f"Could not initialize asset base directory: {exc}"}), 500
-        asset_root = asset_base_dir / identifier
-        try:
-            asset_root.mkdir()
-        except FileExistsError:
+            layout = reserve_asset_layout(
+                IMAGE_ROOT,
+                projectShortName,
+                media_type.value,
+                fpath,
+                identifier,
+            )
+        except StoragePathEscapeError as exc:
+            return jsonify({"message": str(exc)}), 403
+        except AssetAlreadyExistsError:
             return jsonify({"message": f'Asset identifier "{identifier}" already exists'}), 409
         except OSError as exc:
-            return jsonify({"error": f"Could not reserve asset directory: {exc}"}), 500
-
-        original_dir = asset_root / "original"
-        derived_dir = asset_root / "derived"
-
-        try:
-            for d in (original_dir, derived_dir):
-                d.mkdir()
-        except OSError as exc:
-            shutil.rmtree(asset_root, ignore_errors=True)
             return jsonify({"error": f"Could not initialize asset directory: {exc}"}), 500
+
+        asset_base_rel = layout.base_relative
+        asset_root = layout.root
+        original_dir = layout.original
+        derived_dir = layout.derived
 
         # Keep original extension for tmp and store original as received
         orig_ext = Path(upload_file.filename).suffix or ".dat"
-        tmp_path = tmp_dir / f"{identifier}{orig_ext}"
-        thumb128_path: Optional[Path] = None
-        thumb256_path: Optional[Path] = None
 
         # Store original file (as received), sanitized for filename
         original_name = Path(upload_file.filename).name if upload_file.filename else f"{identifier}{orig_ext}"
         original_path = original_dir / original_name
 
-        # Decide where the produced file goes
-        if media_type == MediaType.IMAGE:
-            out_path = derived_dir / "master.tif"
+        try:
+            # Each operation gets an unpredictable directory. Concurrent jobs
+            # can therefore never share a temporary filename.
+            with operation_workspace(IMAGE_ROOT / "_tmp", identifier) as workspace:
+                tmp_path = workspace / f"source{orig_ext}"
 
-        elif media_type == MediaType.VIDEO:
-            # Single web-friendly derivative
-            out_ext = ".mp4"
-            out_path = derived_dir / f"web{out_ext}"
-            thumb128_path = derived_dir / "thumb128.jpg"
-            thumb256_path = derived_dir / "thumb256.jpg"
+                # Save once, validate from quarantine-like work storage, then
+                # copy the original while calculating its integrity metadata.
+                try:
+                    upload_file.save(tmp_path)
+                    if media_type == MediaType.DOCUMENT:
+                        probe_pdf_structure(tmp_path)
+                    stored_original = store_original_with_sha256(tmp_path, original_path)
+                except InvalidPdfError as exc:
+                    shutil.rmtree(asset_root, ignore_errors=True)
+                    return jsonify({"message": str(exc)}), 400
+                except Exception as exc:
+                    shutil.rmtree(asset_root, ignore_errors=True)
+                    return jsonify({"error": f"Could not store uploaded file: {exc}"}), 500
 
-        elif media_type == MediaType.AUDIO:
-            if target_format == "mp3":
-                out_ext = ".mp3"
-                out_path = derived_dir / f"web{out_ext}"
-            else:
-                out_ext = ".m4a"
-                out_path = derived_dir / f"web{out_ext}"
+                try:
+                    DERIVATIVE_PROCESSOR.logger = app.logger
+                    derivative_result = DERIVATIVE_PROCESSOR.generate(
+                        tmp_path,
+                        derived_dir,
+                        classification,
+                    )
+                except InvalidPdfError as exc:
+                    shutil.rmtree(asset_root, ignore_errors=True)
+                    return jsonify({"message": str(exc)}), 400
+                except Exception as exc:
+                    # The directory is owned exclusively by this upload, so a
+                    # failed derivative can be removed without touching others.
+                    shutil.rmtree(asset_root, ignore_errors=True)
+                    return jsonify({"error": str(exc)}), 500
+        except OSError as exc:
+            shutil.rmtree(asset_root, ignore_errors=True)
+            return jsonify({"error": f"Could not initialize upload workspace: {exc}"}), 500
 
-        elif media_type == MediaType.DOCUMENT:
-            # PDF documents are not transformed for now; the derivative is a
-            # stable access copy with a canonical name for frontend consumers.
-            out_path = derived_dir / DOCUMENT_DERIVATIVE_NAME
-            thumb128_path = derived_dir / "thumb128.jpg"
-            thumb256_path = derived_dir / "thumb256.jpg"
-
-        else:
-            # Fallback: just store a derived copy
-            out_ext = Path(upload_file.filename).suffix or ".dat"
-            out_path = derived_dir / f"asset{out_ext}"
-
-        # This is the filename inside <imageId>/derived/ that the delegate should serve
+        out_path = derivative_result.primary
         derivative_name = out_path.name
-
-        # Save uploaded file (tmp), validate document uploads, and store original.
-        try:
-            upload_file.save(tmp_path)
-            if media_type == MediaType.DOCUMENT:
-                require_valid_pdf(tmp_path)
-            copy_file(tmp_path, original_path)
-        except InvalidPdfError as exc:
-            tmp_path.unlink(missing_ok=True)
-            shutil.rmtree(asset_root, ignore_errors=True)
-            return jsonify({"message": str(exc)}), 400
-        except Exception as exc:
-            tmp_path.unlink(missing_ok=True)
-            shutil.rmtree(asset_root, ignore_errors=True)
-            return jsonify({"error": f"Could not store uploaded file: {exc}"}), 500
-
-        try:
-            if media_type == MediaType.IMAGE:
-                convert_to_pyramidal_tiff_with_vips(tmp_path, out_path)
-
-            elif media_type == MediaType.VIDEO:
-                # Always create a web MP4 derivative for now.
-                convert_to_mp4_with_ffmpeg(tmp_path, out_path)
-                create_video_thumbnail_with_ffmpeg(tmp_path, thumb128_path, 128)
-                create_video_thumbnail_with_ffmpeg(tmp_path, thumb256_path, 256)
-
-            elif media_type == MediaType.AUDIO:
-                require_audio_stream_with_ffprobe(tmp_path)
-                if target_format == "mp3":
-                    convert_to_mp3_with_ffmpeg(tmp_path, out_path)
-                else:
-                    convert_to_m4a_with_ffmpeg(tmp_path, out_path)
-
-            elif media_type == MediaType.DOCUMENT:
-                # Keep a PDF access copy in derived/ so /asset/<assetId>
-                # behaves exactly like the other HTTP-delivered media types.
-                copy_file(tmp_path, out_path)
-                create_pdf_thumbnails_with_poppler(
-                    tmp_path,
-                    {
-                        PDF_THUMBNAIL_SIZES[0]: thumb128_path,
-                        PDF_THUMBNAIL_SIZES[1]: thumb256_path,
-                    },
-                )
-
-            else:
-                raise ValueError(f"Unsupported media type: {media_type.value}")
-        except InvalidPdfError as exc:
-            shutil.rmtree(asset_root, ignore_errors=True)
-            return jsonify({"message": str(exc)}), 400
-        except Exception as exc:
-            # Clean up on failure
-            if out_path.exists():
-                out_path.unlink(missing_ok=True)
-            if thumb128_path is not None and thumb128_path.exists():
-                thumb128_path.unlink(missing_ok=True)
-            if thumb256_path is not None and thumb256_path.exists():
-                thumb256_path.unlink(missing_ok=True)
-            shutil.rmtree(asset_root, ignore_errors=True)
-            return jsonify({"error": str(exc)}), 500
-        finally:
-            # Remove temp file
-            tmp_path.unlink(missing_ok=True)
+        thumbnail_by_name = {path.name: path for path in derivative_result.thumbnails}
+        thumb128_path = thumbnail_by_name.get("thumb128.jpg")
+        thumb256_path = thumbnail_by_name.get("thumb256.jpg")
 
         # Cantaloupe identifier is the relative path from IMAGE_ROOT
         iiif_id = identifier
@@ -982,14 +692,14 @@ def create_app() -> Flask:
         thumb256_url = f"{asset_url}?derivative=thumb256.jpg"
 
         resource_data : dict[str, str | list[str]] = {
-            'dcterms:type': dcterms_type_for_media(media_type),
+            'dcterms:type': classification.dcterms_type,
             'shared:originalName': upload_file.filename,
-            'shared:originalMimeType': original_mime_type_for_media(media_type, upload_file),
+            'shared:originalMimeType': classification.original_mime_type,
             # For images, serverUrl is the IIIF base; for other media, it is the Caddy base.
             'shared:serverUrl': iiif_base_url if media_type == MediaType.IMAGE else media_base_url,
             # New canonical key
             'shared:assetId': identifier,
-            'shared:protocol': protocol_for_media(media_type),
+            'shared:protocol': classification.protocol,
             'shared:derivativeName': derivative_name,
             # Store the logical folder (relative to IMAGE_ROOT) for later retrieval / housekeeping
             'shared:path': asset_base_rel.as_posix(),
@@ -1000,6 +710,9 @@ def create_app() -> Flask:
         for key in request.form.keys():
             if key not in required_form_fields:
                 resource_data[key] = request.form.getlist(key)
+        # Integrity metadata is always server-managed. Assign it after optional
+        # client metadata so a multipart field can never spoof the digest.
+        resource_data['shared:checksum'] = stored_original.sha256
         try:
             response = client.create_resource(resource=resource_class, resource_data=resource_data)
         except Exception as exc:
@@ -1015,11 +728,12 @@ def create_app() -> Flask:
                 "imageId": identifier,  # backwards compatibility
                 "iri": response['iri'],
                 "originalName": upload_file.filename,
-                "originalMimeType": original_mime_type_for_media(media_type, upload_file),
+                "originalMimeType": classification.original_mime_type,
+                "checksum": stored_original.sha256,
                 "derivativeName": derivative_name,
                 "mediaType": media_type.value,
-                "dctermsType": dcterms_type_for_media(media_type),
-                "protocol": protocol_for_media(media_type),
+                "dctermsType": classification.dcterms_type,
+                "protocol": classification.protocol,
                 "iiifInfoUrl": iiif_info_url,
                 "assetUrl": asset_url,
                 "storedPath": asset_base_rel.as_posix(),
@@ -1104,6 +818,38 @@ def create_app() -> Flask:
 
         return jsonify({"message": f"Deleted asset {asset_id} at {asset_root}"}), 200
 
+
+    try:
+        reconcile_seconds = int(
+            os.getenv("OLDAP_IMPORT_CALLBACK_RECONCILE_SECONDS", "0")
+        )
+    except ValueError:
+        reconcile_seconds = 0
+        app.logger.error("Import callback reconciliation interval is invalid.")
+    if reconcile_seconds > 0:
+        try:
+            notifier = ImportApiNotifier.from_environment()
+            notifier.validate_configuration()
+            reconciler = PeriodicCallbackReconciler(
+                QUARANTINE_STORE,
+                notifier,
+                app.logger,
+                interval_seconds=reconcile_seconds,
+                part_max_age_seconds=int(
+                    os.getenv("OLDAP_INGEST_PART_MAX_AGE_SECONDS", "86400")
+                ),
+            )
+            reconciler.start()
+            app.extensions["import_callback_reconciler"] = reconciler
+            app.logger.info(
+                "Import callback reconciliation enabled intervalSeconds=%d",
+                reconcile_seconds,
+            )
+        except (CallbackError, ValueError) as error:
+            app.logger.error(
+                "Import callback reconciliation unavailable error=%s",
+                type(error).__name__,
+            )
 
     return app
 

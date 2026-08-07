@@ -10,9 +10,14 @@ services:
       - IIIF_BASE_URL=${IIIF_BASE_URL:-http://localhost:8088/iiif/3/}
       - MEDIA_BASE_URL=${MEDIA_BASE_URL:-http://localhost:8088/}
       - APP_ENV=${APP_ENV:-Dev}
+      - OLDAP_IMPORT_CALLBACK_RECONCILE_SECONDS=${OLDAP_IMPORT_CALLBACK_RECONCILE_SECONDS:-60}
+      - OLDAP_INGEST_PART_MAX_AGE_SECONDS=${OLDAP_INGEST_PART_MAX_AGE_SECONDS:-86400}
+      - OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES=${OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES:-0}
 
     volumes:
       - ${MEDIA_DATA_HOST:-./data}:/data/images
+      - ${MEDIA_INGEST_HOST:-./ingest}:/data/ingest
+      - ${MEDIA_IMPORT_RECORDS_HOST:-./import-records}:/data/import-records:ro
     expose:
       - "8000"
     # Needed on Linux so host.docker.internal works
@@ -25,13 +30,55 @@ services:
        "--workers", "${GUNICORN_WORKERS:-1}",
        "--worker-class", "gthread",
        "--threads", "${GUNICORN_THREADS:-4}",
-       "--timeout", "${GUNICORN_TIMEOUT:-300}",
+       "--timeout", "${GUNICORN_TIMEOUT:-900}",
        "--graceful-timeout", "${GUNICORN_GRACEFUL_TIMEOUT:-60}",
        "--keep-alive", "${GUNICORN_KEEPALIVE:-5}",
        "--access-logfile", "-",
        "--error-logfile", "-",
        "--log-level", "${GUNICORN_LOG_LEVEL:-info}",
        "app:app"]
+
+  # Explicit operator opt-in until the ZIP-import pilot gate is approved.
+  ingest-worker:
+    profiles: ["zip-import-validation"]
+    image: lrosenth/oldap-mediahelper:${OLDAP_MEDIAHELPER_TAG:-latest}
+    container_name: oldap-ingest-worker
+    environment:
+      OLDAP_API_URL: ${OLDAP_API_URL:-http://host.docker.internal:8000}
+      OLDAP_JWT_ISSUER: ${OLDAP_JWT_ISSUER:-https://oldap.org}
+      OLDAP_IMPORT_SERVICE_JWT_SECRET: ${OLDAP_IMPORT_SERVICE_JWT_SECRET:-}
+      OLDAP_IMPORT_SERVICE_SUBJECT: ${OLDAP_IMPORT_SERVICE_SUBJECT:-media.oldap.org}
+      OLDAP_INGEST_WORKER_ID: ${OLDAP_INGEST_WORKER_ID:-media-ingest-1}
+      OLDAP_INGEST_ROOT: /data/ingest
+      OLDAP_IMPORT_RECORDS_ROOT: /data/import-records
+      UPLOADER_IMGDIR: /data/images
+      OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES: ${OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES:-0}
+    volumes:
+      - ${MEDIA_INGEST_HOST:-./ingest}:/data/ingest
+      - ${MEDIA_IMPORT_RECORDS_HOST:-./import-records}:/data/import-records
+      - ${MEDIA_DATA_HOST:-./data}:/data/images
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    cpus: 4.0
+    mem_limit: 6g
+    memswap_limit: 6g
+    pids_limit: 128
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    command: ["python", "-m", "ingest_worker"]
 
   # IIIF image server for pyramidal TIFF derivatives
   imageserver:

@@ -8,6 +8,51 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /imports/{importId}/sip:
+    put:
+      summary: Store one immutable ZIP SIP in private quarantine
+      description: Streams with an independent byte ceiling and atomically exposes only a complete SIP plus receipt. Exact request-ID replay returns the existing receipt without replacing bytes.
+      tags: [ZIP import]
+      security:
+        - uploadCapability: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: Content-Length
+          in: header
+          required: true
+          schema: {type: integer, minimum: 1, maximum: 500000000}
+        - name: X-Upload-Request-Id
+          in: header
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema: {type: string, format: binary}
+      responses:
+        '201':
+          description: SIP durably finalized for the first time.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ImportUploadReceipt'}
+        '200':
+          description: Exact idempotent replay.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ImportUploadReceipt'}
+        '400': {$ref: '#/components/responses/ImportBadRequest'}
+        '401': {$ref: '#/components/responses/ImportUnauthorized'}
+        '403': {$ref: '#/components/responses/ImportForbidden'}
+        '409': {$ref: '#/components/responses/ImportConflict'}
+        '413': {$ref: '#/components/responses/ImportTooLarge'}
+        '415': {$ref: '#/components/responses/ImportUnsupportedMedia'}
+        '500': {$ref: '#/components/responses/ImportStorageFailure'}
+        '503': {$ref: '#/components/responses/ImportServiceUnavailable'}
+
   /upload:
     post:
       summary: Upload and register a media asset
@@ -276,7 +321,56 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    uploadCapability:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Dedicated typ=ingest-upload JWT with audience oldap-media-ingest and one importId.
+  responses:
+    ImportBadRequest:
+      description: Invalid import identifier, required headers, or body length.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
+    ImportUnauthorized:
+      description: Missing, malformed, expired, or wrong-purpose upload capability.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
+    ImportForbidden:
+      description: A valid capability belongs to another import.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
+    ImportConflict:
+      description: A different upload request already finalized the SIP.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
+    ImportTooLarge:
+      description: Declared or streamed bytes exceed the capability ceiling.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
+    ImportUnsupportedMedia:
+      description: Content-Type or restrictive ZIP signature is invalid.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
+    ImportStorageFailure:
+      description: The SIP could not be durably finalized.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
+    ImportServiceUnavailable:
+      description: Purpose-specific upload verification is not safely configured.
+      content: {application/json: {schema: {$ref: '#/components/schemas/ImportError'}}}
   schemas:
+    ImportUploadReceipt:
+      type: object
+      additionalProperties: false
+      properties:
+        importId: {type: string, format: uuid}
+        uploadRequestId: {type: string, format: uuid}
+        storedAt: {type: string, format: date-time}
+        sizeBytes: {type: integer, minimum: 1, maximum: 500000000}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        stateNotification: {type: string, enum: [PENDING, DELIVERED]}
+      required: [importId, uploadRequestId, storedAt, sizeBytes, sha256, stateNotification]
+    ImportError:
+      type: object
+      additionalProperties: false
+      properties:
+        code: {type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$'}
+        message: {type: string, minLength: 1, maxLength: 500}
+        requestId: {type: string, minLength: 1, maxLength: 128}
+      required: [code, message, requestId]
     UploadSuccess:
       type: object
       properties:
@@ -293,6 +387,10 @@ components:
         originalMimeType:
           type: string
           description: MIME type recorded on the MediaObject. PDF document uploads are normalized to application/pdf.
+        checksum:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Lower-case SHA-256 digest of the bit-identical stored original; also written to shared:checksum.
         derivativeName:
           type: string
           description: Filename inside the asset's derived directory, e.g. master.tif, web.mp4, web.mp3, or document.pdf.
@@ -337,6 +435,7 @@ components:
         - iri
         - originalName
         - originalMimeType
+        - checksum
         - derivativeName
         - mediaType
         - dctermsType

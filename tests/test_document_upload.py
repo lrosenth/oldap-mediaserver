@@ -2,11 +2,13 @@
 
 import io
 import importlib
+import hashlib
 import sys
 import types
 from pathlib import Path
 
 import pytest
+from pdf2image.exceptions import PDFPageCountError
 from PIL import Image
 from oldaplib.src.authentication import AuthorizationContext, TokenCodec, TokenSettings
 from oldaplib.src.enums.adminpermissions import AdminPermission
@@ -147,7 +149,7 @@ def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
         assert access == "sequential"
         return FakeVipsImage()
 
-    monkeypatch.setattr(module.pyvips.Image, "new_from_file", fake_vips_load, raising=False)
+    monkeypatch.setattr(module.DERIVATIVE_PROCESSOR, "vips_loader", fake_vips_load)
 
     response = client.post(
         "/upload",
@@ -166,11 +168,15 @@ def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
     assert payload["mediaType"] == "image"
     assert payload["derivativeName"] == "master.tif"
     assert payload["protocol"] == "iiif"
+    assert payload["checksum"] == hashlib.sha256(b"image bytes").hexdigest()
 
     asset_root = media_root / "testproject" / "image" / "archive" / "asset-image"
     assert (asset_root / "original" / "scan.png").read_bytes() == b"image bytes"
     assert (asset_root / "derived" / "master.tif").read_bytes() == b"pyramidal tiff"
     assert FakeOldapClient.created[0][1]["shared:derivativeName"] == "master.tif"
+    assert FakeOldapClient.created[0][1]["shared:checksum"] == hashlib.sha256(
+        b"image bytes"
+    ).hexdigest()
 
 
 @pytest.mark.parametrize("identifier", ["-nanoid-style", "_nanoid-style", "asset.id~1"])
@@ -205,8 +211,8 @@ def test_pdf_upload_creates_canonical_document_derivative(media_app, monkeypatch
     FakeOldapClient.created = []
     monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
     monkeypatch.setattr(
-        module,
-        "convert_from_path",
+        module.DERIVATIVE_PROCESSOR,
+        "pdf_renderer",
         lambda *args, **kwargs: [Image.new("RGB", (400, 200), "red")],
     )
 
@@ -217,6 +223,7 @@ def test_pdf_upload_creates_canonical_document_derivative(media_app, monkeypatch
             "projectId": "test",
             "path": "archive",
             "identifier": "asset-pdf",
+            "shared:checksum": "attacker-controlled-value",
             "file": (io.BytesIO(PDF_BYTES), "scan.pdf", "application/octet-stream"),
         },
         content_type="multipart/form-data",
@@ -227,6 +234,7 @@ def test_pdf_upload_creates_canonical_document_derivative(media_app, monkeypatch
     assert payload["assetId"] == "asset-pdf"
     assert payload["mediaType"] == "document"
     assert payload["originalMimeType"] == "application/pdf"
+    assert payload["checksum"] == hashlib.sha256(PDF_BYTES).hexdigest()
     assert payload["derivativeName"] == "document.pdf"
     assert payload["dctermsType"] == "dcmitype:Text"
     assert payload["protocol"] == "http"
@@ -248,6 +256,7 @@ def test_pdf_upload_creates_canonical_document_derivative(media_app, monkeypatch
                 "dcterms:type": "dcmitype:Text",
                 "shared:originalName": "scan.pdf",
                 "shared:originalMimeType": "application/pdf",
+                "shared:checksum": hashlib.sha256(PDF_BYTES).hexdigest(),
                 "shared:serverUrl": "http://media.example/",
                 "shared:assetId": "asset-pdf",
                 "shared:protocol": "http",
@@ -278,9 +287,9 @@ def test_unrenderable_pdf_is_rejected_without_creating_media(media_app, monkeypa
     monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
 
     def fail_render(*args, **kwargs):
-        raise module.PDFPageCountError("Unable to read PDF page count")
+        raise PDFPageCountError("Unable to read PDF page count")
 
-    monkeypatch.setattr(module, "convert_from_path", fail_render)
+    monkeypatch.setattr(module.DERIVATIVE_PROCESSOR, "pdf_renderer", fail_render)
 
     response = client.post(
         "/upload",
@@ -307,8 +316,8 @@ def test_oldap_create_failure_removes_new_pdf_asset(media_app, monkeypatch):
     module, client, media_root = media_app
     monkeypatch.setattr(module, "OldapClient", FailingCreateOldapClient)
     monkeypatch.setattr(
-        module,
-        "convert_from_path",
+        module.DERIVATIVE_PROCESSOR,
+        "pdf_renderer",
         lambda *args, **kwargs: [Image.new("RGB", (200, 400), "blue")],
     )
 
@@ -337,8 +346,8 @@ def test_conversion_failure_removes_new_non_document_asset(media_app, monkeypatc
     FakeOldapClient.created = []
     monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
     monkeypatch.setattr(
-        module.subprocess,
-        "run",
+        module.DERIVATIVE_PROCESSOR,
+        "command_runner",
         lambda *args, **kwargs: types.SimpleNamespace(
             returncode=1,
             stdout="",
@@ -512,7 +521,7 @@ def test_original_copy_failure_releases_asset_identifier(media_app, monkeypatch)
     def fail_copy(*args, **kwargs):
         raise OSError("simulated copy error")
 
-    monkeypatch.setattr(module.shutil, "copy2", fail_copy)
+    monkeypatch.setattr(module, "store_original_with_sha256", fail_copy)
 
     response = client.post(
         "/upload",
@@ -531,7 +540,7 @@ def test_original_copy_failure_releases_asset_identifier(media_app, monkeypatch)
     assert not (
         media_root / "testproject" / "document" / "original-copy-failure"
     ).exists()
-    assert not (media_root / "_tmp" / "original-copy-failure.pdf").exists()
+    assert not list((media_root / "_tmp").iterdir())
 
 
 def test_pdf_derivative_resolves_as_http_asset(media_app):

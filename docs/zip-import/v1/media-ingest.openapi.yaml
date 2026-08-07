@@ -1,0 +1,229 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+
+info:
+  title: OLDAP Media ZIP Ingest API Contract
+  version: 1.0.0
+  description: |
+    Phase 0 contract for direct immutable ZIP upload and protected retained
+    import records. ZIP bytes never pass through oldap-api.
+
+servers:
+  - url: https://media.oldap.org
+
+tags:
+  - name: SIP upload
+    description: Browser-to-media quarantine upload using a single-job capability.
+  - name: Import records
+    description: Internal API-to-media access; never routed publicly.
+
+paths:
+  /imports/{importId}/sip:
+    parameters:
+      - $ref: '#/components/parameters/ImportId'
+    put:
+      tags: [SIP upload]
+      operationId: putImportSip
+      summary: Store one immutable ZIP SIP in quarantine
+      description: |
+        This is an idempotent, non-resumable PUT. The first complete, validly
+        authorized request atomically creates the immutable SIP. Interrupted
+        .part files never count as stored. A replay after finalization returns
+        the persisted receipt without replacing or appending to the SIP.
+
+        The server enforces the byte limit while streaming regardless of
+        Content-Length, computes SHA-256, fsyncs where required, atomically
+        renames the completed file, persists the receipt, and then notifies
+        oldap-api. API-notification failure is reconciled asynchronously and
+        never causes the durable SIP to be accepted a second time.
+      security:
+        - UploadCapability: []
+      parameters:
+        - name: Content-Length
+          in: header
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 500000000 }
+        - name: X-Upload-Request-Id
+          in: header
+          required: true
+          description: Client-generated correlation/idempotency identifier for this PUT attempt.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: SIP durably stored for the first time.
+          headers:
+            Location:
+              schema: { type: string, format: uri-reference }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadReceipt'
+        '200':
+          description: Idempotent replay; the immutable persisted receipt is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadReceipt'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '507': { $ref: '#/components/responses/InsufficientStorage' }
+
+  /internal/imports/{importId}/sip:
+    parameters:
+      - $ref: '#/components/parameters/ImportId'
+    get:
+      tags: [Import records]
+      operationId: getStoredSipMetadata
+      summary: Read durable SIP metadata for reconciliation without returning bytes
+      security:
+        - ImportRecordsToken: []
+      responses:
+        '200':
+          description: Stored SIP receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadReceipt'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /internal/imports/{importId}/records/{recordType}:
+    parameters:
+      - $ref: '#/components/parameters/ImportId'
+      - name: recordType
+        in: path
+        required: true
+        schema: { type: string, enum: [manifest, report] }
+    get:
+      tags: [Import records]
+      operationId: getImportRecord
+      summary: Retrieve one immutable retained validation record
+      description: |
+        oldap-api uses this endpoint after authorizing the public report request.
+        No browser upload capability or OLDAP user access token is accepted here.
+      security:
+        - ImportRecordsToken: []
+      responses:
+        '200':
+          description: Manifest or report selected by recordType.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: no-store }
+            Digest:
+              description: SHA-256 of the exact response representation.
+              schema: { type: string, pattern: '^sha-256=:[A-Za-z0-9+/]+={0,2}:$' }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: './manifest.schema.json'
+                  - $ref: './report.schema.json'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+components:
+  securitySchemes:
+    UploadCapability:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Short-lived API-issued JWT. Required claims: typ=ingest-upload,
+        aud=oldap-media-ingest, importId equal to the path, subject user IRI,
+        maxBytes <= 500000000, jti, iat, and exp. It is never accepted by
+        oldap-api or normal media upload/delivery endpoints.
+    ImportRecordsToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Dedicated Vault-managed API-to-media token for record and SIP metadata reads.
+
+  parameters:
+    ImportId:
+      name: importId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      properties:
+        code: { type: string, pattern: '^[A-Z][A-Z0-9_]{2,63}$' }
+        message: { type: string, minLength: 1, maxLength: 500 }
+        requestId: { type: string, minLength: 1, maxLength: 128 }
+        details:
+          type: object
+          maxProperties: 16
+          additionalProperties:
+            type: [string, number, integer, boolean, 'null']
+      required: [code, message, requestId]
+
+    UploadReceipt:
+      type: object
+      additionalProperties: false
+      properties:
+        importId: { type: string, format: uuid }
+        uploadRequestId: { type: string, format: uuid }
+        storedAt: { type: string, format: date-time }
+        sizeBytes: { type: integer, minimum: 1, maximum: 500000000 }
+        sha256: { $ref: './common.schema.json#/$defs/Sha256' }
+        stateNotification:
+          type: string
+          enum: [PENDING, DELIVERED]
+          description: Delivery of the idempotent sip-stored event to oldap-api.
+      required: [importId, uploadRequestId, storedAt, sizeBytes, sha256, stateNotification]
+
+  responses:
+    BadRequest:
+      description: Invalid headers, path, body framing, or ZIP signature.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: Missing, expired, malformed, or wrong-purpose bearer token.
+      headers:
+        WWW-Authenticate: { schema: { type: string, const: Bearer } }
+        Cache-Control: { schema: { type: string, const: no-store } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: Token is valid but its importId, audience, subject, or maxBytes does not authorize this request.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: No retained record or finalized SIP exists for this import.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: Existing finalized state conflicts with the supplied request or the record is not yet available.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    PayloadTooLarge:
+      description: Content-Length or actual streamed bytes exceed the capability or 500,000,000-byte hard limit.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    UnsupportedMediaType:
+      description: Content-Type is not application/zip or the content is not a ZIP archive.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    InternalServerError:
+      description: The SIP could not be durably finalized; partial data is not accepted.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    InsufficientStorage:
+      description: >-
+        Physical free-space admission rejected the upload with stable code
+        IMPORT_PHYSICAL_CAPACITY_INSUFFICIENT. No partial SIP is retained.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ServiceUnavailable:
+      description: Purpose-specific upload verification is not safely configured.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

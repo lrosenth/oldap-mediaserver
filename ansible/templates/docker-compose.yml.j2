@@ -9,8 +9,12 @@ services:
       IIIF_BASE_URL: https://{{ media_domain }}/iiif/3/
       MEDIA_BASE_URL: https://{{ media_domain }}/
       APP_ENV: {{ app_env }}
+      OLDAP_IMPORT_CALLBACK_RECONCILE_SECONDS: "{{ import_callback_reconcile_seconds }}"
+      OLDAP_INGEST_PART_MAX_AGE_SECONDS: "{{ ingest_part_max_age_seconds }}"
     volumes:
       - {{ media_root }}:/data/images
+      - {{ media_ingest_root }}:/data/ingest
+      - {{ media_import_records_root }}:/data/import-records:ro
     expose:
       - "8000"
     extra_hosts:
@@ -25,13 +29,50 @@ services:
        "--workers", "${GUNICORN_WORKERS:-1}",
        "--worker-class", "gthread",
        "--threads", "${GUNICORN_THREADS:-4}",
-       "--timeout", "${GUNICORN_TIMEOUT:-300}",
+       "--timeout", "${GUNICORN_TIMEOUT:-900}",
        "--graceful-timeout", "${GUNICORN_GRACEFUL_TIMEOUT:-60}",
        "--keep-alive", "${GUNICORN_KEEPALIVE:-5}",
        "--access-logfile", "-",
        "--error-logfile", "-",
        "--log-level", "${GUNICORN_LOG_LEVEL:-info}",
        "app:app"]
+
+  # Explicit operator opt-in until the ZIP-import pilot gate is approved.
+  ingest-worker:
+    profiles: ["zip-import-validation"]
+    image: lrosenth/oldap-mediahelper:{{ oldap_mediahelper_tag }}
+    container_name: oldap-ingest-worker
+    env_file:
+      - ./ingest-worker.env
+    volumes:
+      - {{ media_ingest_root }}:/data/ingest
+      - {{ media_import_records_root }}:/data/import-records
+      - {{ media_root }}:/data/images
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    cpus: 4.0
+    mem_limit: 6g
+    memswap_limit: 6g
+    pids_limit: 128
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+{% for extra_host in container_extra_hosts | default([]) %}
+      - "{{ extra_host }}"
+{% endfor %}
+    restart: unless-stopped
+    command: ["python", "-m", "ingest_worker"]
 
   imageserver:
     image: lrosenth/oldap-imageserver:{{ oldap_imageserver_tag }}

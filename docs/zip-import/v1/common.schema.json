@@ -1,0 +1,360 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api.oldap.org/schemas/zip-import/v1/common.schema.json",
+  "title": "OLDAP ZIP import common types v1",
+  "description": "Shared strict types for the version 1 ZIP import manifest and validation report.",
+  "$defs": {
+    "ImportId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "Iri": {
+      "type": "string",
+      "format": "uri",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "TargetSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "projectShortName": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+        },
+        "stagingAreaIri": {
+          "$ref": "#/$defs/Iri"
+        },
+        "stagingAreaName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "targetRootFolderIri": {
+          "$ref": "#/$defs/Iri"
+        },
+        "targetRootFolderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "projectShortName",
+        "stagingAreaIri",
+        "stagingAreaName",
+        "targetRootFolderIri",
+        "targetRootFolderName"
+      ]
+    },
+    "LimitsSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxCompressedBytes": { "type": "integer", "const": 500000000 },
+        "maxExtractedBytes": { "type": "integer", "const": 3000000000 },
+        "maxIndividualFileBytes": { "type": "integer", "const": 3000000000 },
+        "maxEntries": { "type": "integer", "const": 10000 },
+        "maxCompressionRatioPerFile": { "type": "number", "const": 100 },
+        "maxAggregateCompressionRatio": { "type": "number", "const": 50 },
+        "maxDirectoryDepth": { "type": "integer", "const": 5 },
+        "maxPathSegmentUtf8Bytes": { "type": "integer", "const": 255 },
+        "maxRelativePathUtf8Bytes": { "type": "integer", "const": 1024 },
+        "maxImagePixels": { "type": "integer", "const": 100000000 },
+        "maxImageAxisPixels": { "type": "integer", "const": 30000 },
+        "maxTextBytes": { "type": "integer", "const": 1048576 },
+        "maxAudioChannels": { "type": "integer", "const": 2 },
+        "minAudioSampleRateHz": { "type": "integer", "const": 8000 },
+        "maxWavPcmSampleRateHz": { "type": "integer", "const": 192000 },
+        "allowedWavPcmBitsPerSample": { "const": [8, 16, 24, 32] },
+        "maxFlacSampleRateHz": { "type": "integer", "const": 192000 },
+        "allowedFlacBitsPerSample": { "const": [8, 16, 24] },
+        "maxMp3SampleRateHz": { "type": "integer", "const": 48000 },
+        "allowedH264Profiles": { "const": ["Baseline", "Main", "High"] },
+        "maxH264Level": { "type": "number", "const": 5.2 },
+        "allowedVideoPixelFormats": { "const": ["yuv420p"] },
+        "allowedAacProfiles": { "const": ["LC"] },
+        "maxVideoWidth": { "type": "integer", "const": 3840 },
+        "maxVideoHeight": { "type": "integer", "const": 2160 },
+        "maxVideoFramesPerSecond": { "type": "number", "const": 60 },
+        "maxVideoDurationSeconds": { "type": "integer", "const": 7200 },
+        "maxValidationSeconds": { "type": "integer", "const": 21600 },
+        "maxConcurrentValidationOrImportJobs": { "type": "integer", "const": 1 }
+      },
+      "required": [
+        "maxCompressedBytes",
+        "maxExtractedBytes",
+        "maxIndividualFileBytes",
+        "maxEntries",
+        "maxCompressionRatioPerFile",
+        "maxAggregateCompressionRatio",
+        "maxDirectoryDepth",
+        "maxPathSegmentUtf8Bytes",
+        "maxRelativePathUtf8Bytes",
+        "maxImagePixels",
+        "maxImageAxisPixels",
+        "maxTextBytes",
+        "maxAudioChannels",
+        "minAudioSampleRateHz",
+        "maxWavPcmSampleRateHz",
+        "allowedWavPcmBitsPerSample",
+        "maxFlacSampleRateHz",
+        "allowedFlacBitsPerSample",
+        "maxMp3SampleRateHz",
+        "allowedH264Profiles",
+        "maxH264Level",
+        "allowedVideoPixelFormats",
+        "allowedAacProfiles",
+        "maxVideoWidth",
+        "maxVideoHeight",
+        "maxVideoFramesPerSecond",
+        "maxVideoDurationSeconds",
+        "maxValidationSeconds",
+        "maxConcurrentValidationOrImportJobs"
+      ]
+    },
+    "IssueCode": {
+      "type": "string",
+      "enum": [
+        "ABSOLUTE_PATH",
+        "ARCHIVE_COMMENT_IGNORED",
+        "AUTHORIZATION_LOST",
+        "AUDIO_BIT_DEPTH_UNSUPPORTED",
+        "AUDIO_CHANNEL_LIMIT",
+        "AUDIO_CODEC_UNSUPPORTED",
+        "AUDIO_SAMPLE_RATE_UNSUPPORTED",
+        "CASE_COLLISION",
+        "COMPRESSION_RATIO_LIMIT",
+        "DUPLICATE_PATH",
+        "ENCRYPTED_ENTRY",
+        "ENTRY_COUNT_LIMIT",
+        "ENTRY_SIZE_LIMIT",
+        "EXTENSION_CONTENT_MISMATCH",
+        "EXTRACTED_TOTAL_LIMIT",
+        "FILE_DIRECTORY_CONFLICT",
+        "IMAGE_AXIS_LIMIT",
+        "IMAGE_PIXEL_LIMIT",
+        "INVALID_NAME_ENCODING",
+        "MULTI_DISK_NOT_ALLOWED",
+        "MULTIPAGE_TIFF_NOT_ALLOWED",
+        "NAME_NORMALIZATION_COLLISION",
+        "NESTED_ARCHIVE_NOT_ALLOWED",
+        "NO_IMPORTABLE_CONTENT",
+        "NUL_IN_NAME",
+        "PACKAGING_ARTIFACT_IGNORED",
+        "PARENT_TRAVERSAL",
+        "PARSER_FAILURE",
+        "PATH_DEPTH_LIMIT",
+        "PATH_LENGTH_LIMIT",
+        "PATH_SEGMENT_LENGTH_LIMIT",
+        "PDF_ACTIVE_CONTENT",
+        "PDF_ATTACHMENT_NOT_ALLOWED",
+        "PDF_ENCRYPTED",
+        "PDF_NOT_PDFA_1_OR_2",
+        "PHYSICAL_CAPACITY_INSUFFICIENT",
+        "QUOTA_EXCEEDED",
+        "RESERVED_NAME",
+        "SELF_EXTRACTING_ZIP_NOT_ALLOWED",
+        "SPECIAL_FILE_NOT_ALLOWED",
+        "SYMLINK_NOT_ALLOWED",
+        "TARGET_FOLDER_COLLISION",
+        "TARGET_CHANGED",
+        "TARGET_MEDIA_NAME_COLLISION",
+        "TARGET_NOT_FOUND",
+        "TEXT_INVALID_UTF8",
+        "TEXT_SIZE_LIMIT",
+        "UNSUPPORTED_COMPRESSION_METHOD",
+        "UNSUPPORTED_MEDIA_TYPE",
+        "VALIDATION_TIMEOUT",
+        "VIDEO_AUDIO_CODEC_UNSUPPORTED",
+        "VIDEO_CODEC_UNSUPPORTED",
+        "VIDEO_DIMENSION_LIMIT",
+        "VIDEO_DURATION_LIMIT",
+        "VIDEO_FRAMERATE_LIMIT",
+        "VIDEO_STREAM_LAYOUT_UNSUPPORTED",
+        "ZIP64_NOT_ALLOWED",
+        "ZIP_CRC_MISMATCH",
+        "ZIP_FORMAT_UNSUPPORTED",
+        "ZIP_SIZE_LIMIT"
+      ]
+    },
+    "Issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": { "$ref": "#/$defs/IssueCode" },
+        "severity": {
+          "type": "string",
+          "enum": ["INFO", "WARNING", "ERROR"]
+        },
+        "blocking": { "type": "boolean" },
+        "messageKey": {
+          "type": "string",
+          "pattern": "^zipImport\\.[A-Za-z0-9_.-]+$"
+        },
+        "entryIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "details": {
+          "type": "object",
+          "maxProperties": 16,
+          "additionalProperties": {
+            "type": ["string", "number", "integer", "boolean", "null"]
+          }
+        }
+      },
+      "required": ["code", "severity", "blocking", "messageKey"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "blocking": { "const": true } },
+            "required": ["blocking"]
+          },
+          "then": {
+            "properties": { "severity": { "const": "ERROR" } }
+          }
+        }
+      ]
+    },
+    "ValidationSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entriesObserved": { "type": "integer", "minimum": 0 },
+        "entriesDeclared": { "type": "integer", "minimum": 0 },
+        "inventoryComplete": { "type": "boolean" },
+        "files": { "type": "integer", "minimum": 0 },
+        "directories": { "type": "integer", "minimum": 0 },
+        "importableFiles": { "type": "integer", "minimum": 0 },
+        "importableDirectories": { "type": "integer", "minimum": 0 },
+        "ignoredEntries": { "type": "integer", "minimum": 0 },
+        "rejectedEntries": { "type": "integer", "minimum": 0 },
+        "warningCount": { "type": "integer", "minimum": 0 },
+        "errorCount": { "type": "integer", "minimum": 0 },
+        "compressedBytes": { "type": "integer", "minimum": 0 },
+        "extractedBytes": { "type": "integer", "minimum": 0 },
+        "maxDepth": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "entriesObserved",
+        "inventoryComplete",
+        "files",
+        "directories",
+        "importableFiles",
+        "importableDirectories",
+        "ignoredEntries",
+        "rejectedEntries",
+        "warningCount",
+        "errorCount",
+        "compressedBytes",
+        "extractedBytes",
+        "maxDepth"
+      ]
+    },
+    "ImageFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": { "const": "image" },
+        "mimeType": { "type": "string", "enum": ["image/jpeg", "image/tiff", "image/png"] },
+        "format": { "type": "string", "enum": ["JPEG", "TIFF", "PNG"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "pageCount": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["category", "mimeType", "format", "width", "height", "pageCount"]
+    },
+    "AudioFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": { "const": "audio" },
+        "mimeType": { "type": "string", "enum": ["audio/wav", "audio/flac", "audio/mpeg"] },
+        "container": { "type": "string", "enum": ["WAV", "FLAC", "MP3"] },
+        "codec": { "type": "string" },
+        "channels": { "type": "integer", "minimum": 1 },
+        "sampleRateHz": { "type": "integer", "minimum": 1 },
+        "bitsPerSample": { "type": "integer", "minimum": 1 },
+        "durationMilliseconds": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["category", "mimeType", "container", "codec", "channels", "sampleRateHz", "durationMilliseconds"]
+    },
+    "VideoFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": { "const": "video" },
+        "mimeType": { "const": "video/mp4" },
+        "container": { "const": "MP4" },
+        "videoCodec": { "type": "string" },
+        "videoStreamCount": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "framesPerSecond": { "type": "number", "exclusiveMinimum": 0 },
+        "durationMilliseconds": { "type": "integer", "minimum": 0 },
+        "audioStreamCount": { "type": "integer", "minimum": 0 },
+        "audioCodec": { "type": "string" },
+        "audioChannels": { "type": "integer", "minimum": 1 },
+        "subtitleStreamCount": { "type": "integer", "minimum": 0 },
+        "attachmentStreamCount": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "category",
+        "mimeType",
+        "container",
+        "videoCodec",
+        "videoStreamCount",
+        "width",
+        "height",
+        "framesPerSecond",
+        "durationMilliseconds",
+        "audioStreamCount",
+        "subtitleStreamCount",
+        "attachmentStreamCount"
+      ]
+    },
+    "DocumentFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": { "const": "document" },
+        "mimeType": { "type": "string", "enum": ["application/pdf", "text/plain"] },
+        "format": { "type": "string", "enum": ["PDF", "TEXT"] },
+        "pageCount": { "type": "integer", "minimum": 1 },
+        "pdfaPart": { "type": "integer", "enum": [1, 2, 3, 4] },
+        "pdfaConformance": { "type": "string", "enum": ["a", "b", "u", "e", "f"] },
+        "charset": { "type": "string", "enum": ["UTF-8", "US-ASCII"] }
+      },
+      "required": ["category", "mimeType", "format"]
+    },
+    "UnsupportedFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": { "const": "unsupported" },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 127 },
+        "format": { "type": "string", "minLength": 1, "maxLength": 127 }
+      },
+      "required": ["category", "mimeType"]
+    },
+    "DetectedContent": {
+      "oneOf": [
+        { "$ref": "#/$defs/ImageFacts" },
+        { "$ref": "#/$defs/AudioFacts" },
+        { "$ref": "#/$defs/VideoFacts" },
+        { "$ref": "#/$defs/DocumentFacts" },
+        { "$ref": "#/$defs/UnsupportedFacts" }
+      ]
+    }
+  }
+}

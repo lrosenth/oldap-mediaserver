@@ -73,6 +73,31 @@
         reverse_proxy mediaserver:8000
     }
 
+    @import_sip path_regexp import_sip ^/imports/[0-9a-fA-F-]{36}/sip$
+    handle @import_sip {
+        @import_method not method PUT OPTIONS
+        respond @import_method "method not allowed" 405
+        request_body {
+            max_size 500MB
+        }
+        reverse_proxy mediaserver:8000 {
+            transport http {
+                read_timeout 15m
+                write_timeout 15m
+            }
+        }
+    }
+
+    # Purpose-specific API retrieval of retained validation reports. Mediahelper
+    # validates a short-lived import-records JWT scoped to the exact import ID;
+    # no other /internal route is exposed through Caddy.
+    @import_report path_regexp import_report ^/internal/imports/[0-9a-fA-F-]{36}/records/report$
+    handle @import_report {
+        @import_report_method not method GET
+        respond @import_report_method "method not allowed" 405
+        reverse_proxy mediaserver:8000
+    }
+
     @status path /health /status
     handle @status {
         reverse_proxy mediaserver:8000

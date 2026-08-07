@@ -198,6 +198,32 @@ Therefore, the test server is deployed only when explicitly requested with:
 make deploy-test
 ```
 
+### ZIP-ingest disk reserve
+
+ZIP upload, validation extraction, and confirmed asset preparation inspect the
+current free space on their destination filesystem immediately before writing.
+Every phase must leave at least 20% of that filesystem free. The optional
+`storage_absolute_reserve_bytes` Ansible value can require a larger absolute
+reserve; its default `0` does not disable the mandatory percentage. A rejected
+browser upload returns HTTP 507 with
+`IMPORT_PHYSICAL_CAPACITY_INSUFFICIENT`. Capacity pressure encountered by the
+single worker is retryable and appears in the container log as
+`ingest_capacity_blocked`, with import ID, phase, required bytes, free bytes,
+and reserve bytes but no filenames.
+
+For the current approximately 1-TB production volume, the 20% rule is already
+roughly a 200-GB reserve. Configure a higher absolute value only when university
+operations establish a stricter threshold.
+
+### ZIP-import operations runbook
+
+The authoritative deployment, backup/restore, retention, incident-response,
+recovery, and pre-pilot procedures are in
+`docs/zip-import/v1/OPERATIONS_RUNBOOK.md`. Use that runbook before enabling the
+profiled ingest worker. In particular, routine backup should exclude the
+temporary ingest root where university tooling supports it, while final media,
+retained import records, and matching GraphDB state are critical restore data.
+
 ## Optional flags
 - Deploy or roll back to a specific imageserver image:
 
