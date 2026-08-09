@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-08-08 23:16
+- Decisions: Start exactly one ZIP validation/import worker on every normal deployment; retain an explicit boolean maintenance switch instead of relying on a manual post-deploy profile command. Fail closed when the dedicated `/data` filesystem is not mounted.
+- Implementation: Added `zip_import_worker_enabled: true`, passed the Compose profile through both deploy/status tasks, stopped the worker when explicitly disabled, asserted one running worker when enabled, added the `/data` mountpoint preflight, and synchronized tests and operations documentation.
+- Open: Populate/verify the shared Vault, run the home-system deployment and authenticated ZIP smoke test, then execute the coordinated production window.
+- Risks/Assumptions: Production deployment still requires an interactive sudo password on the media VM. The worker remains single-process and resource-limited; disabling it leaves queued jobs safely reclaimable after leases expire.
+
 ### Update 2026-08-07 01:29
 - Decisions: Expose only the retained validation-report GET through Caddy so a separately running oldap-api can retrieve immutable evidence; retain the import-scoped records JWT as the application boundary and keep every other `/internal` operation unrouted.
 - Implementation: Added the exact UUID-bound `/internal/imports/{importId}/records/report` GET proxy to local and Ansible Caddy configurations, strengthened deployment invariants, and synchronized architecture, API-contract, and threat-model documentation.

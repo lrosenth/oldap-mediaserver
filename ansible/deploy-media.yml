@@ -69,6 +69,11 @@
           Retained import records must be outside media delivery and temporary
           ingest roots.
 
+    - name: Verify the dedicated media filesystem is mounted
+      ansible.builtin.command:
+        cmd: "mountpoint -q {{ media_storage_mountpoint }}"
+      changed_when: false
+
   tasks:
     - name: Optionally allow HTTP/HTTPS with UFW
       community.general.ufw:
@@ -223,12 +228,27 @@
     - name: Deploy stack
       community.docker.docker_compose_v2:
         project_src: "{{ compose_dir }}"
+        profiles: >-
+          {{ (zip_import_worker_enabled | bool)
+             | ternary(['zip-import-validation'], []) }}
         state: present
         pull: "{{ 'always' if force_pull | bool else 'missing' }}"
         remove_orphans: true
         wait: true
         wait_timeout: 120
       when: not rollback | bool
+
+    - name: Stop ZIP validation worker when explicitly disabled
+      community.docker.docker_compose_v2:
+        project_src: "{{ compose_dir }}"
+        profiles:
+          - zip-import-validation
+        services:
+          - ingest-worker
+        state: stopped
+      when:
+        - not rollback | bool
+        - not zip_import_worker_enabled | bool
 
     - name: Apply pending Caddy configuration before health verification
       ansible.builtin.meta: flush_handlers
@@ -237,10 +257,27 @@
     - name: Show resulting compose services
       community.docker.docker_compose_v2:
         project_src: "{{ compose_dir }}"
+        profiles: >-
+          {{ (zip_import_worker_enabled | bool)
+             | ternary(['zip-import-validation'], []) }}
         state: present
       register: compose_result
       changed_when: false
       when: not rollback | bool
+
+    - name: Verify ZIP validation worker is running when enabled
+      ansible.builtin.assert:
+        that:
+          - >-
+            (compose_result.containers
+             | selectattr('Service', 'equalto', 'ingest-worker')
+             | selectattr('State', 'equalto', 'running')
+             | list | length) == 1
+        fail_msg: >-
+          ZIP import is enabled, but exactly one ingest-worker is not running.
+      when:
+        - not rollback | bool
+        - zip_import_worker_enabled | bool
 
     - name: Print compose status
       ansible.builtin.debug:

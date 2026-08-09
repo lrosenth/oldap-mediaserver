@@ -80,6 +80,10 @@
   requested mediahelper version. A tokenless public IIIF probe must also reach
   Cantaloupe and return `401`. Rollback suppresses Caddy handlers because the
   stack has intentionally been removed.
+- Normal Ansible deployments enable the `zip-import-validation` profile and
+  verify exactly one running ingest worker. `zip_import_worker_enabled=false`
+  is the explicit maintenance/incident switch. Deployment also refuses to
+  create media/ingest paths unless `/data` is an active mountpoint.
 
 ## Storage Model
 Assets are stored below the media root as:

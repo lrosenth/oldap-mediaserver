@@ -113,17 +113,18 @@ After the test evidence is recorded:
 make deploy-production
 ```
 
-Standard deployment starts the base media stack. The ZIP worker remains behind
-the `zip-import-validation` Compose profile until the separate feature/pilot
-gate is approved. For an explicitly approved pilot, start it on the VM with:
+Standard deployment starts the base media stack and exactly one ZIP validation
+worker. Ansible enables the worker's `zip-import-validation` Compose profile
+through `zip_import_worker_enabled: true` and verifies that it is running. This
+keeps the operational state reproducible and avoids a forgotten manual step.
+
+For a planned maintenance window or incident, deploy with the worker disabled:
 
 ```bash
-cd /opt/oldap-mediaserver/compose
-sudo docker compose --profile zip-import-validation up -d ingest-worker
-sudo docker compose ps
+make deploy-production ANSIBLE_ARGS="-e zip_import_worker_enabled=false"
 ```
 
-Stop new ZIP processing without deleting data or state:
+For an immediate stop without a full deployment:
 
 ```bash
 cd /opt/oldap-mediaserver/compose

@@ -14,6 +14,9 @@ ingest_worker_id: media-ingest-1
 ingest_worker_poll_seconds: 10
 ingest_worker_heartbeat_seconds: 60
 ingest_worker_lease_seconds: 300
+# Start the single-concurrency ZIP validation worker with every normal deploy.
+# Set false only as an explicit operational maintenance/incident switch.
+zip_import_worker_enabled: true
 # The frozen 20% filesystem reserve always applies. Set this byte count only
 # when operations require a larger absolute reserve.
 storage_absolute_reserve_bytes: 0
@@ -24,6 +27,7 @@ rollback: false
 media_root: /data/media
 media_ingest_root: /data/oldap-ingest
 media_import_records_root: /data/oldap-import-records
+media_storage_mountpoint: /data
 deploy_root: /opt/oldap-mediaserver
 compose_dir: "{{ deploy_root }}/compose"
 caddy_data_dir: "{{ deploy_root }}/caddy-data"

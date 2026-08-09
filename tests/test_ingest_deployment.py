@@ -120,3 +120,21 @@ def test_callback_retry_and_service_secret_are_deployment_wired() -> None:
     assert "OLDAP_MEDIA_JWT_SECRET" not in worker_environment
     assert "OLDAP_IMPORT_UPLOAD_JWT_SECRET" not in worker_environment
     assert "OLDAP_IMPORT_RECORDS_JWT_SECRET" not in worker_environment
+
+
+def test_production_deployment_starts_and_verifies_worker_by_default() -> None:
+    """Normal deployments must not depend on an undocumented manual start."""
+    defaults = yaml.safe_load(
+        (ROOT / "ansible" / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+    playbook = (ROOT / "ansible" / "deploy-media.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert defaults["zip_import_worker_enabled"] is True
+    assert defaults["media_storage_mountpoint"] == "/data"
+    assert "Verify the dedicated media filesystem is mounted" in playbook
+    assert "profiles:" in playbook
+    assert "zip-import-validation" in playbook
+    assert "Stop ZIP validation worker when explicitly disabled" in playbook
+    assert "Verify ZIP validation worker is running when enabled" in playbook
