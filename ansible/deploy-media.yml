@@ -22,7 +22,9 @@
         oldap_media_jwt_secret is not defined or
         oldap_import_upload_jwt_secret is not defined or
         oldap_import_service_jwt_secret is not defined or
-        oldap_import_records_jwt_secret is not defined
+        oldap_import_records_jwt_secret is not defined or
+        oldap_export_service_jwt_secret is not defined or
+        oldap_export_download_jwt_secret is not defined
       no_log: true
 
     - name: Validate purpose-specific mediahelper token secrets
@@ -33,6 +35,8 @@
           - (oldap_import_upload_jwt_secret | default('') | string | length) >= 32
           - (oldap_import_service_jwt_secret | default('') | string | length) >= 32
           - (oldap_import_records_jwt_secret | default('') | string | length) >= 32
+          - (oldap_export_service_jwt_secret | default('') | string | length) >= 32
+          - (oldap_export_download_jwt_secret | default('') | string | length) >= 32
           - (oldap_access_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
           - (oldap_import_upload_jwt_secret | default('')) != (oldap_access_jwt_secret | default(''))
           - (oldap_import_upload_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
@@ -43,9 +47,20 @@
           - (oldap_import_records_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
           - (oldap_import_records_jwt_secret | default('')) != (oldap_import_upload_jwt_secret | default(''))
           - (oldap_import_records_jwt_secret | default('')) != (oldap_import_service_jwt_secret | default(''))
+          - (oldap_export_service_jwt_secret | default('')) != (oldap_access_jwt_secret | default(''))
+          - (oldap_export_service_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+          - (oldap_export_service_jwt_secret | default('')) != (oldap_import_upload_jwt_secret | default(''))
+          - (oldap_export_service_jwt_secret | default('')) != (oldap_import_service_jwt_secret | default(''))
+          - (oldap_export_service_jwt_secret | default('')) != (oldap_import_records_jwt_secret | default(''))
+          - (oldap_export_download_jwt_secret | default('')) != (oldap_access_jwt_secret | default(''))
+          - (oldap_export_download_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+          - (oldap_export_download_jwt_secret | default('')) != (oldap_import_upload_jwt_secret | default(''))
+          - (oldap_export_download_jwt_secret | default('')) != (oldap_import_service_jwt_secret | default(''))
+          - (oldap_export_download_jwt_secret | default('')) != (oldap_import_records_jwt_secret | default(''))
+          - (oldap_export_download_jwt_secret | default('')) != (oldap_export_service_jwt_secret | default(''))
         fail_msg: >-
           Supply distinct OLDAP access, media, ZIP-upload, import-service, and
-          import-records JWT secrets of at least 32 bytes through auth-secrets.yml
+          import-records, export-service, and export-download JWT secrets of at least 32 bytes through auth-secrets.yml
           or Ansible Vault.
       no_log: true
 
@@ -68,6 +83,19 @@
         fail_msg: >-
           Retained import records must be outside media delivery and temporary
           ingest roots.
+
+    - name: Validate private export storage separation
+      ansible.builtin.assert:
+        that:
+          - media_export_root != media_root
+          - media_export_root != media_ingest_root
+          - media_export_root != media_import_records_root
+          - not (media_export_root.startswith(media_root.rstrip('/') + '/'))
+          - not (media_export_root.startswith(media_ingest_root.rstrip('/') + '/'))
+          - not (media_export_root.startswith(media_import_records_root.rstrip('/') + '/'))
+        fail_msg: >-
+          Export artifacts must use a dedicated root outside media originals,
+          temporary ingest data, and retained import records.
 
     - name: Verify the dedicated media filesystem is mounted
       ansible.builtin.command:
@@ -166,6 +194,14 @@
         group: root
         mode: "0700"
 
+    - name: Create private export artifact directory
+      ansible.builtin.file:
+        path: "{{ media_export_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
     - name: Render docker-compose.yml
       ansible.builtin.template:
         src: templates/docker-compose.yml.j2
@@ -212,6 +248,15 @@
         mode: "0600"
       no_log: true
 
+    - name: Render restricted export-worker environment
+      ansible.builtin.template:
+        src: templates/export-worker.env.j2
+        dest: "{{ compose_dir }}/export-worker.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
     - name: Validate rendered Docker Compose configuration
       ansible.builtin.command:
         cmd: docker compose config --quiet
@@ -229,8 +274,10 @@
       community.docker.docker_compose_v2:
         project_src: "{{ compose_dir }}"
         profiles: >-
-          {{ (zip_import_worker_enabled | bool)
-             | ternary(['zip-import-validation'], []) }}
+          {{ ((zip_import_worker_enabled | bool)
+              | ternary(['zip-import-validation'], []))
+             + ((zip_export_worker_enabled | bool)
+              | ternary(['zip-export-worker'], [])) }}
         state: present
         pull: "{{ 'always' if force_pull | bool else 'missing' }}"
         remove_orphans: true
@@ -250,6 +297,18 @@
         - not rollback | bool
         - not zip_import_worker_enabled | bool
 
+    - name: Stop ZIP export worker when explicitly disabled
+      community.docker.docker_compose_v2:
+        project_src: "{{ compose_dir }}"
+        profiles:
+          - zip-export-worker
+        services:
+          - export-worker
+        state: stopped
+      when:
+        - not rollback | bool
+        - not zip_export_worker_enabled | bool
+
     - name: Apply pending Caddy configuration before health verification
       ansible.builtin.meta: flush_handlers
       when: not rollback | bool
@@ -258,8 +317,10 @@
       community.docker.docker_compose_v2:
         project_src: "{{ compose_dir }}"
         profiles: >-
-          {{ (zip_import_worker_enabled | bool)
-             | ternary(['zip-import-validation'], []) }}
+          {{ ((zip_import_worker_enabled | bool)
+              | ternary(['zip-import-validation'], []))
+             + ((zip_export_worker_enabled | bool)
+              | ternary(['zip-export-worker'], [])) }}
         state: present
       register: compose_result
       changed_when: false
@@ -278,6 +339,20 @@
       when:
         - not rollback | bool
         - zip_import_worker_enabled | bool
+
+    - name: Verify ZIP export worker is running when enabled
+      ansible.builtin.assert:
+        that:
+          - >-
+            (compose_result.containers
+             | selectattr('Service', 'equalto', 'export-worker')
+             | selectattr('State', 'equalto', 'running')
+             | list | length) == 1
+        fail_msg: >-
+          ZIP export is enabled, but exactly one export-worker is not running.
+      when:
+        - not rollback | bool
+        - zip_export_worker_enabled | bool
 
     - name: Print compose status
       ansible.builtin.debug:

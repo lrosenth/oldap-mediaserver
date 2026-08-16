@@ -17,6 +17,12 @@ ingest_worker_lease_seconds: 300
 # Start the single-concurrency ZIP validation worker with every normal deploy.
 # Set false only as an explicit operational maintenance/incident switch.
 zip_import_worker_enabled: true
+export_worker_id: media-export-1
+export_worker_poll_seconds: 10
+export_worker_heartbeat_seconds: 60
+export_worker_lease_seconds: 300
+# Start only after the purpose-specific production secrets have been provisioned.
+zip_export_worker_enabled: false
 # The frozen 20% filesystem reserve always applies. Set this byte count only
 # when operations require a larger absolute reserve.
 storage_absolute_reserve_bytes: 0
@@ -27,6 +33,7 @@ rollback: false
 media_root: /data/media
 media_ingest_root: /data/oldap-ingest
 media_import_records_root: /data/oldap-import-records
+media_export_root: /data/oldap-exports
 media_storage_mountpoint: /data
 deploy_root: /opt/oldap-mediaserver
 compose_dir: "{{ deploy_root }}/compose"
@@ -38,6 +45,7 @@ caddy_config_dir: "{{ deploy_root }}/caddy-config"
 oldap_jwt_issuer: https://oldap.org
 oldap_jwt_audience: oldap-api
 oldap_import_service_subject: media.oldap.org
+oldap_export_service_subject: media.oldap.org
 oldap_unknown_userid: unknown
 oldap_unknown_password: ""
 cors_origins: "https://app.oldap.org,https://fasnacht.oldap.org,https://fasnacht.digital"

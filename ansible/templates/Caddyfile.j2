@@ -98,6 +98,65 @@
         reverse_proxy mediaserver:8000
     }
 
+    # Exact API-to-media export source resolution boundary. Flask validates the
+    # dedicated short-lived service JWT; broader /internal routing stays closed.
+    @export_source_resolver path /internal/export-sources/resolve
+    handle @export_source_resolver {
+        @export_source_method not method POST
+        respond @export_source_method "method not allowed" 405
+        request_body {
+            max_size 10MB
+        }
+        reverse_proxy mediaserver:8000
+    }
+
+    # Capability-protected immutable ZIP export delivery. Mediahelper validates
+    # the exact exportId token and returns only a private fixed archive path.
+    @export_archive path_regexp export_archive ^/exports/(?P<export_id>[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/archive$
+    handle @export_archive {
+        route {
+            @export_method not method GET HEAD
+            respond @export_method "method not allowed" 405
+
+            request_header -X-Oldap-Internal-Path
+            request_header -X-Oldap-Content-Type
+            request_header -X-Oldap-Content-Disposition
+            request_header -X-Oldap-Digest
+            request_header -X-Oldap-Cors-Allow-Origin
+            header -X-Oldap-Internal-Path
+            header -X-Oldap-Content-Type
+            header -X-Oldap-Content-Disposition
+            header -X-Oldap-Digest
+            header -X-Oldap-Cors-Allow-Origin
+
+            forward_auth mediaserver:8000 {
+                uri /auth/exports/{re.export_archive.export_id}/archive
+                copy_headers X-Oldap-Internal-Path X-Oldap-Content-Type X-Oldap-Content-Disposition X-Oldap-Digest X-Oldap-Cors-Allow-Origin
+            }
+
+            @no_export_path not header X-Oldap-Internal-Path *
+            respond @no_export_path "forbidden" 403
+            header {
+                Content-Type "{http.request.header.X-Oldap-Content-Type}"
+                Content-Disposition "{http.request.header.X-Oldap-Content-Disposition}"
+                Digest "{http.request.header.X-Oldap-Digest}"
+                Accept-Ranges "bytes"
+                defer
+            }
+            @export_cors header X-Oldap-Cors-Allow-Origin *
+            header @export_cors {
+                Access-Control-Allow-Origin "{http.request.header.X-Oldap-Cors-Allow-Origin}"
+                Access-Control-Allow-Methods "GET, HEAD"
+                Access-Control-Expose-Headers "Content-Disposition, Digest, Accept-Ranges"
+                Vary "Origin"
+                defer
+            }
+            rewrite * {http.request.header.X-Oldap-Internal-Path}
+            root * /
+            file_server
+        }
+    }
+
     @status path /health /status
     handle @status {
         reverse_proxy mediaserver:8000

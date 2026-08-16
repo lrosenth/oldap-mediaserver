@@ -35,6 +35,24 @@ from ingest_auth import (
     UploadCapabilityMismatch,
     decode_upload_capability,
 )
+from export_sources import (
+    ExportSourceAuthenticationUnavailable,
+    ExportSourceAuthorizationError,
+    ExportSourceConflictError,
+    ExportSourceNotFoundError,
+    ExportSourceRequestError,
+    authorize_export_source_token,
+    parse_export_source_request,
+    resolve_export_sources,
+)
+from export_artifacts import (
+    ExportArtifactError,
+    ExportArtifactStore,
+    ExportDownloadAuthenticationUnavailable,
+    ExportDownloadAuthorizationError,
+    authorize_export_download,
+    digest_header as export_digest_header,
+)
 from ingest_callback import (
     CallbackError,
     ImportApiNotifier,
@@ -82,6 +100,11 @@ INGEST_ROOT = SETTINGS.ingest_root  # private: never mounted into delivery servi
 CAPACITY_GUARD = StorageCapacityGuard(SETTINGS.storage_absolute_reserve_bytes)
 QUARANTINE_STORE = QuarantineStore(INGEST_ROOT, capacity_guard=CAPACITY_GUARD)
 IMPORT_RECORD_STORE = ImportRecordStore(SETTINGS.import_records_root)
+EXPORT_ARTIFACT_STORE = ExportArtifactStore(
+    SETTINGS.export_root,
+    IMAGE_ROOT,
+    capacity_guard=CAPACITY_GUARD,
+)
 
 DERIVATIVE_PROCESSOR = DerivativeProcessor()
 
@@ -158,6 +181,10 @@ def create_app() -> Flask:
                 "origins": cors_origins,
                 "methods": ["PUT", "OPTIONS"],
             },
+            r"/auth/exports/*": {
+                "origins": cors_origins,
+                "methods": ["GET", "HEAD", "OPTIONS"],
+            },
         },
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Upload-Request-Id"],
@@ -172,6 +199,7 @@ def create_app() -> Flask:
     logger.info(f"Using image root: {IMAGE_ROOT}")
     logger.info(f"Using private ingest root: {INGEST_ROOT}")
     logger.info(f"Using retained import records root: {SETTINGS.import_records_root}")
+    logger.info(f"Using private export root: {SETTINGS.export_root}")
     logger.info(f"Using IIIF base URL: {iiif_base_url}")
     logger.info(f"Using Media base URL: {media_base_url}")
     logger.info(f"Using Oldap API URL: {oldap_api_url}")
@@ -277,6 +305,95 @@ def create_app() -> Flask:
         response = Response(content, status=200, content_type="application/json")
         response.headers["Cache-Control"] = "no-store"
         response.headers["Digest"] = digest_header(digest)
+        return response
+
+    @app.post("/internal/export-sources/resolve")
+    def resolve_export_source_originals():
+        """Resolve a bounded batch of API-authorized local media originals."""
+
+        try:
+            authorize_export_source_token(request.headers.get("Authorization"))
+        except ExportSourceAuthenticationUnavailable:
+            app.logger.error("Export source authentication is not safely configured.")
+            response = jsonify({"message": "Export source service unavailable."})
+            response.status_code = 503
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except ExportSourceAuthorizationError:
+            response = jsonify({"message": "Export source authorization required."})
+            response.status_code = 401
+            response.headers["WWW-Authenticate"] = "Bearer"
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        try:
+            references = parse_export_source_request(request.get_json(silent=True))
+            sources = resolve_export_sources(IMAGE_ROOT, references)
+        except ExportSourceRequestError:
+            response = jsonify({"message": "Invalid export source request."})
+            response.status_code = 400
+        except ExportSourceNotFoundError:
+            response = jsonify({"message": "Export source original not found."})
+            response.status_code = 404
+        except ExportSourceConflictError:
+            response = jsonify({"message": "Export source identity conflict."})
+            response.status_code = 409
+        else:
+            app.logger.info("export_sources_resolved itemCount=%d", len(sources))
+            response = jsonify({"items": [source.to_dict() for source in sources]})
+            response.status_code = 200
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.route("/auth/exports/<export_id>/archive", methods=["GET", "HEAD"])
+    def authorize_export_archive(export_id: str):
+        """Authorize Caddy to serve one exact immutable finalized ZIP."""
+
+        try:
+            authorize_export_download(request.args.get("token"), export_id)
+        except ExportDownloadAuthenticationUnavailable:
+            app.logger.error(
+                "Export download authentication is not safely configured."
+            )
+            response = jsonify({"message": "Export download unavailable."})
+            response.status_code = 503
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except (ExportDownloadAuthorizationError, ValueError):
+            response = jsonify({"message": "Export download authorization required."})
+            response.status_code = 401
+            response.headers["WWW-Authenticate"] = "Bearer"
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        try:
+            artifact = EXPORT_ARTIFACT_STORE.resolve(export_id)
+        except FileNotFoundError:
+            response = jsonify({"message": "Export artifact not found."})
+            response.status_code = 404
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except ExportArtifactError:
+            app.logger.error("export_artifact_inconsistent exportId=%s", export_id)
+            response = jsonify({"message": "Export artifact unavailable."})
+            response.status_code = 409
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        response = Response(status=200)
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Oldap-Internal-Path"] = str(
+            artifact.archive_path.resolve(strict=True)
+        )
+        response.headers["X-Oldap-Content-Type"] = "application/zip"
+        response.headers["X-Oldap-Content-Disposition"] = (
+            content_disposition_header(
+                "attachment", f"oldap-export-{export_id}.zip"
+            )
+        )
+        response.headers["X-Oldap-Digest"] = export_digest_header(
+            artifact.evidence.archive_sha256
+        )
+        response.headers["X-Oldap-Cors-Allow-Origin"] = allowed_cors_origin() or ""
         return response
 
     def upload_bearer_token() -> str | None:

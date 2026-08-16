@@ -34,6 +34,22 @@
   import-records JWT boundary. Caddy exposes only the exact read-only retained
   report path required by oldap-api; every other `/internal` route remains
   unrouted.
+- `mediaserver/export_service.py`, `export_worker.py`, and
+  `export_artifacts.py` implement the ontology-blind ZIP export runtime. The
+  sequential worker claims BUILD/CLEANUP tasks, verifies canonical manifests
+  and immutable originals, streams Zip64 archives with root-level support
+  CSVs, and atomically promotes evidence-bound artifacts in a dedicated
+  private export root. Flask validates exact short-lived download capabilities;
+  Caddy alone serves the resolved archive from a read-only mount.
+  Archive manifests additionally carry a closed `archiveUnits` inventory
+  exactly bound to their directory and media containers. The worker does not
+  interpret ontology properties; it flattens common fields and opaque profile
+  metadata into UTF-8 BOM RFC-4180 `archive-units.csv`.
+  The manifest's deployment-selected archive limit is enforced during every
+  streamed source/support-file write while the immutable media-side v1 ceiling
+  remains 50 GB. Lease/cancellation checkpoints run between copy chunks;
+  failures remove the active workspace, and a successful retry removes
+  UUID-scoped leftovers from hard process interruptions.
 - `mediaserver/parser_sandbox.py` separates hostile parser code from the
   API-aware parent. Production parser children receive no client/claim/secret,
   clear inherited environment, drop to UID/GID 65532 with zero capabilities,
@@ -41,6 +57,12 @@
   current SIP/workspace until the parent revokes access after exit.
 - `mediaserver/oldap_client.py` wraps the OLDAP API calls used by upload and asset resolution.
 - `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to Cantaloupe, `/asset/*` through Flask `forward_auth`, direct ZIP ingress to its bounded PUT handler, and only the JWT-protected retained-report GET from the internal import surface.
+- Export archive delivery uses an exclusive Caddy `handle` with an inner
+  ordered `route`: the UUID is captured from the untouched public path,
+  authenticated through the explicit internal mediahelper endpoint, and only
+  then rewritten to the private archive. The outer handle keeps the route ahead
+  of the final catch-all; the inner route prevents Caddy from sorting `rewrite`
+  or header operations ahead of `forward_auth`.
 - `imageserver/` contains the Cantaloupe image server configuration and bundled runtime assets. It uses the built-in Java2D processor and has no proprietary image-codec dependency. Its whitelist-based `.dockerignore` sends only the Cantaloupe JAR plus OLDAP configuration/delegate files to the builder.
 - `imageserver/VERSION` is the single source for the independently released
   OLDAP imageserver version. `imageserver/Makefile` derives the `v<version>`
@@ -121,6 +143,34 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   tagged.
 
 ## Roadmap / Next Steps
+- Project-neutral ZIP export Phase 1 is implemented and locally accepted; its
+  contracts live in `docs/zip-export/v1`.
+  oldap-api will own jobs, authorization, projected manifests, leases,
+  notification, and capabilities; a separate ontology-blind worker will run
+  beside the media volume with read-only originals and a dedicated read-write
+  export root. The media contract reserves a single project-neutral
+  `export-download` capability purpose and exact GET/HEAD route. Normal media
+  upload, derivatives, IIIF, and asset delivery remain unchanged. The contract
+  also defines a bounded internal `/internal/export-sources/resolve` batch
+  operation: it treats API-provided RDF path facts as untrusted and confirms
+  the exact original path, MIME, byte size, and SHA-256 below the media root
+  under a dedicated service JWT. This resolver route, its safe streaming
+  filesystem boundary, narrowly scoped Caddy POST route, container packaging,
+  and deployment secret wiring are implemented. The private atomic artifact
+  store, sequential BUILD/CLEANUP worker, exact capability verifier, Caddy
+  GET/HEAD delivery path, isolated container mounts, and opt-in production
+  profile are also implemented. The 2026-08-15 acceptance exercised the actual
+  containerized mediahelper/Caddy path for both Staging fixtures and a live
+  ArchiveUnit and the live whole archive: unauthorized access, GET, HEAD,
+  Range, method guard, checksum, Archive CSV inventory, and post-cleanup denial
+  all pass. The whole archive retained 20 directory entries plus one original
+  and all four support files. The worker's strict
+  manifest envelope accepts `archiveUnits` only for Archive kinds and rejects
+  that field for Staging kinds. Small, 32 MiB, failure, expiry, and
+  manual-cleanup worker paths also pass. Archive export Phase 2 is locally
+  complete. Production activation remains
+  disabled until both purpose-specific export secrets have been provisioned;
+  representative real-inventory capacity measurement also remains.
 - Use `ZIP_IMPORT_PLAN.md` as the living cross-repository plan and progress
   record for the secure, project-neutral ZIP-to-staging import. Its seven phases (0–6) cover contract
   definition, Mediahelper foundations, API-owned jobs and quotas, quarantined

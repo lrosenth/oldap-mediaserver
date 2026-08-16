@@ -241,6 +241,11 @@ the local `oldap-api`. Set `OLDAP_ACCESS_JWT_SECRET` in
 `OLDAP_IMPORT_UPLOAD_JWT_SECRET` to the API's purpose-specific ZIP upload key.
 Set `OLDAP_IMPORT_SERVICE_JWT_SECRET` to the API's distinct import-service key;
 Mediahelper uses it only for the internal `sip-stored` callback.
+For local ZIP-export worker startup, also place
+`OLDAP_EXPORT_SERVICE_JWT_SECRET` and `OLDAP_MEDIAHELPER_TAG=local` in the
+repository-root `.env`; Compose interpolation for the isolated worker does not
+read `mediahelper-access.env`. Recreate the worker with
+`docker compose --profile zip-export-worker up -d --force-recreate export-worker`.
 Generate independent values with `openssl rand -hex 32`; never reuse a key for
 another token purpose. Docker Compose gives Cantaloupe only `mediaserver.env`,
 while the Flask helper receives both files.

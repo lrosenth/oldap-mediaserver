@@ -15,6 +15,7 @@ services:
       - {{ media_root }}:/data/images
       - {{ media_ingest_root }}:/data/ingest
       - {{ media_import_records_root }}:/data/import-records:ro
+      - {{ media_export_root }}:/data/exports:ro
     expose:
       - "8000"
     extra_hosts:
@@ -74,6 +75,34 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "ingest_worker"]
 
+  export-worker:
+    profiles: ["zip-export-worker"]
+    image: lrosenth/oldap-mediahelper:{{ oldap_mediahelper_tag }}
+    container_name: oldap-export-worker
+    env_file:
+      - ./export-worker.env
+    volumes:
+      - {{ media_root }}:/data/images:ro
+      - {{ media_export_root }}:/data/exports
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cpus: 2.0
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 64
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+{% for extra_host in container_extra_hosts | default([]) %}
+      - "{{ extra_host }}"
+{% endfor %}
+    restart: unless-stopped
+    command: ["python", "-m", "export_worker"]
+
   imageserver:
     image: lrosenth/oldap-imageserver:{{ oldap_imageserver_tag }}
     container_name: oldap-imageserver
@@ -99,6 +128,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - {{ media_root }}:/data/images:ro
+      - {{ media_export_root }}:/data/exports:ro
       - {{ caddy_data_dir }}:/data
       - {{ caddy_config_dir }}:/config
     depends_on:

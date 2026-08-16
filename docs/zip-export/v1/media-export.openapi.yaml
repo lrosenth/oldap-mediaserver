@@ -1,0 +1,139 @@
+openapi: 3.1.0
+info:
+  title: OLDAP media ZIP export delivery boundary
+  version: 1.0.0
+  description: Project-neutral v1 media boundary for implemented source resolution and capability-protected immutable archive delivery.
+servers:
+  - url: https://media.oldap.org
+paths:
+  /internal/export-sources/resolve:
+    post:
+      summary: Resolve authorized OLDAP media hints to confirmed local originals
+      description: Project-neutral server-to-server batch operation. Every candidate path is treated as untrusted and must resolve below the configured media root to the exact asset/original name before size and digest are returned.
+      security:
+        - ExportServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportSourceResolveRequest'
+      responses:
+        '200':
+          description: Every requested source was resolved exactly once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportSourceResolveResponse'
+        '400': {description: 'Invalid, duplicate, unsafe, incomplete, or oversized request.'}
+        '401': {description: 'Missing, invalid, expired, or wrong-purpose service token.'}
+        '404': {description: At least one original is absent or no longer matches OLDAP facts.}
+        '409': {description: Candidate identity conflicts with the canonical stored asset.}
+        '503': {description: Resolver authentication is not safely configured.}
+  /exports/{exportId}/archive:
+    get:
+      summary: Download one finalized ZIP export
+      security:
+        - ExportDownloadCapability: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+        - $ref: '#/components/parameters/Capability'
+      responses:
+        '200':
+          description: Complete ZIP archive.
+          headers:
+            Accept-Ranges: {schema: {type: string, const: bytes}}
+            Content-Disposition: {schema: {type: string}}
+            Content-Length: {schema: {type: integer, minimum: 1, maximum: 50000000000}}
+            Digest: {schema: {type: string, pattern: '^sha-256=.+$'}}
+          content:
+            application/zip:
+              schema: {type: string, format: binary}
+        '206':
+          description: Byte range from the finalized ZIP.
+          content:
+            application/zip:
+              schema: {type: string, format: binary}
+        '401': {description: 'Missing, invalid, expired, or wrong-purpose capability.'}
+        '404': {description: Export is unavailable or not finalized.}
+        '409': {description: Finalized artifact evidence is inconsistent.}
+        '503': {description: Download authentication is not safely configured.}
+    head:
+      summary: Inspect one finalized ZIP export
+      security:
+        - ExportDownloadCapability: []
+      parameters:
+        - $ref: '#/components/parameters/ExportId'
+        - $ref: '#/components/parameters/Capability'
+      responses:
+        '200':
+          description: Finalized export headers.
+        '401': {description: 'Missing, invalid, expired, or wrong-purpose capability.'}
+        '404': {description: Export is unavailable or not finalized.}
+        '409': {description: Finalized artifact evidence is inconsistent.}
+        '503': {description: Download authentication is not safely configured.}
+components:
+  schemas:
+    ExportSourceResolveRequest:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: {$ref: '#/components/schemas/ExportSourceReference'}
+    ExportSourceReference:
+      type: object
+      additionalProperties: false
+      required: [mediaIri, assetId, storagePathCandidate, originalName]
+      properties:
+        mediaIri: {type: string, format: uri, maxLength: 2048}
+        assetId: {type: string, pattern: '^[A-Za-z0-9._~-]{1,128}$'}
+        storagePathCandidate: {type: string, minLength: 1, maxLength: 4096}
+        originalName: {type: string, minLength: 1, maxLength: 255}
+    ExportSourceResolveResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: {$ref: '#/components/schemas/ResolvedExportSource'}
+    ResolvedExportSource:
+      type: object
+      additionalProperties: false
+      required: [mediaIri, assetId, storagePath, originalName, originalMimeType, sizeBytes, sha256]
+      properties:
+        mediaIri: {type: string, format: uri, maxLength: 2048}
+        assetId: {type: string, pattern: '^[A-Za-z0-9._~-]{1,128}$'}
+        storagePath: {type: string, minLength: 1, maxLength: 4096}
+        originalName: {type: string, minLength: 1, maxLength: 255}
+        originalMimeType: {type: string, minLength: 1, maxLength: 255}
+        sizeBytes: {type: integer, minimum: 0, maximum: 50000000000}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+  parameters:
+    ExportId:
+      name: exportId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    Capability:
+      name: token
+      in: query
+      required: true
+      schema: {type: string, minLength: 1}
+  securitySchemes:
+    ExportServiceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived typ=export-source-resolver JWT with aud=oldap-media-export-service and a dedicated secret.
+    ExportDownloadCapability:
+      type: apiKey
+      in: query
+      name: token
+      description: Short-lived typ=export-download JWT scoped to the exact export UUID.

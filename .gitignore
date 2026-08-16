@@ -220,3 +220,5 @@ fasnacht-media-*
 /caddy-conf/
 /caddy-data/
 /imageserver/cantaloupe-*/
+/exports/
+/import-records/

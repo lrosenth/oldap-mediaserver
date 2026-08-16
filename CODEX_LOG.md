@@ -1,5 +1,65 @@
 # CODEX_LOG
 
+### Update 2026-08-17 00:32
+- Decisions: Activate the ZIP export worker only on the home acceptance environment; retain the production-safe disabled default until the production rollout is explicitly approved.
+- Implementation: Enabled `zip_export_worker_enabled` in the `media.home.org` host variables and ignored local export/import runtime artifacts so release staging cannot include generated payloads.
+- Open: Publish mediahelper v0.2.1, deploy both coordinated stacks to home.org, and complete authenticated end-to-end acceptance.
+- Risks/Assumptions: The shared Vault now contains the two distinct export JWT secrets and the active export service credentials required by both deployments.
+
+### Update 2026-08-16 23:44
+- Decisions: Trust each canonical manifest's bounded deployment limit while retaining the media-side 50 GB hard ceiling; treat lease loss and hard-interruption leftovers as first-class restart cases.
+- Implementation: Enforced the frozen limit during capacity admission and streamed ZIP writes, added chunk-level lease/cancellation checkpoints, removed active partials on failure and UUID-scoped leftovers after successful retry, documented local worker Compose inputs, and verified real HEAD plus two-part Range reconstruction with matching SHA-256. All 25 focused export/deployment/storage tests pass.
+- Open: Rebuild the local image before exercising the new checkpoint behavior in containers; run representative production-scale throughput/resource measurement.
+- Risks/Assumptions: A current winning lease may remove stale sibling workspaces after finalization; the single-concurrency worker and API lease ownership remain authoritative.
+
+### Update 2026-08-16 00:07
+- Decisions: Close media-side Archive export Phase 2 only after the real whole-archive artifact passes the same capability and cleanup boundary as the selected-unit artifact.
+- Implementation: Built and served the live ARCHIVE_ALL ZIP with 20 archive directories, one original, README/export/archive-units/metadata support files, zero warnings, and an exact SHA-256 match. Caddy returned 401/200/200/206/405 for unauthenticated/GET/HEAD/Range/POST. API-claimed cleanup removed every artifact and invalidated the previously valid capability with 404.
+- Open: Production secret provisioning/worker activation and representative capacity/performance measurements.
+- Risks/Assumptions: Current live inventory is small; functional completion does not replace Phase-3 large-inventory measurement. Temporary acceptance secrets are not tracked and are removed after the run.
+
+### Update 2026-08-15 23:58
+- Decisions: Extend the worker's closed manifest envelope by export kind rather than loosening it generically. Use an outer exclusive Caddy handle for global route ordering and an inner route for immutable auth/header/rewrite ordering.
+- Implementation: Added explicit STAGING_FOLDER/STAGING_ALL versus ARCHIVE_UNIT/ARCHIVE_ALL envelope validation with Archive-only `archiveUnits` tests. Fixed the previously unreachable Caddy export route and its internally reordered forward-auth chain in local and Ansible configs. Live ArchiveUnit acceptance now passes unauthorized 401, GET/HEAD 200, Range 206, POST 405, exact checksum/content, API-claimed deletion, zero remaining artifact files, and old-capability 404. All 29 focused export/deployment tests and Caddy validation pass.
+- Open: Provision production export credentials and activate the worker profile; run representative capacity measurements. Successful whole-archive acceptance awaits correction of the API-owned unsafe source label.
+- Risks/Assumptions: Caddy directive sorting is security-sensitive; deployment tests now require the nested handle/route shape. The test secrets were temporary and are not tracked.
+
+### Update 2026-08-15 23:02
+- Decisions: Keep Phase-2 archive semantics entirely in the API-owned manifest; the worker validates structural bindings and serializes common/opaque metadata without learning project ontologies.
+- Implementation: Added Archive-kind-only `archiveUnits` manifest validation, exact unit/directory/media-container and parent binding, reserved root-name protection, and UTF-8 BOM RFC-4180 `archive-units.csv` generation with formula-safe existing CSV serialization. Added artifact coverage for metadata and single physical media output. All 28 focused export/deployment tests pass and changed files pass Black.
+- Open: Consume manifests from the forthcoming requester-filtered API Archive reader, then perform a full physical Archive export acceptance after public runtime activation.
+- Risks/Assumptions: `archive-units.csv` profile fields are treated as opaque validated scalar/list/map values. The media service deliberately cannot resolve labels or infer archive relationships.
+
+### Update 2026-08-15 22:26
+- Decisions: Preserve the original export request path through capability authentication and rewrite only after authorization; close Phase 1 on isolated physical acceptance while retaining production credentials and real-size capacity as operational work.
+- Implementation: Changed both local and Ansible Caddy export delivery from sorted `handle` directives to ordered `route`, captured the export UUID explicitly, and authenticated against `/auth/exports/{uuid}/archive` before rewrite. Added deployment regressions. Built the current mediahelper image and verified unauthorized, GET, HEAD, Range, method guard, and post-cleanup denial through containerized mediahelper/Caddy; all 27 focused media/deployment tests and Caddy validation pass.
+- Open: Provision production export service/download secrets, activate the worker profile, configure paired API SMTP, and measure representative holdings up to the configured limit.
+- Risks/Assumptions: The accepted 32 MiB fixture proves streaming and byte-range behavior but not 50 GB throughput. A missing artifact can surface as fail-closed 409 rather than 404 under Docker Desktop bind-mount semantics; in both cases Caddy serves no bytes.
+
+### Update 2026-08-15 00:02
+- Decisions: Keep ZIP construction project-neutral and sequential, isolate BUILD control-plane and download credentials, mount originals read-only, and publish only atomically finalized immutable artifacts. Leave the production worker profile disabled until real purpose-specific secrets are provisioned.
+- Implementation: Added strict export-service client/claims, canonical manifest verification, source-stability and checksum validation, Zip64 streaming, README/export/metadata CSV generation, atomic artifact evidence, claim-bound cleanup, exact download capability authorization, Caddy GET/HEAD delivery, Docker/Ansible wiring, and focused service/worker/storage/deployment tests.
+- Open: Provision distinct production export-service/download secrets, activate the profile, run real-size and HTTP Range smoke tests, and complete API outbox/expiry plus frontend workflows.
+- Risks/Assumptions: The 50 GB archive is streamed without staging source copies, but CSV inventory is retained in memory and representative production measurements remain required. Existing user changes to `mediaserver/VERSION`, `poetry.lock`, and `import-records/` remain untouched.
+
+### Update 2026-08-14 22:47
+- Decisions: Keep export source resolution as a small project-neutral mediahelper boundary. Treat all RDF path facts as untrusted, reject symlinks and non-canonical identities, hash originals through a no-follow descriptor, and expose only the exact POST route through Caddy.
+- Implementation: Added purpose-specific service-JWT verification, closed 1–1,000 item request parsing, filesystem-authoritative original resolution, signature-first MIME detection, stable streaming size/SHA-256 calculation, Flask routing, 10 MB Caddy admission, container packaging, and deployment secret validation/wiring. Added 13 resolver checks and retained 4 deployment checks; all 17 focused checks and the full 151-test media suite pass, with one expected host skip.
+- Open: Configure the same export-service secret in oldap-api deployment, activate the public export HTTP routes, and implement archive storage/download plus the export worker.
+- Risks/Assumptions: Digest calculation is synchronous and intentionally favors immutable evidence over metadata trust; production-scale latency must be measured with real holdings. Existing user changes to `mediaserver/VERSION`, `poetry.lock`, and `import-records/` remain untouched.
+
+### Update 2026-08-14 22:31
+- Decisions: Add one project-neutral internal batch resolver because OLDAP RDF does not store original byte sizes and must not be treated as filesystem authority. Require a dedicated `export-source-resolver` JWT, at most 1,000 items, and exact asset/path/name validation below the media root.
+- Implementation: Extended the validated media export OpenAPI and architecture documentation with `/internal/export-sources/resolve`, closed request/response schemas, canonical original path, MIME, size, and optional SHA-256 results. No application route was added yet.
+- Open: Implement the resolver authentication and safe filesystem lookup, then add its deployment secret/configuration and focused tests before oldap-api enables export creation.
+- Risks/Assumptions: This remains contract-only in oldap-mediaserver; existing upload, derivative, IIIF, asset, and import behavior is unchanged. Existing user changes to `mediaserver/VERSION`, `poetry.lock`, and `import-records/` remain untouched.
+
+### Update 2026-08-14 12:36
+- Decisions: Keep ZIP export additive and project-neutral. Run an ontology-blind worker beside the media volume, separate its export storage and credentials from normal assets/imports, and let oldap-api remain authoritative for jobs, manifests, leases, download capabilities, and cleanup claims.
+- Implementation: Added the Phase-0 media architecture and a validated OpenAPI 3.1 contract for exact capability-protected GET/HEAD export delivery, including the fixed storage layout, purpose-specific JWT claims, 50 GB bound, atomic promotion, HTTP range expectation, and API-claimed cleanup rules.
+- Open: Implement the export storage primitives, capability verifier, Caddy route, worker client/build loop against the now-defined API claim/manifest/result contract, deployment volumes/secrets, and tests.
+- Risks/Assumptions: Documentation only in this repository; normal media routes and runtime deployment remain unchanged. Existing user changes to `mediaserver/VERSION`, `poetry.lock`, and `import-records/` were not touched.
+
 ### Update 2026-08-08 23:16
 - Decisions: Start exactly one ZIP validation/import worker on every normal deployment; retain an explicit boolean maintenance switch instead of relying on a manual post-deploy profile command. Fail closed when the dedicated `/data` filesystem is not mounted.
 - Implementation: Added `zip_import_worker_enabled: true`, passed the Compose profile through both deploy/status tasks, stopped the worker when explicitly disabled, asserted one running worker when enabled, added the `/data` mountpoint preflight, and synchronized tests and operations documentation.

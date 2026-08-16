@@ -54,12 +54,26 @@ def test_local_compose_mounts_ingest_only_into_mediahelper() -> None:
 def test_image_contains_ingest_modules_and_caddy_has_bounded_route() -> None:
     """The production image and proxy retain the reviewed ingress boundary."""
     dockerfile = (ROOT / "mediaserver" / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore = (ROOT / "mediaserver" / "Dockerfile.dockerignore").read_text(
+        encoding="utf-8"
+    )
     caddyfile = (ROOT / "Caddyfile").read_text(encoding="utf-8")
     caddy_template = (ROOT / "ansible" / "templates" / "Caddyfile.j2").read_text(
         encoding="utf-8"
     )
 
     assert "COPY mediaserver/ingest_auth.py /app/ingest_auth.py" in dockerfile
+    assert "COPY mediaserver/export_sources.py /app/export_sources.py" in dockerfile
+    assert "COPY mediaserver/export_artifacts.py /app/export_artifacts.py" in dockerfile
+    assert "COPY mediaserver/export_service.py /app/export_service.py" in dockerfile
+    assert "COPY mediaserver/export_worker.py /app/export_worker.py" in dockerfile
+    for module in (
+        "export_artifacts.py",
+        "export_service.py",
+        "export_sources.py",
+        "export_worker.py",
+    ):
+        assert f"!mediaserver/{module}" in dockerignore
     assert "COPY mediaserver/ingest_callback.py /app/ingest_callback.py" in dockerfile
     assert "COPY mediaserver/quarantine.py /app/quarantine.py" in dockerfile
     assert "COPY mediaserver/zip_validation.py /app/zip_validation.py" in dockerfile
@@ -85,11 +99,24 @@ def test_image_contains_ingest_modules_and_caddy_has_bounded_route() -> None:
     assert "max_size 500MB" in caddyfile
     assert "read_timeout 15m" in caddyfile
     for proxy_config in (caddyfile, caddy_template):
-        assert (
-            "^/internal/imports/[0-9a-fA-F-]{36}/records/report$" in proxy_config
-        )
+        assert "^/internal/imports/[0-9a-fA-F-]{36}/records/report$" in proxy_config
         assert "@import_report_method not method GET" in proxy_config
+        assert "path /internal/export-sources/resolve" in proxy_config
+        assert "@export_source_method not method POST" in proxy_config
+        assert "max_size 10MB" in proxy_config
         assert "path /internal/*" not in proxy_config
+        # An exclusive handle must be sorted with the other handled routes,
+        # before the final catch-all. A route directive would be unreachable.
+        assert "handle @export_archive" in proxy_config
+        assert "route @export_archive" not in proxy_config
+        assert "handle @export_archive {\n" in proxy_config
+        assert "route {" in proxy_config
+        assert "(?P<export_id>" in proxy_config
+        assert (
+            "uri /auth/exports/{re.export_archive.export_id}/archive"
+            in proxy_config
+        )
+        assert "uri /auth{http.request.uri}" not in proxy_config
 
 
 def test_callback_retry_and_service_secret_are_deployment_wired() -> None:
@@ -106,6 +133,7 @@ def test_callback_retry_and_service_secret_are_deployment_wired() -> None:
     assert "OLDAP_IMPORT_SERVICE_JWT_SECRET" in environment_template
     assert "OLDAP_IMPORT_SERVICE_SUBJECT" in environment_template
     assert "OLDAP_IMPORT_RECORDS_JWT_SECRET" in environment_template
+    assert "OLDAP_EXPORT_SERVICE_JWT_SECRET" in environment_template
     assert "OLDAP_IMPORT_RECORDS_ROOT" in environment_template
     assert "OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES" in (
         ROOT / "ansible" / "templates" / "mediaserver.env.j2"
@@ -120,6 +148,74 @@ def test_callback_retry_and_service_secret_are_deployment_wired() -> None:
     assert "OLDAP_MEDIA_JWT_SECRET" not in worker_environment
     assert "OLDAP_IMPORT_UPLOAD_JWT_SECRET" not in worker_environment
     assert "OLDAP_IMPORT_RECORDS_JWT_SECRET" not in worker_environment
+    assert "OLDAP_EXPORT_SERVICE_JWT_SECRET" not in worker_environment
+
+    deployment = (ROOT / "ansible" / "deploy-media.yml").read_text(encoding="utf-8")
+    assert "oldap_export_service_jwt_secret is not defined" in deployment
+    assert (
+        "(oldap_export_service_jwt_secret | default('') | string | length) >= 32"
+        in deployment
+    )
+
+
+def test_export_worker_and_private_delivery_are_isolated() -> None:
+    """Export write, read, and credential scopes remain independently bounded."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    worker = services["export-worker"]
+
+    assert worker["profiles"] == ["zip-export-worker"]
+    assert "ports" not in worker and "expose" not in worker
+    assert worker["read_only"] is True
+    assert worker["cap_drop"] == ["ALL"]
+    assert worker["security_opt"] == ["no-new-privileges:true"]
+    assert any(volume.endswith(":/data/images:ro") for volume in worker["volumes"])
+    assert any(volume.endswith(":/data/exports") for volume in worker["volumes"])
+    assert set(worker["environment"]) == {
+        "OLDAP_API_URL",
+        "OLDAP_JWT_ISSUER",
+        "OLDAP_EXPORT_SERVICE_JWT_SECRET",
+        "OLDAP_EXPORT_SERVICE_SUBJECT",
+        "OLDAP_EXPORT_WORKER_ID",
+        "OLDAP_EXPORT_POLL_SECONDS",
+        "OLDAP_EXPORT_HEARTBEAT_SECONDS",
+        "OLDAP_EXPORT_LEASE_SECONDS",
+        "OLDAP_EXPORT_ROOT",
+        "MEDIA_DATA",
+        "OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES",
+    }
+    assert any(
+        volume.endswith(":/data/exports:ro")
+        for volume in services["mediaserver"]["volumes"]
+    )
+    assert any(
+        volume.endswith(":/data/exports:ro") for volume in services["caddy"]["volumes"]
+    )
+    assert all(
+        "/data/exports" not in volume
+        for volume in services["imageserver"].get("volumes", [])
+    )
+
+    access_environment = (
+        ROOT / "ansible" / "templates" / "mediahelper-access.env.j2"
+    ).read_text(encoding="utf-8")
+    worker_environment = (
+        ROOT / "ansible" / "templates" / "export-worker.env.j2"
+    ).read_text(encoding="utf-8")
+    assert "OLDAP_EXPORT_DOWNLOAD_JWT_SECRET" in access_environment
+    assert "OLDAP_EXPORT_DOWNLOAD_JWT_SECRET" not in worker_environment
+    assert "OLDAP_EXPORT_SERVICE_JWT_SECRET" in worker_environment
+    assert "OLDAP_ACCESS_JWT_SECRET" not in worker_environment
+
+    defaults = yaml.safe_load(
+        (ROOT / "ansible" / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+    assert defaults["zip_export_worker_enabled"] is False
+    assert defaults["media_export_root"] not in {
+        defaults["media_root"],
+        defaults["media_ingest_root"],
+        defaults["media_import_records_root"],
+    }
 
 
 def test_production_deployment_starts_and_verifies_worker_by_default() -> None:
@@ -127,9 +223,7 @@ def test_production_deployment_starts_and_verifies_worker_by_default() -> None:
     defaults = yaml.safe_load(
         (ROOT / "ansible" / "group_vars" / "all.yml").read_text(encoding="utf-8")
     )
-    playbook = (ROOT / "ansible" / "deploy-media.yml").read_text(
-        encoding="utf-8"
-    )
+    playbook = (ROOT / "ansible" / "deploy-media.yml").read_text(encoding="utf-8")
 
     assert defaults["zip_import_worker_enabled"] is True
     assert defaults["media_storage_mountpoint"] == "/data"

@@ -18,6 +18,7 @@ services:
       - ${MEDIA_DATA_HOST:-./data}:/data/images
       - ${MEDIA_INGEST_HOST:-./ingest}:/data/ingest
       - ${MEDIA_IMPORT_RECORDS_HOST:-./import-records}:/data/import-records:ro
+      - ${MEDIA_EXPORT_HOST:-./exports}:/data/exports:ro
     expose:
       - "8000"
     # Needed on Linux so host.docker.internal works
@@ -80,6 +81,42 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "ingest_worker"]
 
+  # Project-neutral, single-concurrency ZIP export builder.
+  export-worker:
+    profiles: ["zip-export-worker"]
+    image: lrosenth/oldap-mediahelper:${OLDAP_MEDIAHELPER_TAG:-latest}
+    container_name: oldap-export-worker
+    environment:
+      OLDAP_API_URL: ${OLDAP_API_URL:-http://host.docker.internal:8000}
+      OLDAP_JWT_ISSUER: ${OLDAP_JWT_ISSUER:-https://oldap.org}
+      OLDAP_EXPORT_SERVICE_JWT_SECRET: ${OLDAP_EXPORT_SERVICE_JWT_SECRET:-}
+      OLDAP_EXPORT_SERVICE_SUBJECT: ${OLDAP_EXPORT_SERVICE_SUBJECT:-media.oldap.org}
+      OLDAP_EXPORT_WORKER_ID: ${OLDAP_EXPORT_WORKER_ID:-media-export-1}
+      OLDAP_EXPORT_POLL_SECONDS: ${OLDAP_EXPORT_POLL_SECONDS:-10}
+      OLDAP_EXPORT_HEARTBEAT_SECONDS: ${OLDAP_EXPORT_HEARTBEAT_SECONDS:-60}
+      OLDAP_EXPORT_LEASE_SECONDS: ${OLDAP_EXPORT_LEASE_SECONDS:-300}
+      OLDAP_EXPORT_ROOT: /data/exports
+      MEDIA_DATA: /data/images
+      OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES: ${OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES:-0}
+    volumes:
+      - ${MEDIA_DATA_HOST:-./data}:/data/images:ro
+      - ${MEDIA_EXPORT_HOST:-./exports}:/data/exports
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cpus: 2.0
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 64
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    command: ["python", "-m", "export_worker"]
+
   # IIIF image server for pyramidal TIFF derivatives
   imageserver:
     image: lrosenth/oldap-imageserver:${OLDAP_IMAGESERVER_TAG:-latest}
@@ -112,6 +149,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${MEDIA_DATA_HOST:-./data}:/data/images:ro
+      - ${MEDIA_EXPORT_HOST:-./exports}:/data/exports:ro
       - ${CADDY_DATA:-./caddy-data}:/data
       - ${CADDY_CONF:-./caddy-conf}:/config
     depends_on:

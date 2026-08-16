@@ -71,6 +71,10 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY mediaserver/app.py /app/app.py
 COPY mediaserver/config.py /app/config.py
 COPY mediaserver/derivatives.py /app/derivatives.py
+COPY mediaserver/export_sources.py /app/export_sources.py
+COPY mediaserver/export_artifacts.py /app/export_artifacts.py
+COPY mediaserver/export_service.py /app/export_service.py
+COPY mediaserver/export_worker.py /app/export_worker.py
 COPY mediaserver/ingest_auth.py /app/ingest_auth.py
 COPY mediaserver/ingest_callback.py /app/ingest_callback.py
 COPY mediaserver/import_records.py /app/import_records.py

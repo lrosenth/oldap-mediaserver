@@ -139,6 +139,7 @@ class MediahelperSettings:
     media_root: Path
     ingest_root: Path
     import_records_root: Path
+    export_root: Path
     iiif_base_url: str
     media_base_url: str
     oldap_api_url: str
@@ -159,6 +160,9 @@ class MediahelperSettings:
                 os.environ.get(
                     "OLDAP_IMPORT_RECORDS_ROOT", "/data/import-records"
                 ).strip()
+            ),
+            export_root=Path(
+                os.environ.get("OLDAP_EXPORT_ROOT", "/data/exports").strip()
             ),
             iiif_base_url=normalized_base_url(
                 os.environ.get("IIIF_BASE_URL", "http://localhost:8088/iiif/3/")

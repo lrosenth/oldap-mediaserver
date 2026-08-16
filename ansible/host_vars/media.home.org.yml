@@ -10,6 +10,9 @@ media_domain: media.home.org
 # call so the media containers do not need to trust the API Caddy instance's
 # private certificate authority. Public browser traffic remains HTTPS.
 oldap_api_url: http://api.home.org
+# The home environment has the purpose-specific export secrets provisioned and
+# is the acceptance target for the ZIP export worker before production rollout.
+zip_export_worker_enabled: true
 cors_origins: >-
   https://app.home.org,https://fasnacht.home.org,http://app.home.org,http://fasnacht.home.org
 

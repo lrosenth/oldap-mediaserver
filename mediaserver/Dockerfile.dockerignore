@@ -16,6 +16,10 @@
 !mediaserver/app.py
 !mediaserver/config.py
 !mediaserver/derivatives.py
+!mediaserver/export_artifacts.py
+!mediaserver/export_service.py
+!mediaserver/export_sources.py
+!mediaserver/export_worker.py
 !mediaserver/ingest_auth.py
 !mediaserver/ingest_callback.py
 !mediaserver/import_records.py
