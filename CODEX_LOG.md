@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-08-17 14:41
+- Decisions: Publish the ZIP-export-capable mediahelper under a new immutable `v0.2.2` tag; do not rely on force-pulling the previously published `v0.2.1` tag on home.org.
+- Implementation: Bumped `mediaserver/VERSION` to `0.2.2` after deployment diagnostics proved that home.org retained an older local `v0.2.1` image without `export_worker.py` because the playbook intentionally uses `pull: missing` for versioned tags.
+- Open: Publish `v0.2.2` and rerun `make deploy-test`.
+- Risks/Assumptions: Docker Hub `v0.2.1` was overwritten during the release attempt and must be treated as superseded; deployments should use `v0.2.2`.
+
 ### Update 2026-08-17 00:32
 - Decisions: Activate the ZIP export worker only on the home acceptance environment; retain the production-safe disabled default until the production rollout is explicitly approved.
 - Implementation: Enabled `zip_export_worker_enabled` in the `media.home.org` host variables and ignored local export/import runtime artifacts so release staging cannot include generated payloads.
