@@ -67,6 +67,7 @@ def test_production_inventory_preserves_public_media_clients() -> None:
 
     assert host["media_domain"] == "media.oldap.org"
     assert host["oldap_api_url"] == "https://api.oldap.org"
+    assert host["zip_export_worker_enabled"] is True
     assert origins == {
         "https://app.oldap.org",
         "https://fasnacht.oldap.org",

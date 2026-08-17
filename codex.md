@@ -96,7 +96,10 @@
   the home target serves `media.home.org` with Caddy's internal CA and calls
   the separate API VM at `http://api.home.org`. Home containers rely on local
   DNS rather than fixed `extra_hosts` addresses. The Make targets apply both
-  explicit play host expressions and inventory limits.
+  explicit play host expressions and inventory limits. Production and home
+  host variables both enable one ZIP export worker after their purpose-specific
+  secrets and active export-service accounts have been provisioned; the shared
+  default remains disabled for unprepared future hosts.
 - Ansible waits for Compose to report running services, flushes pending Caddy
   handlers, and then verifies the public media `/health` response including the
   requested mediahelper version. A tokenless public IIIF probe must also reach
@@ -168,9 +171,9 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   manifest envelope accepts `archiveUnits` only for Archive kinds and rejects
   that field for Staging kinds. Small, 32 MiB, failure, expiry, and
   manual-cleanup worker paths also pass. Archive export Phase 2 is locally
-  complete. Production activation remains
-  disabled until both purpose-specific export secrets have been provisioned;
-  representative real-inventory capacity measurement also remains.
+  complete. Production deployment configuration now activates the worker after
+  its purpose-specific secrets and export-service account were provisioned;
+  representative real-inventory capacity measurement remains.
 - Use `ZIP_IMPORT_PLAN.md` as the living cross-repository plan and progress
   record for the secure, project-neutral ZIP-to-staging import. Its seven phases (0–6) cover contract
   definition, Mediahelper foundations, API-owned jobs and quotas, quarantined

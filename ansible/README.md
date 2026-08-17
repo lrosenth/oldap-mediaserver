@@ -148,6 +148,11 @@ separate from the API refresh-cookie origin policy: browser PDF rendering and
 other direct media reads require CORS even though media authorization does not
 use the API refresh cookie.
 
+`host_vars/dhlab-iii.dhlab.unibas.ch.yml` enables the ZIP export worker for
+production. The shared encrypted Vault must therefore contain the distinct
+export-service/source-resolver and download-capability JWT secrets plus the
+credentials of an active OLDAP export-service user before deployment.
+
 ## Deploy Test Server
 
 ```bash
@@ -182,6 +187,8 @@ The important consequence is that Caddy serves both HTTP and HTTPS for `media.ho
 The playbook defaults remain production-oriented:
 - `deploy-media.yml` defaults to `target_hosts=mediaserver`
 - `group_vars/all.yml` remains the shared/default configuration for `media.oldap.org`
+- the production host override enables exactly one ZIP export worker; the
+  shared default remains disabled so an unprepared new host fails closed
 - `media.home.org` settings live in `host_vars/media.home.org.yml`
 - `oldap_mediahelper_tag` and `oldap_imageserver_tag` have no silent Ansible
   defaults and must be supplied explicitly; the repository-root Makefile

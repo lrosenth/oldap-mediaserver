@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-08-17 23:12
+- Decisions: Enable ZIP export only through an explicit production-host override while retaining the disabled shared default for unprepared future hosts.
+- Implementation: Added the `dhlab-iii.dhlab.unibas.ch` host variables with one export worker enabled, covered the resolved production inventory with a regression assertion, and documented the production secret/account prerequisite and fail-closed default.
+- Open: Verify the production export-service account is active and matches the shared Vault, then deploy API before media and run authenticated Staging plus Archive smoke tests.
+- Risks/Assumptions: The shared encrypted Vault is assumed to contain the same distinct export secrets already accepted on home.org; no secret values are tracked.
+
 ### Update 2026-08-17 14:41
 - Decisions: Publish the ZIP-export-capable mediahelper under a new immutable `v0.2.2` tag; do not rely on force-pulling the previously published `v0.2.1` tag on home.org.
 - Implementation: Bumped `mediaserver/VERSION` to `0.2.2` after deployment diagnostics proved that home.org retained an older local `v0.2.1` image without `export_worker.py` because the playbook intentionally uses `pull: missing` for versioned tags.

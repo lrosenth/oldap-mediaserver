@@ -1,0 +1,5 @@
+# Production ZIP-export activation.
+#
+# The purpose-specific JWT secrets and the active OLDAP export-service account
+# must be present in the shared encrypted Vault before this host is deployed.
+zip_export_worker_enabled: true
