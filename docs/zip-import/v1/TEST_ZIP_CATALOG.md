@@ -51,7 +51,7 @@ can be produced without the user manually collecting them:
 
 | Family | Safe source/generator |
 | --- | --- |
-| GIF, BMP, WebP, HEIC/AVIF where available | tiny generated image through Pillow/libvips or the format's reference encoder |
+| GIF, BMP, WebP, AVIF where available | tiny generated image through Pillow/libvips or the format's reference encoder |
 | OGG/Opus, AAC/M4A, AIFF | FFmpeg synthetic sine source |
 | AVI, MOV, MKV, HEVC/VP9/AV1 MP4 | FFmpeg color/sine generators with one-second duration |
 | DOCX, XLSX, PPTX, ODT | minimal document exported by LibreOffice in a disposable fixture-build container; OOXML also verifies nested-ZIP classification |
@@ -72,7 +72,8 @@ files from the internet are not acceptable fixtures.
 | OK-002 | UTF-8/NFC directory plus deflated PNG | `READY`, one new staging folder | T0 |
 | OK-003 | Five ZIP directory levels | `READY`, depth boundary accepted | T0 |
 | OK-004 | Empty directories mixed with files | `READY`, empty folders preserved | T0 |
-| OK-005 | JPEG, single-page TIFF, PNG in one archive | `READY` | T1 |
+| OK-005 | JPEG, single-page TIFF, PNG, single-image HEIC and HEIF in one archive | `READY` | T1 |
+| OK-005A | HEIC with upper-case extension | `READY`, detected as `image/heic` from content | T1 |
 | OK-006 | WAV/PCM mono and stereo, FLAC stereo, MP3 stereo | `READY` after final audio matrix | T1 |
 | OK-007 | MP4 with one H.264 stream and no audio | `READY` | T1 |
 | OK-008 | MP4 with one H.264 and one stereo AAC stream | `READY` | T1 |
@@ -166,7 +167,8 @@ files from the internet are not acceptable fixtures.
 | MEDIA-002 | JPEG above 100 MP | `IMAGE_PIXEL_LIMIT` | T1 |
 | MEDIA-003 | Image axis above 30,000 | `IMAGE_AXIS_LIMIT` | T1 |
 | MEDIA-004 | Multi-page TIFF | `MULTIPAGE_TIFF_NOT_ALLOWED` | T1 |
-| MEDIA-005 | GIF, BMP, WebP, HEIC, AVIF, SVG, camera RAW | `UNSUPPORTED_MEDIA_TYPE` | T1 |
+| MEDIA-005 | GIF, BMP, WebP, AVIF, SVG, camera RAW | `UNSUPPORTED_MEDIA_TYPE` | T1 |
+| MEDIA-005A | Multi-image HEIF collection | `MULTI_IMAGE_HEIF_NOT_ALLOWED` | T1 |
 | MEDIA-006 | WAV with three or more channels | `AUDIO_CHANNEL_LIMIT` | T1 |
 | MEDIA-007 | WAV with ADPCM, float, or other unapproved codec | `AUDIO_CODEC_UNSUPPORTED` | T1 |
 | MEDIA-007A | WAV PCM outside 8/16/24/32 bits or 8–192 kHz | `AUDIO_BIT_DEPTH_UNSUPPORTED` or `AUDIO_SAMPLE_RATE_UNSUPPORTED` | T1/T2 |

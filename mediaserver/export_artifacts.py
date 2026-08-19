@@ -1005,6 +1005,8 @@ def _compression_for(mime_type: str) -> int:
     if mime_type in {
         "image/jpeg",
         "image/png",
+        "image/heic",
+        "image/heif",
         "audio/mpeg",
         "audio/flac",
         "video/mp4",

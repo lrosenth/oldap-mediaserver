@@ -141,7 +141,8 @@ The upload response also includes `mediaType: "document"`, `originalMimeType: "a
   one at a time while calculating actual CRC, SHA-256, byte, and ratio evidence.
   It never calls `extractall()` and removes the complete work root on rejection.
 - `mediaserver/content_validation.py` owns sequential content-signature and
-  format-policy validation. Pillow handles JPEG/PNG/single-page TIFF, FFprobe
+  format-policy validation. Pillow handles JPEG/PNG/single-page TIFF, libvips
+  with libheif handles single-image HEIF/HEIC, FFprobe
   handles the frozen audio/video codec matrix, and pdfinfo, qpdf, and veraPDF
   jointly enforce the PDF/A and PDF safety policy. External tools run with
   sanitized environments, deadlines, and kernel-bounded output files.
@@ -361,10 +362,11 @@ component-specific, for example `imageserver-v0.2.0` or
 `mediahelper-v0.2.0`, because this repository contains several independently
 versioned images.
 
-## TIFF-only image pipeline
+## TIFF derivative image pipeline
 
-The image pipeline intentionally has no JPEG 2000 target or proprietary codec
-runtime. Every image upload is normalized to `derived/master.tif` with 256 px
+The image pipeline accepts JPEG, PNG, single-page TIFF, and HEIF/HEIC originals
+and intentionally has no JPEG 2000 target or proprietary codec runtime. Every
+image upload is normalized to `derived/master.tif` with 256 px
 tiles, an embedded pyramid, BigTIFF support, and no compression. Cantaloupe is
 configured with `ManualSelectionStrategy` and serves `.tif` sources through its
 built-in `Java2dProcessor`.

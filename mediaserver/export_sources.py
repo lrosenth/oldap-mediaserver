@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 import jwt
 
+from media import detect_heif_variant
 from storage import validate_asset_identifier
 
 
@@ -362,6 +363,8 @@ def _open_below_root(root: Path, relative: PurePosixPath) -> int:
 def _detect_mime_type(original_name: str, header: bytes) -> str:
     """Return a conservative MIME type from signatures, then filename hints."""
 
+    if heif_variant := detect_heif_variant(header):
+        return heif_variant[0]
     signatures = (
         (header.startswith(b"\xff\xd8\xff"), "image/jpeg"),
         (header.startswith(b"\x89PNG\r\n\x1a\n"), "image/png"),

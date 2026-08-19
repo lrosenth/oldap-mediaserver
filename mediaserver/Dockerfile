@@ -39,13 +39,15 @@ LABEL org.opencontainers.image.version="${MEDIAHELPER_VERSION}"
 WORKDIR /app
 
 # System deps
-# - libvips42: runtime library for pyvips
+# - libvips42 + libheif/libde265: pyvips image processing with HEIF/HEIC decoding
 # - ffmpeg: audio/video conversions
 # - poppler-utils: first-page rendering for PDF thumbnails via pdf2image
 # Add a couple of apt retries (helps with flaky mirrors)
 RUN apt-get update -o Acquire::Retries=5 \
  && apt-get install -y --no-install-recommends \
       libvips42 \
+      libheif1 \
+      libheif-plugin-libde265 \
       ffmpeg \
       poppler-utils \
       qpdf \

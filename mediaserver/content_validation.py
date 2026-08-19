@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import re
@@ -18,6 +19,7 @@ from typing import Any, Callable
 from PIL import Image, UnidentifiedImageError
 
 from config import ZipImportLimits
+from media import detect_heif_variant, heif_page_count
 from zip_validation import ZipEntry, ZipValidationResult
 
 
@@ -30,6 +32,7 @@ CONTENT_ISSUE_CODES = frozenset(
         "EXTENSION_CONTENT_MISMATCH",
         "IMAGE_AXIS_LIMIT",
         "IMAGE_PIXEL_LIMIT",
+        "MULTI_IMAGE_HEIF_NOT_ALLOWED",
         "MULTIPAGE_TIFF_NOT_ALLOWED",
         "NESTED_ARCHIVE_NOT_ALLOWED",
         "NO_IMPORTABLE_CONTENT",
@@ -138,6 +141,7 @@ class ContentValidationResult:
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+ImageLoader = Callable[..., Any]
 
 
 class ContentValidator:
@@ -148,9 +152,11 @@ class ContentValidator:
         limits: ZipImportLimits | None = None,
         *,
         command_runner: CommandRunner = subprocess.run,
+        heif_loader: ImageLoader | None = None,
     ) -> None:
         self.limits = limits or ZipImportLimits()
         self.command_runner = command_runner
+        self.heif_loader = heif_loader
 
     @staticmethod
     def validate_runtime() -> None:
@@ -164,6 +170,15 @@ class ContentValidator:
         if missing:
             raise ContentToolUnavailable(
                 f"Required content tools are missing: {', '.join(missing)}"
+            )
+        try:
+            pyvips = importlib.import_module("pyvips")
+            heif_available = bool(pyvips.type_find("VipsOperation", "heifload"))
+        except (ImportError, OSError, AttributeError):
+            heif_available = False
+        if not heif_available:
+            raise ContentToolUnavailable(
+                "Required libvips HEIF/HEIC loader is missing."
             )
 
     def validate(self, structural: ZipValidationResult) -> ContentValidationResult:
@@ -220,6 +235,8 @@ class ContentValidator:
         try:
             if kind in {"jpeg", "tiff", "png"}:
                 facts, issues = self._probe_image(entry, source, kind)
+            elif kind in {"heic", "heif"}:
+                facts, issues = self._probe_heif(entry, source, kind)
             elif kind in {"wav", "flac", "mp3"}:
                 facts, issues = self._probe_audio(entry, source, kind)
             elif kind == "mp4":
@@ -297,6 +314,65 @@ class ContentValidator:
                     "png": "image/png",
                 }[kind],
                 "format": expected,
+                "width": width,
+                "height": height,
+                "pageCount": pages,
+            },
+            tuple(issues),
+        )
+
+    def _probe_heif(
+        self, entry: ZipEntry, source: Path, kind: str
+    ) -> tuple[dict[str, Any], tuple[ContentIssue, ...]]:
+        """Decode one HEIF/HEIC still image through the production libvips path."""
+
+        loader = self.heif_loader
+        if loader is None:
+            try:
+                pyvips = importlib.import_module("pyvips")
+                if not pyvips.type_find("VipsOperation", "heifload"):
+                    raise ContentToolUnavailable(
+                        "Required libvips HEIF/HEIC loader is missing."
+                    )
+                loader = pyvips.Image.new_from_file
+            except (ImportError, OSError, AttributeError) as error:
+                raise ContentToolUnavailable(
+                    "Required libvips HEIF/HEIC loader is missing."
+                ) from error
+
+        image = loader(str(source), access="sequential")
+        image_loader = _vips_metadata(image, "vips-loader")
+        if image_loader and image_loader != "heifload":
+            return _unsupported("application/octet-stream", kind.upper()), (
+                _entry_issue("UNSUPPORTED_MEDIA_TYPE", entry),
+            )
+        width = _positive_int(getattr(image, "width", None)) or 0
+        height = _positive_int(getattr(image, "height", None)) or 0
+        pages = heif_page_count(image)
+        issues: list[ContentIssue] = []
+        if width <= 0 or height <= 0:
+            return _unsupported("application/octet-stream", kind.upper()), (
+                _entry_issue("PARSER_FAILURE", entry),
+            )
+        if (
+            width > self.limits.max_image_axis_pixels
+            or height > self.limits.max_image_axis_pixels
+        ):
+            issues.append(_entry_issue("IMAGE_AXIS_LIMIT", entry))
+        if width * height > self.limits.max_image_pixels:
+            issues.append(_entry_issue("IMAGE_PIXEL_LIMIT", entry))
+        if pages != 1:
+            issues.append(_entry_issue("MULTI_IMAGE_HEIF_NOT_ALLOWED", entry))
+        if not issues:
+            # libvips is lazy. Requesting a scalar over the image forces a full
+            # decode without retaining a second uncompressed image in Python.
+            image.avg()
+        mime_type = "image/heic" if kind == "heic" else "image/heif"
+        return (
+            {
+                "category": "image",
+                "mimeType": mime_type,
+                "format": kind.upper(),
                 "width": width,
                 "height": height,
                 "pageCount": pages,
@@ -624,6 +700,8 @@ def _detect_kind(header: bytes) -> str:
         return "png"
     if header.startswith((b"II*\x00", b"MM\x00*")):
         return "tiff"
+    if heif_variant := detect_heif_variant(header):
+        return heif_variant[1].lower()
     if header.startswith(b"fLaC"):
         return "flac"
     if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
@@ -703,6 +781,8 @@ def _extension_issue(
         "image/jpeg": {".jpg", ".jpeg"},
         "image/tiff": {".tif", ".tiff"},
         "image/png": {".png"},
+        "image/heic": {".heic", ".heif"},
+        "image/heif": {".heic", ".heif"},
         "audio/wav": {".wav"},
         "audio/flac": {".flac"},
         "audio/mpeg": {".mp3"},
@@ -714,6 +794,17 @@ def _extension_issue(
     if expected is not None and suffix not in expected:
         return (_entry_issue("EXTENSION_CONTENT_MISMATCH", entry, blocking=False),)
     return ()
+
+
+def _vips_metadata(image: Any, name: str) -> Any | None:
+    """Read optional libvips metadata without treating absence as corruption."""
+
+    try:
+        if image.get_typeof(name):
+            return image.get(name)
+    except (AttributeError, TypeError):
+        return None
+    return None
 
 
 def _positive_int(value: object) -> int | None:

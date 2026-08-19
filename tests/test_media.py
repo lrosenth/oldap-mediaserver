@@ -19,9 +19,23 @@ from media import (  # noqa: E402
     MediaProbeError,
     MediaType,
     classify_upload,
+    detect_heif_variant,
     probe_first_audio_stream,
     probe_pdf_structure,
 )
+
+
+def _ftyp(major: bytes, *compatible: bytes) -> bytes:
+    """Build a minimal ISO BMFF file-type box for classification tests."""
+
+    size = 16 + 4 * len(compatible)
+    return (
+        size.to_bytes(4, "big")
+        + b"ftyp"
+        + major
+        + b"\x00\x00\x00\x00"
+        + b"".join(compatible)
+    )
 
 
 def test_upload_classification_is_explicitly_hint_based() -> None:
@@ -37,6 +51,23 @@ def test_upload_classification_is_explicitly_hint_based() -> None:
     assert by_mime.protocol == "http"
     assert by_name.media_type is MediaType.DOCUMENT
     assert by_name.original_mime_type == "application/pdf"
+
+
+def test_heif_upload_hints_and_content_brands_are_normalized() -> None:
+    """HEIF extensions work without a browser MIME while AVIF stays separate."""
+
+    heic = classify_upload("IMG_0001.HEIC", "application/octet-stream", None)
+    heif = classify_upload("scan.heif", "", None)
+
+    assert heic.media_type is MediaType.IMAGE
+    assert heic.original_mime_type == "image/heic"
+    assert heif.original_mime_type == "image/heif"
+    assert detect_heif_variant(_ftyp(b"heic", b"mif1")) == (
+        "image/heic",
+        "HEIC",
+    )
+    assert detect_heif_variant(_ftyp(b"mif1")) == ("image/heif", "HEIF")
+    assert detect_heif_variant(_ftyp(b"avif", b"mif1")) is None
 
 
 def test_audio_probe_returns_typed_content_facts(tmp_path: Path) -> None:

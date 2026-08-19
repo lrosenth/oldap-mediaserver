@@ -47,6 +47,20 @@ def _png(width: int = 20, height: int = 10) -> bytes:
     return buffer.getvalue()
 
 
+def _heif(major: bytes = b"heic", *compatible: bytes) -> bytes:
+    """Build enough of an HEIF header for signature-first probe tests."""
+
+    size = 16 + 4 * len(compatible)
+    return (
+        size.to_bytes(4, "big")
+        + b"ftyp"
+        + major
+        + b"\x00\x00\x00\x00"
+        + b"".join(compatible)
+        + b"fixture"
+    )
+
+
 def test_content_issue_codes_are_frozen_by_the_v1_contract() -> None:
     schema = json.loads(
         (
@@ -97,6 +111,109 @@ def test_image_limits_and_unsupported_binary_are_blocking(tmp_path: Path) -> Non
         "UNSUPPORTED_MEDIA_TYPE",
     } <= _codes(result)
     assert all(entry.disposition == "REJECT" for entry in result.entries)
+
+
+def test_heic_is_content_detected_and_fully_decoded_with_libvips(
+    tmp_path: Path,
+) -> None:
+    """A supported HEIC still image receives canonical image facts and plan."""
+
+    structural = _extracted(tmp_path, [("IMG_0001.HEIC", _heif(b"heic", b"mif1"))])
+
+    class FakeHeifImage:
+        width = 4032
+        height = 3024
+
+        def __init__(self) -> None:
+            self.decoded = False
+
+        def get_typeof(self, name: str) -> int:
+            return 1 if name in {"vips-loader", "n-pages"} else 0
+
+        def get(self, name: str):
+            return {"vips-loader": "heifload", "n-pages": 1}[name]
+
+        def avg(self) -> float:
+            self.decoded = True
+            return 127.0
+
+    image = FakeHeifImage()
+
+    def load_heif(source: str, *, access: str):
+        assert Path(source).read_bytes().startswith(_heif(b"heic", b"mif1"))
+        assert access == "sequential"
+        return image
+
+    result = ContentValidator(heif_loader=load_heif).validate(structural)
+
+    assert result.accepted
+    assert image.decoded
+    assert result.entries[0].detected_content == {
+        "category": "image",
+        "mimeType": "image/heic",
+        "format": "HEIC",
+        "width": 4032,
+        "height": 3024,
+        "pageCount": 1,
+    }
+    assert result.entries[0].planned_resource["derivativeName"] == "master.tif"
+
+
+def test_multi_image_heif_is_rejected_before_full_decode(tmp_path: Path) -> None:
+    """HEIF collections do not silently collapse to one staged image."""
+
+    structural = _extracted(tmp_path, [("collection.heif", _heif(b"mif1"))])
+
+    class FakeCollection:
+        width = 100
+        height = 100
+
+        def get_typeof(self, name: str) -> int:
+            return 1 if name == "n-pages" else 0
+
+        def get(self, name: str) -> int:
+            assert name == "n-pages"
+            return 2
+
+        def avg(self) -> float:
+            raise AssertionError("Rejected collections must not be fully decoded.")
+
+    result = ContentValidator(
+        heif_loader=lambda *args, **kwargs: FakeCollection()
+    ).validate(structural)
+
+    assert not result.accepted
+    assert _codes(result) == {
+        "MULTI_IMAGE_HEIF_NOT_ALLOWED",
+        "NO_IMPORTABLE_CONTENT",
+    }
+
+
+def test_heif_without_decoder_page_count_is_rejected(tmp_path: Path) -> None:
+    """Missing image-count evidence must fail closed instead of assuming one page."""
+
+    structural = _extracted(tmp_path, [("unknown.heic", _heif(b"heic"))])
+
+    class FakeImageWithoutPageCount:
+        width = 100
+        height = 100
+
+        def get_typeof(self, name: str) -> int:
+            return 1 if name == "vips-loader" else 0
+
+        def get(self, name: str) -> str:
+            assert name == "vips-loader"
+            return "heifload"
+
+        def avg(self) -> float:
+            raise AssertionError("Invalid decoder evidence must not be decoded.")
+
+    result = ContentValidator(
+        heif_loader=lambda *args, **kwargs: FakeImageWithoutPageCount()
+    ).validate(structural)
+
+    assert not result.accepted
+    assert _codes(result) == {"PARSER_FAILURE", "NO_IMPORTABLE_CONTENT"}
 
 
 def test_plain_utf8_packaging_artifacts_and_structured_text(tmp_path: Path) -> None:

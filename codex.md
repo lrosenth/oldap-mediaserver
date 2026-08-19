@@ -23,7 +23,9 @@
   extraction with CRC, SHA-256, actual-size and compression-ratio evidence.
 - `mediaserver/content_validation.py` sequentially classifies extracted files
   from signatures and enforces the frozen image/audio/video/PDF-A/UTF-8 matrix.
-  Pillow, FFprobe, pdfinfo, qpdf, and veraPDF produce bounded evidence;
+  Pillow, libvips/libheif, FFprobe, pdfinfo, qpdf, and veraPDF produce bounded
+  evidence. HEIF/HEIC is restricted to content-identified single still images;
+  AVIF and multi-image HEIF collections remain outside the accepted matrix;
   external tools receive a sanitized environment, deadlines, and kernel-limited
   output files. `validation_documents.py` projects complete READY and INVALID
   v1 records from structural and content evidence.
@@ -132,6 +134,9 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
 - Treat asset identifiers as bounded URL-safe path segments, reject storage paths that resolve outside the media root, and claim new asset directories atomically; uploads must never overwrite an existing asset directory, and failed storage/conversion/registration must release its reserved directory.
 - Store delivery files in `derived/` and record the selected filename in `shared:derivativeName`.
 - Normalize all image uploads to a tiled pyramidal BigTIFF named `master.tif`; reject other image target formats explicitly.
+- Accept JPEG, PNG, single-page TIFF, and single-image HEIF/HEIC originals.
+  Preserve them bit-identically, detect HEIF from ISO BMFF brands before the
+  generic MP4 route, and require the production libvips HEIF loader.
 - Use `shared:protocol = "iiif"` for images and `"http"` for media served by Caddy.
 - PDF document uploads are stored as `mediaType=document`, `dcterms:type = dcmitype:Text`, `shared:protocol = "http"`, and `shared:derivativeName = "document.pdf"`; frontends should render them via `assetUrl` rather than IIIF.
 - PDF rendering uses Poetry-managed `pdf2image`/Pillow with native `poppler-utils` supplied by the Docker runtime; Docker hosts do not need a separate Poppler installation.

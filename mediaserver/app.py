@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import mimetypes
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -23,9 +24,13 @@ from oldap_client import OldapClient
 from config import MediahelperSettings, ZipImportLimits
 from derivatives import DerivativeProcessor
 from media import (
+    InvalidHeifError,
     InvalidPdfError,
+    HEIF_EXTENSION_MIME_TYPES,
     MediaType,
     classify_upload,
+    detect_heif_variant,
+    probe_heif_page_count,
     probe_pdf_structure,
     validate_target_format,
 )
@@ -765,10 +770,49 @@ def create_app() -> Flask:
                 # copy the original while calculating its integrity metadata.
                 try:
                     upload_file.save(tmp_path)
+                    with tmp_path.open("rb") as source_handle:
+                        heif_variant = detect_heif_variant(source_handle.read(4096))
+                    heif_claimed = (
+                        Path(upload_file.filename).suffix.casefold()
+                        in HEIF_EXTENSION_MIME_TYPES
+                        or upload_file.mimetype.lower() in {"image/heic", "image/heif"}
+                    )
+                    if heif_claimed and heif_variant is None:
+                        shutil.rmtree(asset_root, ignore_errors=True)
+                        return jsonify(
+                            {
+                                "message": (
+                                    "The uploaded file is not a supported "
+                                    "HEIF/HEIC still image."
+                                )
+                            }
+                        ), 400
+                    if heif_variant is not None:
+                        if media_type is not MediaType.IMAGE:
+                            shutil.rmtree(asset_root, ignore_errors=True)
+                            return jsonify(
+                                {"message": "HEIF/HEIC content must be uploaded as an image."}
+                            ), 400
+                        if (
+                            probe_heif_page_count(
+                                tmp_path,
+                                image_loader=DERIVATIVE_PROCESSOR.vips_loader,
+                            )
+                            != 1
+                        ):
+                            raise InvalidHeifError(
+                                "Multi-image HEIF files are not supported."
+                            )
+                        classification = replace(
+                            classification, original_mime_type=heif_variant[0]
+                        )
                     if media_type == MediaType.DOCUMENT:
                         probe_pdf_structure(tmp_path)
                     stored_original = store_original_with_sha256(tmp_path, original_path)
                 except InvalidPdfError as exc:
+                    shutil.rmtree(asset_root, ignore_errors=True)
+                    return jsonify({"message": str(exc)}), 400
+                except InvalidHeifError as exc:
                     shutil.rmtree(asset_root, ignore_errors=True)
                     return jsonify({"message": str(exc)}), 400
                 except Exception as exc:

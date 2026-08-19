@@ -1,5 +1,17 @@
 # CODEX_LOG
 
+### Update 2026-08-19 22:52
+- Decisions: Fail closed when libvips omits HEIF image-count evidence and apply the same single-image policy to direct uploads and ZIP imports.
+- Implementation: Added a shared strict HEIF page-count probe, rejected multi-image direct uploads before derivative creation, added missing-metadata and multi-image regression tests, and completed a two-pass final review.
+- Open: Build the mediahelper container and exercise real HEIC decoding once Docker is available.
+- Risks/Assumptions: The local Docker daemon was stopped, so native `heifload` package availability and decoding remain a deployment gate rather than a code-test result.
+
+### Update 2026-08-19 22:33
+- Decisions: Extend both single-file and ZIP image ingest with content-identified single-image HEIF/HEIC while retaining TIFF derivatives; keep AVIF and multi-image HEIF collections rejected.
+- Implementation: Added ISO BMFF brand detection, canonical `image/heic`/`image/heif` facts, bounded libvips full-decode validation, single-upload mismatch rejection, export-source MIME preservation, Docker libheif runtime dependency, synchronized schemas/threat model/test catalog, focused regression coverage, and bumped the immutable mediahelper image version to `0.2.3`.
+- Open: Build the mediahelper image with Docker running and execute one real HEIC single upload plus one ZIP import on the deployed test stack.
+- Risks/Assumptions: Brand detection recognized all 33 existing real `.HEIC` samples in local demo data, but native libvips decoding could not be exercised because the local Docker daemon was stopped; worker startup now fails closed if `heifload` is unavailable.
+
 ### Update 2026-08-17 23:12
 - Decisions: Enable ZIP export only through an explicit production-host override while retaining the disabled shared default for unprepared future hosts.
 - Implementation: Added the `dhlab-iii.dhlab.unibas.ch` host variables with one export worker enabled, covered the resolved production inventory with a regression assertion, and documented the production secret/account prerequisite and fail-closed default.

@@ -9,6 +9,7 @@ validation cannot confuse client claims with parser evidence.
 
 from __future__ import annotations
 
+import importlib
 import json
 import mimetypes
 import os
@@ -16,14 +17,25 @@ import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 
 PDF_MIME_TYPE = "application/pdf"
+HEIF_EXTENSION_MIME_TYPES = {
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+HEIC_BRANDS = frozenset({b"heic", b"heix", b"heim", b"heis"})
+HEIF_BRANDS = frozenset({b"mif1"})
+AVIF_BRANDS = frozenset({b"avif", b"avis"})
 
 
 class InvalidPdfError(ValueError):
     """Raised when a PDF fails the bounded structural upload probe."""
+
+
+class InvalidHeifError(ValueError):
+    """Raised when HEIF decoder evidence is missing or structurally invalid."""
 
 
 class MediaProbeError(RuntimeError):
@@ -90,8 +102,116 @@ def detect_upload_media_type(
     if detected is not MediaType.OTHER:
         return detected
 
+    suffix_mime = HEIF_EXTENSION_MIME_TYPES.get(Path(filename or "").suffix.casefold())
+    if suffix_mime:
+        return MediaType.IMAGE
+
     guessed, _ = mimetypes.guess_type(filename or "")
     return _media_type_from_mime((guessed or "").lower())
+
+
+def detect_heif_variant(header: bytes) -> tuple[str, str] | None:
+    """Identify supported still-image HEIF brands in an ISO BMFF header.
+
+    The generic ISO BMFF ``ftyp`` marker is shared by MP4 and AVIF. This helper
+    therefore inspects the major and compatible brands and deliberately keeps
+    AVIF and HEIF image sequences outside the accepted HEIF/HEIC still-image
+    boundary. A successful decoder probe remains required before import.
+
+    Args:
+        header: At least the leading ISO BMFF file-type box when available.
+
+    Returns:
+        The canonical MIME type and format label, or ``None`` when the header
+        is not a supported HEIF/HEIC still image.
+    """
+
+    if len(header) < 16 or header[4:8] != b"ftyp":
+        return None
+    box_size = int.from_bytes(header[:4], "big")
+    if box_size < 16 or box_size > len(header) or (box_size - 16) % 4:
+        return None
+    brands = {header[8:12]}
+    brands.update(header[offset : offset + 4] for offset in range(16, box_size, 4))
+    if brands & AVIF_BRANDS:
+        return None
+    if brands & HEIC_BRANDS:
+        return "image/heic", "HEIC"
+    if brands & HEIF_BRANDS:
+        return "image/heif", "HEIF"
+    return None
+
+
+def heif_page_count(image: Any) -> int:
+    """Return the decoder-reported HEIF image count without a fail-open default.
+
+    Args:
+        image: A libvips image returned by the HEIF loader.
+
+    Returns:
+        The positive number of top-level images reported by libvips.
+
+    Raises:
+        InvalidHeifError: If the loader omits or corrupts ``n-pages`` evidence.
+    """
+
+    try:
+        if not image.get_typeof("n-pages"):
+            raise InvalidHeifError("HEIF decoder did not report an image count.")
+        raw = image.get("n-pages")
+        if isinstance(raw, bool):
+            raise ValueError
+        page_count = int(str(raw))
+    except InvalidHeifError:
+        raise
+    except (AttributeError, TypeError, ValueError) as error:
+        raise InvalidHeifError("HEIF decoder reported an invalid image count.") from error
+    if page_count <= 0:
+        raise InvalidHeifError("HEIF decoder reported an invalid image count.")
+    return page_count
+
+
+def probe_heif_page_count(
+    source: Path, *, image_loader: Callable[..., Any] | None = None
+) -> int:
+    """Load an HEIF header through libvips and return its strict image count.
+
+    The single-file upload path uses this small probe before derivative
+    creation so it cannot silently collapse a multi-image HEIF collection.
+    Full pixel decoding remains the derivative writer's responsibility.
+
+    Args:
+        source: Uploaded HEIF/HEIC source in the operation workspace.
+        image_loader: Injectable libvips-compatible loader for tests.
+
+    Returns:
+        The positive decoder-reported image count.
+
+    Raises:
+        InvalidHeifError: If HEIF metadata is missing or inconsistent.
+        MediaProbeError: If the production libvips HEIF loader is unavailable.
+    """
+
+    loader = image_loader
+    if loader is None:
+        try:
+            pyvips = importlib.import_module("pyvips")
+            if not pyvips.type_find("VipsOperation", "heifload"):
+                raise MediaProbeError("The libvips HEIF/HEIC loader is unavailable.")
+            loader = pyvips.Image.new_from_file
+        except (ImportError, OSError, AttributeError) as error:
+            raise MediaProbeError(
+                "The libvips HEIF/HEIC loader is unavailable."
+            ) from error
+    image = loader(str(source), access="sequential")
+    try:
+        if image.get_typeof("vips-loader") and image.get("vips-loader") != "heifload":
+            raise InvalidHeifError("Content was not decoded by the HEIF loader.")
+    except InvalidHeifError:
+        raise
+    except (AttributeError, TypeError) as error:
+        raise InvalidHeifError("HEIF decoder metadata is invalid.") from error
+    return heif_page_count(image)
 
 
 def _media_type_from_mime(mime_type: str) -> MediaType:
@@ -140,10 +260,20 @@ def classify_upload(
 
     media_type = detect_upload_media_type(filename, declared_mime_type)
     target_format = validate_target_format(media_type, requested_target_format)
+    declared = (declared_mime_type or "").lower()
+    heif_extension_mime = HEIF_EXTENSION_MIME_TYPES.get(
+        Path(filename or "").suffix.casefold()
+    )
     original_mime_type = (
         PDF_MIME_TYPE
         if media_type is MediaType.DOCUMENT
-        else declared_mime_type or "application/octet-stream"
+        else (
+            heif_extension_mime
+            if media_type is MediaType.IMAGE
+            and declared in {"", "application/octet-stream"}
+            and heif_extension_mime
+            else declared_mime_type or "application/octet-stream"
+        )
     )
     dcterms_types = {
         MediaType.IMAGE: "dcmitype:StillImage",

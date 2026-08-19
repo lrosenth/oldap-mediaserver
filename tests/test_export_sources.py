@@ -142,6 +142,22 @@ def test_resolver_returns_canonical_path_size_digest_and_signature_mime(
     }
 
 
+def test_resolver_identifies_heic_before_generic_iso_bmff_video(
+    tmp_path: Path,
+) -> None:
+    """Export evidence retains HEIC MIME instead of misclassifying it as MP4."""
+
+    content = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heicpayload"
+    original = tmp_path / "museum/image/archive/asset-one/original/IMG_0001.HEIC"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(content)
+    references = parse_export_source_request(_payload(originalName="IMG_0001.HEIC"))
+
+    resolved = resolve_export_sources(tmp_path, references)
+
+    assert resolved[0].original_mime_type == "image/heic"
+
+
 def test_resolver_fails_closed_for_missing_and_symlinked_originals(
     tmp_path: Path,
 ) -> None:

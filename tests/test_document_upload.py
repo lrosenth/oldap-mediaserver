@@ -179,6 +179,123 @@ def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
     ).hexdigest()
 
 
+def test_heic_upload_uses_content_derived_mime_and_pyramidal_tiff(
+    media_app, monkeypatch
+):
+    """Single-file HEIC upload preserves its original and creates master.tif."""
+
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+    heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" b"content"
+
+    class FakeVipsImage:
+        def get_typeof(self, name: str) -> int:
+            return 1 if name in {"vips-loader", "n-pages"} else 0
+
+        def get(self, name: str):
+            return {"vips-loader": "heifload", "n-pages": 1}[name]
+
+        def tiffsave(self, destination: str, **options) -> None:
+            Path(destination).write_bytes(b"pyramidal heic derivative")
+
+    def fake_vips_load(source: str, *, access: str):
+        assert Path(source).read_bytes() == heic
+        assert access == "sequential"
+        return FakeVipsImage()
+
+    monkeypatch.setattr(module.DERIVATIVE_PROCESSOR, "vips_loader", fake_vips_load)
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "archive",
+            "identifier": "asset-heic",
+            "file": (io.BytesIO(heic), "IMG_0001.HEIC", "application/octet-stream"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["originalMimeType"] == "image/heic"
+    asset_root = media_root / "testproject" / "image" / "archive" / "asset-heic"
+    assert (asset_root / "original" / "IMG_0001.HEIC").read_bytes() == heic
+    assert (asset_root / "derived" / "master.tif").is_file()
+    assert FakeOldapClient.created[0][1]["shared:originalMimeType"] == "image/heic"
+
+
+def test_multi_image_heif_single_upload_is_rejected(media_app, monkeypatch):
+    """Single upload cannot silently reduce a HEIF collection to its first image."""
+
+    module, client, media_root = media_app
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+    heif = b"\x00\x00\x00\x14ftypmif1\x00\x00\x00\x00mif1content"
+
+    class FakeCollection:
+        def get_typeof(self, name: str) -> int:
+            return 1 if name in {"vips-loader", "n-pages"} else 0
+
+        def get(self, name: str):
+            return {"vips-loader": "heifload", "n-pages": 2}[name]
+
+    monkeypatch.setattr(
+        module.DERIVATIVE_PROCESSOR,
+        "vips_loader",
+        lambda *args, **kwargs: FakeCollection(),
+    )
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "archive",
+            "identifier": "asset-heif-collection",
+            "file": (io.BytesIO(heif), "collection.heif", "image/heif"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["message"] == (
+        "Multi-image HEIF files are not supported."
+    )
+    assert not (
+        media_root
+        / "testproject"
+        / "image"
+        / "archive"
+        / "asset-heif-collection"
+    ).exists()
+
+
+def test_heic_upload_rejects_extension_content_mismatch(media_app, monkeypatch):
+    """A HEIC filename cannot route unrelated bytes into the image pipeline."""
+
+    module, client, media_root = media_app
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "archive",
+            "identifier": "asset-fake-heic",
+            "file": (io.BytesIO(b"not heif"), "fake.heic", "image/heic"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert "not a supported HEIF/HEIC" in response.get_json()["message"]
+    assert not (
+        media_root / "testproject" / "image" / "archive" / "asset-fake-heic"
+    ).exists()
+
+
 @pytest.mark.parametrize("identifier", ["-nanoid-style", "_nanoid-style", "asset.id~1"])
 def test_asset_identifier_accepts_url_safe_nanoid_characters(media_app, identifier):
     """Valid URL-safe identifiers include every character used by NanoID."""

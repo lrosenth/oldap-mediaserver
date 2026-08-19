@@ -140,6 +140,7 @@
         "IMAGE_PIXEL_LIMIT",
         "INVALID_NAME_ENCODING",
         "MULTI_DISK_NOT_ALLOWED",
+        "MULTI_IMAGE_HEIF_NOT_ALLOWED",
         "MULTIPAGE_TIFF_NOT_ALLOWED",
         "NAME_NORMALIZATION_COLLISION",
         "NESTED_ARCHIVE_NOT_ALLOWED",
@@ -266,8 +267,8 @@
       "additionalProperties": false,
       "properties": {
         "category": { "const": "image" },
-        "mimeType": { "type": "string", "enum": ["image/jpeg", "image/tiff", "image/png"] },
-        "format": { "type": "string", "enum": ["JPEG", "TIFF", "PNG"] },
+        "mimeType": { "type": "string", "enum": ["image/jpeg", "image/tiff", "image/png", "image/heic", "image/heif"] },
+        "format": { "type": "string", "enum": ["JPEG", "TIFF", "PNG", "HEIC", "HEIF"] },
         "width": { "type": "integer", "minimum": 1 },
         "height": { "type": "integer", "minimum": 1 },
         "pageCount": { "type": "integer", "minimum": 1 }
