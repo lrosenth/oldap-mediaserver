@@ -7,9 +7,10 @@ import os
 import sqlite3
 import stat
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from uuid import UUID, uuid5
 
 import pytest
@@ -134,7 +135,40 @@ def test_request_validation_and_rfc8785_hash_are_closed_and_stable() -> None:
         parse_initialize_upload(
             {**body, "originalName": "../photo.jpg"}, max_original_bytes=100
         )
+    for whitespace_name in (" photo.jpg", "photo.jpg "):
+        with pytest.raises(MobileUploadError):
+            parse_initialize_upload(
+                {**body, "originalName": whitespace_name}, max_original_bytes=100
+            )
+    assert (
+        parse_initialize_upload(
+            {**body, "comment": "  Kurze Notiz  "}, max_original_bytes=100
+        ).comment
+        == "Kurze Notiz"
+    )
+    assert (
+        parse_initialize_upload(
+            {**body, "comment": "   "}, max_original_bytes=100
+        ).comment
+        is None
+    )
     assert unexpected.value.code == "invalid_request"
+
+    with pytest.raises(MobileUploadError):
+        parse_initialize_upload(
+            body | {"clientAssetId": "00000000-0000-0000-0000-000000000000"},
+            max_original_bytes=100,
+        )
+    for invalid_identifier in (
+        "ftp://example.org/staging",
+        "urn:",
+        "urn:uuid:bad value",
+    ):
+        with pytest.raises(MobileUploadError):
+            parse_initialize_upload(
+                body | {"stagingAreaId": invalid_identifier},
+                max_original_bytes=100,
+            )
     assert path.value.code == "invalid_request"
 
 
@@ -562,11 +596,16 @@ def test_expiry_does_not_follow_token_lifetime_and_cancellation_is_idempotent(
     assert path.exists()
     registry.cancel(status.upload_id, OWNER)
     registry.cancel(status.upload_id, OWNER)
-    assert not path.exists()
+    assert path.exists()
     assert registry.get_status(status.upload_id, OWNER).state == "cancelled"
+    cleanup = registry.claim_next_cleanup(str(UUID(int=9)))
+    assert cleanup is not None
+    registry.remove_claimed_upload_directory(cleanup)
+    registry.complete_cleanup(cleanup)
+    assert not path.exists()
 
 
-def test_failed_cancellation_keeps_state_bytes_and_reservation(
+def test_cancellation_is_durable_before_cleanup_and_keeps_its_reservation(
     registry: MobileUploadRegistry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     status, _ = registry.initialize(
@@ -578,17 +617,17 @@ def test_failed_cancellation_keeps_state_bytes_and_reservation(
         raise OSError("simulated removal failure")
 
     monkeypatch.setattr(registry, "_remove_upload_directory", fail_removal)
-    with pytest.raises(OSError, match="simulated removal failure"):
-        registry.cancel(status.upload_id, OWNER)
+    registry.cancel(status.upload_id, OWNER)
 
-    assert registry.get_status(status.upload_id, OWNER).state == "initialized"
+    assert registry.get_status(status.upload_id, OWNER).state == "cancelled"
     assert path.exists()
     with sqlite3.connect(registry.database_path) as connection:
-        reserved = connection.execute(
-            "SELECT reserved_bytes FROM mobile_uploads WHERE upload_id = ?",
+        reserved, cleanup_pending = connection.execute(
+            "SELECT reserved_bytes, cleanup_pending FROM mobile_uploads WHERE upload_id = ?",
             (status.upload_id,),
-        ).fetchone()[0]
+        ).fetchone()
     assert reserved == 8
+    assert cleanup_pending == 1
 
 
 def test_missing_upload_data_remains_reserved_until_cancellation(
@@ -610,6 +649,11 @@ def test_missing_upload_data_remains_reserved_until_cancellation(
         ).fetchone()[0]
     assert reserved == 8
     registry.cancel(status.upload_id, OWNER)
+    assert upload_directory.exists()
+    cleanup = registry.claim_next_cleanup(str(UUID(int=10)))
+    assert cleanup is not None
+    registry.remove_claimed_upload_directory(cleanup)
+    registry.complete_cleanup(cleanup)
     assert not upload_directory.exists()
 
 
@@ -631,7 +675,64 @@ def test_repair_never_follows_a_replaced_upload_symlink(
 
     assert target.read_bytes() == b"must-survive"
     registry.cancel(status.upload_id, OWNER)
+    cleanup = registry.claim_next_cleanup(str(UUID(int=11)))
+    assert cleanup is not None
+    registry.remove_claimed_upload_directory(cleanup)
+    registry.complete_cleanup(cleanup)
     assert target.read_bytes() == b"must-survive"
+
+
+def test_orphan_reconciliation_removes_only_unregistered_uuid_directories(
+    registry: MobileUploadRegistry,
+) -> None:
+    registered, _ = registry.initialize(
+        OWNER, initialize_request(), destination(), INIT_KEY
+    )
+    orphan_id = str(UUID(int=12))
+    orphan = registry.uploads_root / orphan_id
+    orphan.mkdir()
+    (orphan / "original.part").write_bytes(b"orphan")
+    unrelated = registry.uploads_root / "operator-notes"
+    unrelated.mkdir()
+
+    assert registry.reconcile_orphan_upload_directories() == 1
+
+    assert not orphan.exists()
+    assert (registry.uploads_root / registered.upload_id).exists()
+    assert unrelated.exists()
+
+
+def test_orphan_reconciliation_waits_for_initialization_commit(
+    registry: MobileUploadRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    insert_reached = Event()
+    allow_commit = Event()
+    original_insert = registry._insert_idempotency
+
+    def delayed_insert(*args, **kwargs) -> None:
+        original_insert(*args, **kwargs)
+        insert_reached.set()
+        assert allow_commit.wait(timeout=2)
+
+    monkeypatch.setattr(registry, "_insert_idempotency", delayed_insert)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        initialization = executor.submit(
+            registry.initialize,
+            OWNER,
+            initialize_request(),
+            destination(),
+            INIT_KEY,
+        )
+        assert insert_reached.wait(timeout=2)
+        reconciliation = executor.submit(registry.reconcile_orphan_upload_directories)
+        with pytest.raises(FutureTimeoutError):
+            reconciliation.result(timeout=0.05)
+        allow_commit.set()
+        status, created = initialization.result(timeout=2)
+        assert reconciliation.result(timeout=2) == 0
+
+    assert created is True
+    assert (registry.uploads_root / status.upload_id).exists()
 
 
 def test_registry_enforces_private_storage_modes_and_absolute_root(

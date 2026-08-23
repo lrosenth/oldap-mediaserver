@@ -8,7 +8,7 @@ import os
 import shutil
 import sqlite3
 import stat
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -121,6 +121,7 @@ class MobileUploadRegistry:
         request_hash = canonical_request_hash(request.canonical_payload())
         now = self._now()
         created_directory: Path | None = None
+        initialization_locks = ExitStack()
         try:
             with self._transaction() as connection:
                 self._expire_inactive(connection, now)
@@ -182,6 +183,7 @@ class MobileUploadRegistry:
                 generation = 1 if asset is None else int(asset["generation"]) + 1
                 relative_path = f"uploads/{upload_id}/original.part"
                 candidate_directory = self.root / "uploads" / upload_id
+                initialization_locks.enter_context(self._upload_lock(upload_id))
                 self._create_upload_file(candidate_directory)
                 created_directory = candidate_directory
                 expires_at = now + timedelta(seconds=self.limits.inactivity_seconds)
@@ -256,11 +258,14 @@ class MobileUploadRegistry:
                     upload_id,
                     now,
                 )
-                return self._status_for_id(connection, upload_id), True
+                status = self._status_for_id(connection, upload_id)
+                return status, True
         except Exception:
             if created_directory is not None:
                 shutil.rmtree(created_directory, ignore_errors=True)
             raise
+        finally:
+            initialization_locks.close()
 
     def get_status(self, upload_id: str, owner: MobileAccessIdentity) -> UploadStatus:
         """Return and repair the authoritative state visible to its owner."""
@@ -576,7 +581,7 @@ class MobileUploadRegistry:
             return accepted_status, False
 
     def cancel(self, upload_id: str, owner: MobileAccessIdentity) -> None:
-        """Idempotently cancel non-committed work and release its reservation."""
+        """Durably accept cancellation and queue exact owned-directory cleanup."""
 
         canonical_uuid(upload_id, "uploadId")
         with self._upload_lock(upload_id):
@@ -607,18 +612,45 @@ class MobileUploadRegistry:
                         "Upload publication must be recovered before cancellation",
                         retryable=True,
                     )
-                path = self._temp_path(row)
-                self._remove_upload_directory(path.parent)
                 connection.execute(
                     """
                     UPDATE mobile_uploads
-                    SET state = 'cancelled', reserved_bytes = 0,
-                        cleanup_pending = 0, lease_owner = NULL,
+                    SET state = 'cancelled', cleanup_pending = 1,
+                        lease_owner = NULL,
                         lease_expires_at = NULL
                     WHERE upload_id = ? AND state != 'committed'
                     """,
                     (upload_id,),
                 )
+
+    def reconcile_orphan_upload_directories(self) -> int:
+        """Remove canonical private directories that have no durable registry row.
+
+        Initialization holds the same per-upload file lock through its SQLite
+        commit. A concurrent reconciler therefore cannot mistake an in-flight
+        generation for an orphan, while a hard crash releases the OS lock.
+        """
+
+        removed = 0
+        for candidate in sorted(
+            self.uploads_root.iterdir(), key=lambda path: path.name
+        ):
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            try:
+                canonical_uuid(candidate.name, "uploadId")
+            except MobileUploadError:
+                continue
+            with self._upload_lock(candidate.name):
+                with self._connect() as connection:
+                    registered = connection.execute(
+                        "SELECT 1 FROM mobile_uploads WHERE upload_id = ?",
+                        (candidate.name,),
+                    ).fetchone()
+                if registered is None:
+                    self._remove_upload_directory(candidate)
+                    removed += 1
+        return removed
 
     @contextmanager
     def upload_operation_lock(self, upload_id: str) -> Iterator[None]:

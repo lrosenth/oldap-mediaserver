@@ -225,6 +225,70 @@ def test_happy_commit_is_atomic_and_cleanup_never_removes_final_asset(
     assert runner.run_once() is False
 
 
+def test_cleanup_is_not_starved_by_a_continuous_processing_queue(
+    registry: MobileUploadRegistry,
+) -> None:
+    queued(registry)
+    queued(
+        registry,
+        asset="99999999-9999-4999-8999-999999999991",
+        init_key="99999999-9999-4999-8999-999999999992",
+        commit_key="99999999-9999-4999-8999-999999999993",
+    )
+    runner = worker(registry)
+
+    assert runner.run_once() is True
+    assert runner.run_once() is True
+
+    with registry._connect() as connection:
+        states = [
+            row[0]
+            for row in connection.execute(
+                "SELECT state FROM mobile_uploads ORDER BY upload_id"
+            )
+        ]
+        pending_cleanup = connection.execute(
+            "SELECT COUNT(*) FROM mobile_uploads WHERE cleanup_pending = 1"
+        ).fetchone()[0]
+    assert states.count("committed") == 1
+    assert states.count("verifying") == 1
+    assert pending_cleanup == 0
+
+
+def test_worker_startup_recovers_an_orphaned_initialization_directory(
+    registry: MobileUploadRegistry,
+) -> None:
+    registered, _ = registry.initialize(
+        OWNER,
+        InitializeUpload(
+            ASSET, AREA, "photo.jpg", "image/jpeg", len(CONTENT), CHECKSUM, None
+        ),
+        destination(),
+        INIT_KEY,
+    )
+    orphan = registry.uploads_root / "99999999-9999-4999-8999-999999999994"
+    orphan.mkdir()
+    (orphan / "original.part").write_bytes(b"orphan")
+
+    worker(registry)
+
+    assert not orphan.exists()
+    assert (registry.uploads_root / registered.upload_id).exists()
+
+
+def test_running_worker_periodically_reconciles_later_orphans(
+    registry: MobileUploadRegistry,
+) -> None:
+    runner = worker(registry)
+    orphan = registry.uploads_root / "99999999-9999-4999-8999-999999999995"
+    orphan.mkdir()
+    (orphan / "original.part").write_bytes(b"orphan")
+    runner._next_orphan_reconciliation = 0
+
+    assert runner.run_once() is False
+    assert not orphan.exists()
+
+
 def test_processing_reserves_cross_mount_publication_peak(
     registry: MobileUploadRegistry,
 ) -> None:
@@ -421,7 +485,10 @@ def test_definite_oldap_rejection_compensates_but_ambiguous_failure_does_not(
     assert failed.state == "failed" and failed.error["retryable"] is False  # type: ignore[index]
     assert assets.compensated is True
     registry.cancel(status.upload_id, OWNER)
-    assert registry.claim_next_cleanup(str(uuid4())) is None
+    cleanup = registry.claim_next_cleanup(str(uuid4()))
+    assert cleanup is not None
+    registry.remove_claimed_upload_directory(cleanup)
+    registry.complete_cleanup(cleanup)
     restarted, created = registry.initialize(
         OWNER,
         InitializeUpload(

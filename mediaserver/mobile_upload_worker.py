@@ -7,7 +7,7 @@ import logging
 import threading
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 from typing import Iterator, Protocol
 from uuid import uuid4
 
@@ -32,6 +32,7 @@ from storage_capacity import PhysicalCapacityInsufficient, StorageCapacityGuard
 
 LOGGER = logging.getLogger(__name__)
 MOBILE_PROCESSING_PEAK_FACTOR = 8
+ORPHAN_RECONCILIATION_SECONDS = 300
 
 
 class CommitClient(Protocol):
@@ -153,6 +154,9 @@ class MobileUploadWorker:
         self.capacity = capacity
         self.worker_id = worker_id or str(uuid4())
         self.logger = logger
+        self._prefer_cleanup = False
+        self.registry.reconcile_orphan_upload_directories()
+        self._next_orphan_reconciliation = monotonic() + ORPHAN_RECONCILIATION_SECONDS
 
     @classmethod
     def from_environment(cls) -> "MobileUploadWorker":
@@ -175,14 +179,30 @@ class MobileUploadWorker:
     def run_once(self) -> bool:
         """Advance one processing task, otherwise one cleanup task."""
 
+        if monotonic() >= self._next_orphan_reconciliation:
+            self._next_orphan_reconciliation = (
+                monotonic() + ORPHAN_RECONCILIATION_SECONDS
+            )
+            self.registry.reconcile_orphan_upload_directories()
+
+        if self._prefer_cleanup:
+            cleanup = self.registry.claim_next_cleanup(self.worker_id)
+            if cleanup is not None:
+                self._cleanup(cleanup)
+                self._prefer_cleanup = False
+                return True
+
         claim = self.registry.claim_next_processing(self.worker_id)
         if claim is not None:
             self._process(claim)
+            self._prefer_cleanup = True
             return True
+
         cleanup = self.registry.claim_next_cleanup(self.worker_id)
         if cleanup is None:
             return False
         self._cleanup(cleanup)
+        self._prefer_cleanup = False
         return True
 
     def run_forever(self, *, idle_seconds: float = 2.0) -> None:

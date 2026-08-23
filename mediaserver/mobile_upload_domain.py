@@ -228,7 +228,7 @@ def parse_initialize_upload(value: Any, *, max_original_bytes: int) -> Initializ
     checksum = canonical_checksum(body["checksum"])
     comment = body.get("comment")
     if comment is not None:
-        if not isinstance(comment, str) or len(comment) > 2000 or has_control(comment):
+        if not isinstance(comment, str):
             raise invalid_fields(
                 {
                     "comment": [
@@ -239,6 +239,17 @@ def parse_initialize_upload(value: Any, *, max_original_bytes: int) -> Initializ
         if unicodedata.normalize("NFC", comment) != comment:
             raise invalid_fields(
                 {"comment": ["The comment must use NFC normalization."]}
+            )
+        comment = comment.strip()
+        if not comment:
+            comment = None
+        elif len(comment) > 2000 or has_control(comment):
+            raise invalid_fields(
+                {
+                    "comment": [
+                        "The comment must be control-free and at most 2000 characters."
+                    ]
+                }
             )
     return InitializeUpload(
         client_asset_id=client_asset_id,
@@ -289,7 +300,7 @@ def canonical_uuid(value: Any, field: str) -> str:
         parsed = UUID(value)
     except ValueError as error:
         raise invalid_fields({field: ["A canonical UUID is required."]}) from error
-    if str(parsed) != value:
+    if str(parsed) != value or parsed.int == 0:
         raise invalid_fields({field: ["A canonical lower-case UUID is required."]})
     return value
 
@@ -312,10 +323,16 @@ def absolute_identifier(value: Any, field: str) -> str:
         or not value
         or value.strip() != value
         or has_control(value)
+        or any(character.isspace() for character in value)
+        or any(character in '<>"{}|\\^`' for character in value)
     ):
         raise invalid_fields({field: ["An absolute URI is required."]})
     parsed = urlparse(value)
-    if not parsed.scheme or (parsed.scheme in {"http", "https"} and not parsed.netloc):
+    if (
+        parsed.scheme not in {"http", "https", "urn"}
+        or (parsed.scheme in {"http", "https"} and not parsed.netloc)
+        or (parsed.scheme == "urn" and not parsed.path)
+    ):
         raise invalid_fields({field: ["An absolute URI is required."]})
     return value
 
@@ -327,6 +344,7 @@ def normalized_original_name(value: Any) -> str:
         not isinstance(value, str)
         or not value
         or value in {".", ".."}
+        or value.strip() != value
         or "/" in value
         or "\\" in value
         or has_control(value)

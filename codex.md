@@ -69,7 +69,11 @@
   and inbox protection are revalidated before initialization, each accepted
   chunk, and commit acceptance. Bytes are flushed before SQLite advances;
   no-follow recovery truncates only an upload-owned unconfirmed suffix, and
-  reservations remain held until physical cancellation or leased cleanup succeeds.
+  cancellation first persists its terminal state and pending cleanup, and
+  reservations remain held until leased physical cleanup succeeds. Worker
+  startup reconciles only canonical UUID upload directories that have no
+  durable registry row while holding the same per-upload lock as initialization;
+  the running worker repeats that reconciliation every five minutes.
   Commit replay is state-aware: the same stable key may restart an unleased
   retryable failure from its last durable phase, but cannot revive cancelled or
   non-retryable work. The separately runnable mobile worker verifies exact bytes
@@ -79,7 +83,8 @@
   atomically with crash recovery, publishes there with a same-mount no-replace
   rename, and calls only the Step-11A internal OLDAP commit with a fresh
   purpose-specific service JWT. The capacity guard includes both temporary
-  complete copies. Renewable leases cap processing at two jobs and make every phase
+  complete copies. Renewable leases cap processing at two jobs, processing and
+  cleanup alternate under mixed load to prevent quota starvation, and every phase
   reclaimable. Per-upload file locks plus synchronous pre/post-effect lease
   fencing prevent stale workers from racing replacement processing or cleanup.
   Definitive OLDAP rejection uses a durable exact-ownership

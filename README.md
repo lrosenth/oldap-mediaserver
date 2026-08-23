@@ -245,8 +245,11 @@ StagingArea; changing the mutable login user ID does not change ownership.
 Every byte-writing operation revalidates the current OLDAP permission and exact
 protected `top/Mobile` destination. Offsets advance only after file data is
 flushed; restart repair truncates any unconfirmed suffix without following
-replacement symlinks. Cancellation releases its reservation only after its
-private temporary directory has actually been removed.
+replacement symlinks. Cancellation is committed before filesystem cleanup and
+releases its reservation only after a separately leased worker has actually
+removed the private temporary directory. Worker startup also reconciles only
+canonical UUID directories that have no durable registry row, and the running
+worker repeats that reconciliation every five minutes.
 
 The standalone `mobile_upload_worker.py` advances accepted commits through
 durable checksum, rendition, publication, OLDAP commit, and completion phases.
@@ -275,12 +278,16 @@ post-publication failures remain recoverable. Expiry and terminal cleanup are
 separately leased and remove only the private upload directory, never a
 committed final asset.
 
-Schema-v1 jobs already waiting for the not-yet-existing Step-11D worker migrate
+Schema-v1 jobs that were already waiting before the Step-11D worker was added migrate
 to a stable retryable failure instead of entering the worker queue without their
 new server-derived storage context. An identical commit replay revalidates and
 fills that context before processing resumes. A fully compensated definitive
 rejection can be explicitly cancelled and reinitialized with the same
 uncommitted `clientAssetId`; implicit reopening remains forbidden.
+
+Processing and cleanup are alternated when both queues contain work, preventing
+terminal temporary files from retaining logical quota indefinitely during a
+continuous commit backlog.
 
 The deployment starts one hardened `mobile-media-worker` through the
 `mobile-media` Compose profile and mounts `/data/oldap-mobile-uploads` only into
