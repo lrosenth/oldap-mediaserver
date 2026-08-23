@@ -229,9 +229,9 @@ curl -i -X OPTIONS \
 
 ## Mobile resumable upload transport
 
-Step 11C adds an additive Flask transport under `/media/v1` for durable mobile
+Steps 11C and 11D add an additive Flask transport under `/media/v1` for durable mobile
 upload initialization, owner-only status lookup, exact-offset 4 MiB chunks,
-asynchronous commit requests, and cancellation. It does not change the legacy
+asynchronous commit requests, processing/status polling, and cancellation. They do not change the legacy
 `/upload` route. Caddy and Ansible deliberately do not expose `/media/v1` yet;
 production routing remains disabled until the storage and rollout work in Step
 11E.
@@ -245,10 +245,42 @@ Every byte-writing operation revalidates the current OLDAP permission and exact
 protected `top/Mobile` destination. Offsets advance only after file data is
 flushed; restart repair truncates any unconfirmed suffix without following
 replacement symlinks. Cancellation releases its reservation only after its
-private temporary directory has actually been removed. A commit request
-currently stops durably in `verifying`: checksum validation, derivative
-creation, the atomic OLDAP commit, recovery workers, and final cleanup belong
-to Step 11D.
+private temporary directory has actually been removed.
+
+The standalone `mobile_upload_worker.py` advances accepted commits through
+durable checksum, rendition, publication, OLDAP commit, and completion phases.
+At most two jobs hold renewable processing leases. Every upload-owned file
+operation is additionally serialized by its per-upload lock and synchronously
+checks the lease before and after the effect, so a paused stale worker cannot
+race its replacement. JPEG, PNG, HEIC, and HEIF
+originals are checked against their exact length, SHA-256, declared MIME type,
+and decoder evidence before the existing image derivative processor creates
+`master.tif`. Complete upload-owned asset directories are fsynced and promoted
+without replacement. The worker then calls only the purpose-authenticated
+Step-11A OLDAP endpoint with a fresh short-lived service JWT and immutable
+publication evidence. A definitive rejection enters a durable compensation
+phase and atomically withdraws the exact owner-marked final asset into private
+upload storage before recoverable deletion. Only the closed OLDAP validation,
+permission, destination, and identity errors are definitive; unknown HTTP
+failures, service authentication/configuration failures, timeouts, 5xx
+responses, and invalid success receipts retain publication for an idempotent
+replay because OLDAP may already have committed. Retryable pre-publication
+failures expire after the same inactivity window as transfers, while ambiguous
+post-publication failures remain recoverable. Expiry and terminal cleanup are
+separately leased and remove only the private upload directory, never a
+committed final asset.
+
+Schema-v1 jobs already waiting for the not-yet-existing Step-11D worker migrate
+to a stable retryable failure instead of entering the worker queue without their
+new server-derived storage context. An identical commit replay revalidates and
+fills that context before processing resumes. A fully compensated definitive
+rejection can be explicitly cancelled and reinitialized with the same
+uncommitted `clientAssetId`; implicit reopening remains forbidden.
+
+Step 11D packages this worker but does not start it. Step 11E must provision the
+distinct `OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET`, persistent mount, worker
+process, operational settings, and public route before mobile uploads are
+enabled in any deployment.
 
 The reviewed v1 ceilings are 100 MiB per original, 20 active uploads and 2 GiB
 reserved per user, 100 active uploads and 20 GiB reserved per StagingArea, and

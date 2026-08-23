@@ -118,6 +118,7 @@ class ResolvedMobileInbox:
     staging_area_id: str
     mobile_folder_id: str
     default_role_id: str
+    storage_path: str
 
 
 @dataclass(frozen=True, slots=True)

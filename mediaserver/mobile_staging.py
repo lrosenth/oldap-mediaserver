@@ -69,7 +69,9 @@ class OldapMobileStagingVerifier:
             f"/data/{PROJECT}/{quote(staging_area_id, safe='')}",
             headers=headers,
         )
-        default_role = self._assert_permitted_area(user, area, staging_area_id)
+        default_role, storage_path = self._assert_permitted_area(
+            user, area, staging_area_id
+        )
 
         folders = self._json(
             "POST",
@@ -96,6 +98,7 @@ class OldapMobileStagingVerifier:
             staging_area_id=staging_area_id,
             mobile_folder_id=mobile_folder,
             default_role_id=default_role,
+            storage_path=storage_path,
         )
 
     def _json(self, method: str, path: str, **kwargs: Any) -> Any:
@@ -163,7 +166,7 @@ class OldapMobileStagingVerifier:
     @staticmethod
     def _assert_permitted_area(
         user_value: Any, area_value: Any, staging_area_id: str
-    ) -> str:
+    ) -> tuple[str, str]:
         user = _object(user_value)
         area = _object(area_value)
         if user is None or area is None:
@@ -176,17 +179,19 @@ class OldapMobileStagingVerifier:
             raise OldapMobileStagingVerifier._destination_unavailable()
         organisation = _first(area, "fasnacht:depositingOrganisation")
         default_role = _first(area, "shared:stagingDefaultRole")
+        media_path = _first(area, "shared:mediaPath")
         additional = _object(user.get("additionalProperties")) or {}
         memberships = _values(additional, MEMBERSHIP_PROPERTY)
         roles = _object(user.get("hasRole")) or {}
         if (
             not organisation
             or not default_role
+            or not media_path
             or not _matches_any(organisation, memberships)
             or not _mapping_has_identifier(roles, default_role)
         ):
             raise OldapMobileStagingVerifier._destination_unavailable()
-        return default_role
+        return default_role, _storage_path(media_path)
 
     @staticmethod
     def _resolve_mobile_folder(value: Any, staging_area_id: str) -> str:
@@ -301,6 +306,24 @@ def _mapping_has_identifier(value: Mapping[str, Any], identifier: str) -> bool:
 
 def _permission(value: Any) -> str:
     return str(value or "").split(":")[-1].upper()
+
+
+def _storage_path(media_path: str) -> str:
+    """Mirror OLDAP's exact portable storage-path derivation for Fasnacht."""
+
+    try:
+        media_path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise OldapMobileStagingVerifier._destination_unavailable() from None
+    if (
+        media_path != media_path.strip()
+        or media_path.startswith("/")
+        or "\\" in media_path
+        or any(ord(character) < 32 or ord(character) == 127 for character in media_path)
+        or any(part in {"", ".", ".."} for part in media_path.split("/"))
+    ):
+        raise OldapMobileStagingVerifier._destination_unavailable()
+    return f"{PROJECT}/image/{media_path}"
 
 
 def _has_create_permission(user: Mapping[str, Any]) -> bool:

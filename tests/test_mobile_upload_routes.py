@@ -55,6 +55,7 @@ class Verifier:
             staging_area_id=staging_area_id,
             mobile_folder_id="urn:uuid:66666666-6666-4666-8666-666666666666",
             default_role_id="urn:uuid:77777777-7777-4777-8777-777777777777",
+            storage_path="fasnacht/image/bmg",
         )
 
 

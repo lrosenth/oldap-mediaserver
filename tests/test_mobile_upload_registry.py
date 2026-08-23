@@ -10,7 +10,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import pytest
 
@@ -88,6 +88,7 @@ def destination(area: str = AREA) -> ResolvedMobileInbox:
         staging_area_id=area,
         mobile_folder_id="urn:uuid:66666666-6666-4666-8666-666666666666",
         default_role_id="urn:uuid:77777777-7777-4777-8777-777777777777",
+        storage_path="fasnacht/image/bmg",
     )
 
 
@@ -96,6 +97,7 @@ def changed_destination() -> ResolvedMobileInbox:
         staging_area_id=AREA,
         mobile_folder_id="urn:uuid:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         default_role_id="urn:uuid:77777777-7777-4777-8777-777777777777",
+        storage_path="fasnacht/image/bmg",
     )
 
 
@@ -667,6 +669,158 @@ def test_registry_rejects_managed_storage_symlinks(
         MobileUploadRegistry(root, limits(), clock=clock)
 
     assert list(outside.iterdir()) == []
+
+
+def test_registry_migrates_step_11c_schema_without_dropping_transport_data(
+    tmp_path: Path, clock: Clock
+) -> None:
+    root = tmp_path / "mobile"
+    root.mkdir()
+    database = root / "registry.sqlite3"
+    legacy_upload = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    legacy_asset = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE mobile_assets (
+                client_asset_id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                owner_user_iri TEXT NOT NULL,
+                staging_area_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                current_upload_id TEXT,
+                created_at TEXT NOT NULL,
+                committed_upload_id TEXT,
+                committed_asset_id TEXT,
+                committed_resource_iri TEXT,
+                committed_at TEXT
+            );
+            CREATE TABLE mobile_uploads (
+                upload_id TEXT PRIMARY KEY,
+                client_asset_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                owner_user_id TEXT NOT NULL,
+                owner_user_iri TEXT NOT NULL,
+                staging_area_id TEXT NOT NULL,
+                mobile_folder_id TEXT NOT NULL,
+                default_role_id TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                original_mime_type TEXT NOT NULL,
+                byte_length INTEGER NOT NULL,
+                checksum TEXT NOT NULL,
+                comment TEXT,
+                state TEXT NOT NULL,
+                offset INTEGER NOT NULL,
+                chunk_size INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                reserved_bytes INTEGER NOT NULL,
+                temp_path TEXT NOT NULL,
+                verified_checksum TEXT,
+                error_json TEXT,
+                commit_phase TEXT NOT NULL,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                asset_id TEXT,
+                resource_iri TEXT,
+                committed_at TEXT
+            );
+            PRAGMA user_version = 1;
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO mobile_assets (
+                client_asset_id, owner_user_id, owner_user_iri, staging_area_id,
+                generation, current_upload_id, created_at
+            ) VALUES (?, 'alice', ?, ?, 1, ?, ?)
+            """,
+            (legacy_asset, OWNER.user_iri, AREA, legacy_upload, NOW.isoformat()),
+        )
+        connection.execute(
+            """
+            INSERT INTO mobile_uploads (
+                upload_id, client_asset_id, generation, owner_user_id,
+                owner_user_iri, staging_area_id, mobile_folder_id, default_role_id,
+                original_name, original_mime_type, byte_length, checksum, comment,
+                state, offset, chunk_size, created_at, last_activity_at, expires_at,
+                reserved_bytes, temp_path, verified_checksum, error_json,
+                commit_phase, lease_owner, lease_expires_at
+            ) VALUES (?, ?, 1, 'alice', ?, ?, ?, ?, 'legacy.jpg', 'image/jpeg',
+                      8, ?, NULL, 'verifying', 8, 4, ?, ?, ?, 8, ?, NULL, NULL,
+                      'requested', ?, ?)
+            """,
+            (
+                legacy_upload,
+                legacy_asset,
+                OWNER.user_iri,
+                AREA,
+                destination().mobile_folder_id,
+                destination().default_role_id,
+                "sha256:" + "a" * 64,
+                NOW.isoformat(),
+                NOW.isoformat(),
+                (NOW + timedelta(seconds=60)).isoformat(),
+                f"uploads/{legacy_upload}/original.part",
+                "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                (NOW + timedelta(seconds=30)).isoformat(),
+            ),
+        )
+
+    registry = MobileUploadRegistry(root, limits(), clock=clock)
+
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(mobile_uploads)")
+        }
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        migrated = connection.execute(
+            "SELECT * FROM mobile_uploads WHERE upload_id = ?", (legacy_upload,)
+        ).fetchone()
+    assert {
+        "storage_path",
+        "event_id",
+        "publication_json",
+        "oldap_result_json",
+        "cleanup_pending",
+    } <= columns
+    expected_event = str(uuid5(UUID(legacy_upload), "mobile-media-commit"))
+    assert migrated["state"] == "failed"
+    assert migrated["storage_path"] is None
+    assert migrated["event_id"] == expected_event
+    assert json.loads(migrated["error_json"])["retryable"] is True
+    assert migrated["lease_owner"] is None
+
+    current, _ = registry.initialize(
+        OWNER, initialize_request(), destination(), INIT_KEY
+    )
+    registry.append_chunk(
+        current.upload_id,
+        OWNER,
+        expected_offset=0,
+        upload_length=8,
+        chunk=b"abcd",
+        destination=destination(),
+    )
+    registry.append_chunk(
+        current.upload_id,
+        OWNER,
+        expected_offset=4,
+        upload_length=8,
+        chunk=b"efgh",
+        destination=destination(),
+    )
+    registry.request_commit(
+        current.upload_id,
+        OWNER,
+        CommitUpload(ASSET, 8, "sha256:" + "a" * 64),
+        destination(),
+        COMMIT_KEY,
+    )
+    claim = registry.claim_next_processing(INIT_KEY)
+    assert claim is not None and claim.upload_id == current.upload_id
 
 
 def test_active_and_reservation_limits_are_transactional(

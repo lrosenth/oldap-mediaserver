@@ -9,10 +9,11 @@ import shutil
 import sqlite3
 import stat
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Iterator
-from uuid import uuid4
+from typing import Any, Callable, Iterator, Mapping
+from uuid import UUID, uuid4, uuid5
 
 from config import MobileUploadLimits
 from mobile_upload_domain import (
@@ -34,7 +35,40 @@ from storage_capacity import PhysicalCapacityInsufficient, StorageCapacityGuard
 
 ACTIVE_STATES = ("initialized", "uploading", "verifying", "processing", "committing")
 REOPENABLE_STATES = ("cancelled", "expired")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+PREPUBLICATION_PHASES = ("requested", "checksum_verified", "derivatives_ready")
+
+
+@dataclass(frozen=True, slots=True)
+class MobileProcessingClaim:
+    """Immutable worker input protected by one renewable registry lease."""
+
+    upload_id: str
+    lease_owner: str
+    event_id: str
+    client_asset_id: str
+    owner_user_iri: str
+    staging_area_id: str
+    original_name: str
+    original_mime_type: str
+    byte_length: int
+    checksum: str
+    comment: str | None
+    storage_path: str
+    upload_directory: Path
+    commit_phase: str
+    publication: dict[str, Any] | None
+    oldap_result: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class MobileCleanupClaim:
+    """Exact upload directory atomically claimed for idempotent cleanup."""
+
+    upload_id: str
+    lease_owner: str
+    state: str
+    upload_directory: Path
 
 
 class MobileUploadRegistry:
@@ -173,12 +207,12 @@ class MobileUploadRegistry:
                     INSERT INTO mobile_uploads (
                         upload_id, client_asset_id, generation, owner_user_id,
                         owner_user_iri,
-                        staging_area_id, mobile_folder_id, default_role_id,
+                        staging_area_id, mobile_folder_id, default_role_id, storage_path,
                         original_name, original_mime_type, byte_length, checksum,
                         comment, state, offset, chunk_size, created_at,
                         last_activity_at, expires_at, reserved_bytes, temp_path,
                         commit_phase
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'initialized',
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'initialized',
                               0, ?, ?, ?, ?, ?, ?, 'none')
                     """,
                     (
@@ -190,6 +224,7 @@ class MobileUploadRegistry:
                         request.staging_area_id,
                         destination.mobile_folder_id,
                         destination.default_role_id,
+                        destination.storage_path,
                         request.original_name,
                         request.original_mime_type,
                         request.byte_length,
@@ -379,6 +414,18 @@ class MobileUploadRegistry:
                 row = self._owned_row(connection, upload_id, owner)
                 row = self._expire_row(connection, row, self._now())
                 self._assert_destination(row, destination)
+                if row["storage_path"] is None:
+                    connection.execute(
+                        "UPDATE mobile_uploads SET storage_path = ? WHERE upload_id = ?",
+                        (destination.storage_path, upload_id),
+                    )
+                    row = self._row_for_id(connection, upload_id)
+                if row["event_id"] is None:
+                    connection.execute(
+                        "UPDATE mobile_uploads SET event_id = ? WHERE upload_id = ?",
+                        (self._event_id(upload_id), upload_id),
+                    )
+                    row = self._row_for_id(connection, upload_id)
                 replay = self._idempotency_replay(
                     connection,
                     owner,
@@ -440,15 +487,39 @@ class MobileUploadRegistry:
                             retryable=True,
                             retry_after_seconds=self.limits.lease_seconds,
                         )
+                    resumed_state = self._state_for_phase(row["commit_phase"])
+                    resumed_at = self._now()
                     connection.execute(
                         """
                         UPDATE mobile_uploads
-                        SET state = 'uploading', error_json = NULL,
-                            lease_owner = NULL, lease_expires_at = NULL
+                        SET state = ?, error_json = NULL,
+                            lease_owner = NULL, lease_expires_at = NULL,
+                            last_activity_at = ?, expires_at = ?
                         WHERE upload_id = ?
                         """,
-                        (upload_id,),
+                        (
+                            resumed_state,
+                            format_timestamp(resumed_at),
+                            format_timestamp(
+                                resumed_at
+                                + timedelta(seconds=self.limits.inactivity_seconds)
+                            ),
+                            upload_id,
+                        ),
                     )
+                    if row["commit_phase"] != "none":
+                        if replay is None:
+                            self._insert_idempotency(
+                                connection,
+                                owner,
+                                row["staging_area_id"],
+                                idempotency_key,
+                                "commit",
+                                request_hash,
+                                upload_id,
+                                self._now(),
+                            )
+                        return self._status_for_id(connection, upload_id), False
                     row = self._row_for_id(connection, upload_id)
                 if int(row["offset"]) != int(row["byte_length"]):
                     raise MobileUploadError(
@@ -467,10 +538,12 @@ class MobileUploadRegistry:
                         """
                         UPDATE mobile_uploads
                         SET state = 'verifying', commit_phase = 'requested',
-                            error_json = NULL, last_activity_at = ?, expires_at = ?
+                            event_id = COALESCE(event_id, ?), error_json = NULL,
+                            last_activity_at = ?, expires_at = ?
                         WHERE upload_id = ?
                         """,
                         (
+                            self._event_id(upload_id),
                             format_timestamp(now),
                             format_timestamp(
                                 now + timedelta(seconds=self.limits.inactivity_seconds)
@@ -523,17 +596,394 @@ class MobileUploadRegistry:
                         retryable=True,
                         retry_after_seconds=self.limits.lease_seconds,
                     )
+                if row["commit_phase"] not in {
+                    "none",
+                    *PREPUBLICATION_PHASES,
+                    "compensated",
+                }:
+                    raise MobileUploadError(
+                        409,
+                        "upload_commit_uncertain",
+                        "Upload publication must be recovered before cancellation",
+                        retryable=True,
+                    )
                 path = self._temp_path(row)
                 self._remove_upload_directory(path.parent)
                 connection.execute(
                     """
                     UPDATE mobile_uploads
                     SET state = 'cancelled', reserved_bytes = 0,
-                        lease_owner = NULL, lease_expires_at = NULL
+                        cleanup_pending = 0, lease_owner = NULL,
+                        lease_expires_at = NULL
                     WHERE upload_id = ? AND state != 'committed'
                     """,
                     (upload_id,),
                 )
+
+    @contextmanager
+    def upload_operation_lock(self, upload_id: str) -> Iterator[None]:
+        """Serialize upload-owned file effects with requests and other workers."""
+
+        canonical_uuid(upload_id, "uploadId")
+        with self._upload_lock(upload_id):
+            yield
+
+    def claim_next_processing(self, worker_id: str) -> MobileProcessingClaim | None:
+        """Atomically lease one recoverable commit while enforcing the global cap."""
+
+        canonical_uuid(worker_id, "workerId")
+        now = self._now()
+        with self._transaction() as connection:
+            active = connection.execute(
+                """
+                SELECT COUNT(*) FROM mobile_uploads
+                WHERE state IN ('verifying', 'processing', 'committing')
+                  AND storage_path IS NOT NULL AND event_id IS NOT NULL
+                  AND lease_owner IS NOT NULL AND lease_expires_at > ?
+                """,
+                (format_timestamp(now),),
+            ).fetchone()[0]
+            if int(active) >= self.limits.max_processing_jobs:
+                return None
+            row = connection.execute(
+                """
+                SELECT * FROM mobile_uploads
+                WHERE state IN ('verifying', 'processing', 'committing')
+                  AND storage_path IS NOT NULL AND event_id IS NOT NULL
+                  AND (lease_owner IS NULL OR lease_expires_at <= ?)
+                ORDER BY last_activity_at, created_at, upload_id
+                LIMIT 1
+                """,
+                (format_timestamp(now),),
+            ).fetchone()
+            if row is None:
+                return None
+            target_state = self._state_for_phase(row["commit_phase"])
+            changed = connection.execute(
+                """
+                UPDATE mobile_uploads
+                SET state = ?, lease_owner = ?, lease_expires_at = ?,
+                    last_activity_at = ?
+                WHERE upload_id = ?
+                  AND (lease_owner IS NULL OR lease_expires_at <= ?)
+                """,
+                (
+                    target_state,
+                    worker_id,
+                    format_timestamp(
+                        now + timedelta(seconds=self.limits.lease_seconds)
+                    ),
+                    format_timestamp(now),
+                    row["upload_id"],
+                    format_timestamp(now),
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            return self._processing_claim(
+                self._row_for_id(connection, row["upload_id"]), worker_id
+            )
+
+    def renew_processing_lease(self, upload_id: str, worker_id: str) -> None:
+        """Extend only the caller's still-valid processing lease."""
+
+        now = self._now()
+        with self._transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE mobile_uploads
+                SET lease_expires_at = ?
+                WHERE upload_id = ? AND lease_owner = ? AND lease_expires_at > ?
+                  AND state IN ('verifying', 'processing', 'committing')
+                """,
+                (
+                    format_timestamp(
+                        now + timedelta(seconds=self.limits.lease_seconds)
+                    ),
+                    upload_id,
+                    worker_id,
+                    format_timestamp(now),
+                ),
+            ).rowcount
+            if changed != 1:
+                raise MobileUploadInvariantError("Mobile processing lease was lost.")
+
+    def renew_cleanup_lease(self, upload_id: str, worker_id: str) -> None:
+        """Extend only the caller's still-valid cleanup lease."""
+
+        now = self._now()
+        with self._transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE mobile_uploads SET lease_expires_at = ?
+                WHERE upload_id = ? AND lease_owner = ? AND lease_expires_at > ?
+                  AND cleanup_pending = 1
+                """,
+                (
+                    format_timestamp(
+                        now + timedelta(seconds=self.limits.lease_seconds)
+                    ),
+                    upload_id,
+                    worker_id,
+                    format_timestamp(now),
+                ),
+            ).rowcount
+            if changed != 1:
+                raise MobileUploadInvariantError("Mobile cleanup lease was lost.")
+
+    def record_checksum_verified(
+        self, claim: MobileProcessingClaim, checksum: str
+    ) -> MobileProcessingClaim:
+        """Persist exact byte verification before any rendition work."""
+
+        if checksum != claim.checksum:
+            raise MobileUploadInvariantError("Worker checksum differs from its claim.")
+        return self._advance_phase(
+            claim,
+            expected="requested",
+            target="checksum_verified",
+            state="processing",
+            assignments={"verified_checksum": checksum},
+        )
+
+    def record_derivatives_ready(
+        self, claim: MobileProcessingClaim
+    ) -> MobileProcessingClaim:
+        """Persist that the complete upload-owned work asset is durable."""
+
+        return self._advance_phase(
+            claim,
+            expected="checksum_verified",
+            target="derivatives_ready",
+            state="processing",
+        )
+
+    def record_files_published(
+        self, claim: MobileProcessingClaim, publication: Mapping[str, Any]
+    ) -> MobileProcessingClaim:
+        """Persist closed final-file evidence before contacting OLDAP."""
+
+        self._assert_publication(claim, publication)
+        return self._advance_phase(
+            claim,
+            expected="derivatives_ready",
+            target="files_published",
+            state="committing",
+            assignments={"publication_json": self._closed_json(publication)},
+        )
+
+    def record_oldap_committed(
+        self, claim: MobileProcessingClaim, result: Mapping[str, Any]
+    ) -> MobileProcessingClaim:
+        """Persist the exact OLDAP receipt before exposing local completion."""
+
+        self._assert_oldap_result(claim, result)
+        return self._advance_phase(
+            claim,
+            expected="files_published",
+            target="oldap_committed",
+            state="committing",
+            assignments={"oldap_result_json": self._closed_json(result)},
+        )
+
+    def record_compensation_required(
+        self, claim: MobileProcessingClaim, code: str
+    ) -> MobileProcessingClaim:
+        """Durably prevent another OLDAP call before deleting rejected files."""
+
+        problem = self._failure_problem(claim, code, retryable=False)
+        return self._advance_phase(
+            claim,
+            expected="files_published",
+            target="compensating",
+            state="committing",
+            assignments={"error_json": self._closed_json(problem)},
+        )
+
+    def complete_compensation(self, claim: MobileProcessingClaim) -> None:
+        """Finalize a durable compensation after the exact final path is absent."""
+
+        with self._transaction() as connection:
+            row = self._leased_row(connection, claim)
+            if row["commit_phase"] != "compensating" or not row["error_json"]:
+                raise MobileUploadInvariantError(
+                    "Mobile compensation phase is invalid."
+                )
+            changed = connection.execute(
+                """
+                UPDATE mobile_uploads
+                SET state = 'failed', commit_phase = 'compensated', cleanup_pending = 1,
+                    lease_owner = NULL, lease_expires_at = NULL
+                WHERE upload_id = ? AND lease_owner = ? AND commit_phase = 'compensating'
+                """,
+                (claim.upload_id, claim.lease_owner),
+            ).rowcount
+            if changed != 1:
+                raise MobileUploadInvariantError(
+                    "Mobile compensation was not finalized."
+                )
+
+    def complete_commit(self, claim: MobileProcessingClaim) -> None:
+        """Atomically publish the permanent receipt to upload and asset records."""
+
+        with self._transaction() as connection:
+            row = self._leased_row(connection, claim)
+            if row["commit_phase"] != "oldap_committed":
+                raise MobileUploadInvariantError("OLDAP receipt phase is not durable.")
+            result = self._json_object(row["oldap_result_json"], "OLDAP result")
+            if (
+                result.get("uploadId") != row["upload_id"]
+                or result.get("clientAssetId") != row["client_asset_id"]
+                or result.get("stagingAreaId") != row["staging_area_id"]
+                or result.get("checksum") != row["verified_checksum"]
+            ):
+                raise MobileUploadInvariantError(
+                    "OLDAP result differs from the upload."
+                )
+            committed_at = format_timestamp(parse_timestamp(result["committedAt"]))
+            connection.execute(
+                """
+                UPDATE mobile_uploads
+                SET state = 'committed', commit_phase = 'complete', asset_id = ?,
+                    resource_iri = ?, committed_at = ?, cleanup_pending = 1,
+                    error_json = NULL, lease_owner = NULL, lease_expires_at = NULL
+                WHERE upload_id = ? AND lease_owner = ?
+                """,
+                (
+                    result["assetId"],
+                    result["resourceIri"],
+                    committed_at,
+                    claim.upload_id,
+                    claim.lease_owner,
+                ),
+            )
+            changed = connection.execute(
+                """
+                UPDATE mobile_assets
+                SET committed_upload_id = ?, committed_asset_id = ?,
+                    committed_resource_iri = ?, committed_at = ?
+                WHERE client_asset_id = ? AND current_upload_id = ?
+                  AND committed_upload_id IS NULL
+                """,
+                (
+                    claim.upload_id,
+                    result["assetId"],
+                    result["resourceIri"],
+                    committed_at,
+                    claim.client_asset_id,
+                    claim.upload_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise MobileUploadInvariantError(
+                    "Permanent client asset receipt conflicted."
+                )
+
+    def fail_processing(
+        self,
+        claim: MobileProcessingClaim,
+        code: str,
+        *,
+        retryable: bool,
+        cleanup_pending: bool = False,
+    ) -> None:
+        """Record one privacy-safe worker failure without losing recovery evidence."""
+
+        problem = self._failure_problem(claim, code, retryable=retryable)
+        with self._transaction() as connection:
+            row = self._leased_row(connection, claim)
+            now = self._now()
+            connection.execute(
+                """
+                UPDATE mobile_uploads
+                SET state = 'failed', commit_phase = ?, error_json = ?,
+                    cleanup_pending = ?, lease_owner = NULL, lease_expires_at = NULL,
+                    last_activity_at = ?, expires_at = ?
+                WHERE upload_id = ? AND lease_owner = ?
+                """,
+                (
+                    row["commit_phase"],
+                    self._closed_json(problem),
+                    int(cleanup_pending),
+                    format_timestamp(now),
+                    format_timestamp(
+                        now + timedelta(seconds=self.limits.inactivity_seconds)
+                    ),
+                    claim.upload_id,
+                    claim.lease_owner,
+                ),
+            )
+
+    def claim_next_cleanup(self, worker_id: str) -> MobileCleanupClaim | None:
+        """Expire safe transfers and atomically lease one owned-directory cleanup."""
+
+        canonical_uuid(worker_id, "workerId")
+        now = self._now()
+        with self._transaction() as connection:
+            self._expire_inactive(connection, now)
+            row = connection.execute(
+                """
+                SELECT * FROM mobile_uploads
+                WHERE cleanup_pending = 1
+                  AND (lease_owner IS NULL OR lease_expires_at <= ?)
+                ORDER BY last_activity_at, upload_id LIMIT 1
+                """,
+                (format_timestamp(now),),
+            ).fetchone()
+            if row is None:
+                return None
+            changed = connection.execute(
+                """
+                UPDATE mobile_uploads SET lease_owner = ?, lease_expires_at = ?
+                WHERE upload_id = ? AND cleanup_pending = 1
+                  AND (lease_owner IS NULL OR lease_expires_at <= ?)
+                """,
+                (
+                    worker_id,
+                    format_timestamp(
+                        now + timedelta(seconds=self.limits.lease_seconds)
+                    ),
+                    row["upload_id"],
+                    format_timestamp(now),
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            return MobileCleanupClaim(
+                upload_id=row["upload_id"],
+                lease_owner=worker_id,
+                state=row["state"],
+                upload_directory=self.uploads_root / row["upload_id"],
+            )
+
+    def complete_cleanup(self, claim: MobileCleanupClaim) -> None:
+        """Release reservation only after the exact private directory is absent."""
+
+        path = self.uploads_root / claim.upload_id
+        if path.exists() or path.is_symlink():
+            raise MobileUploadInvariantError("Claimed upload directory still exists.")
+        with self._transaction() as connection:
+            changed = connection.execute(
+                """
+                UPDATE mobile_uploads
+                SET cleanup_pending = 0, reserved_bytes = 0,
+                    lease_owner = NULL, lease_expires_at = NULL
+                WHERE upload_id = ? AND lease_owner = ? AND cleanup_pending = 1
+                """,
+                (claim.upload_id, claim.lease_owner),
+            ).rowcount
+            if changed != 1:
+                raise MobileUploadInvariantError("Mobile cleanup lease was lost.")
+
+    def remove_claimed_upload_directory(self, claim: MobileCleanupClaim) -> None:
+        """Delete only the canonical private directory named by a cleanup claim."""
+
+        expected = self.uploads_root / claim.upload_id
+        if claim.upload_directory != expected:
+            raise MobileUploadInvariantError("Cleanup path is not registry-owned.")
+        if expected.is_symlink():
+            raise MobileUploadInvariantError("Cleanup path is a symbolic link.")
+        self._remove_upload_directory(expected)
 
     def _initialize_storage(self) -> None:
         self._ensure_private_directory(self.root, parents=True)
@@ -545,7 +995,7 @@ class MobileUploadRegistry:
             )
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, SCHEMA_VERSION):
+            if version not in (0, 1, SCHEMA_VERSION):
                 raise MobileUploadInvariantError(
                     f"Unsupported mobile upload registry schema version {version}."
                 )
@@ -574,6 +1024,7 @@ class MobileUploadRegistry:
                     staging_area_id TEXT NOT NULL,
                     mobile_folder_id TEXT NOT NULL,
                     default_role_id TEXT NOT NULL,
+                    storage_path TEXT NOT NULL,
                     original_name TEXT NOT NULL,
                     original_mime_type TEXT NOT NULL,
                     byte_length INTEGER NOT NULL CHECK (byte_length > 0),
@@ -593,6 +1044,11 @@ class MobileUploadRegistry:
                     verified_checksum TEXT,
                     error_json TEXT,
                     commit_phase TEXT NOT NULL,
+                    event_id TEXT,
+                    publication_json TEXT,
+                    oldap_result_json TEXT,
+                    cleanup_pending INTEGER NOT NULL DEFAULT 0
+                        CHECK (cleanup_pending IN (0, 1)),
                     lease_owner TEXT,
                     lease_expires_at TEXT,
                     asset_id TEXT,
@@ -619,6 +1075,71 @@ class MobileUploadRegistry:
                     ON mobile_uploads(staging_area_id, state);
                 CREATE INDEX IF NOT EXISTS mobile_upload_expiry
                     ON mobile_uploads(state, expires_at);
+                """
+            )
+            if version == 1:
+                columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(mobile_uploads)"
+                    ).fetchall()
+                }
+                migrations = {
+                    "storage_path": "ALTER TABLE mobile_uploads ADD COLUMN storage_path TEXT",
+                    "event_id": "ALTER TABLE mobile_uploads ADD COLUMN event_id TEXT",
+                    "publication_json": "ALTER TABLE mobile_uploads ADD COLUMN publication_json TEXT",
+                    "oldap_result_json": "ALTER TABLE mobile_uploads ADD COLUMN oldap_result_json TEXT",
+                    "cleanup_pending": (
+                        "ALTER TABLE mobile_uploads ADD COLUMN cleanup_pending INTEGER "
+                        "NOT NULL DEFAULT 0 CHECK (cleanup_pending IN (0, 1))"
+                    ),
+                }
+                for column, statement in migrations.items():
+                    if column not in columns:
+                        connection.execute(statement)
+                migrated = connection.execute(
+                    """
+                    SELECT upload_id, state, commit_phase, storage_path, event_id
+                    FROM mobile_uploads
+                    WHERE commit_phase != 'none'
+                    """
+                ).fetchall()
+                for row in migrated:
+                    event_id = row["event_id"] or self._event_id(row["upload_id"])
+                    connection.execute(
+                        "UPDATE mobile_uploads SET event_id = ? WHERE upload_id = ?",
+                        (event_id, row["upload_id"]),
+                    )
+                    if (
+                        row["state"] in {"verifying", "processing", "committing"}
+                        and row["storage_path"] is None
+                    ):
+                        problem = {
+                            "type": (
+                                "https://oldap.org/problems/mobile/"
+                                "processing-context-refresh-required"
+                            ),
+                            "title": "Mobile media processing must be resumed",
+                            "status": 503,
+                            "code": "processing_context_refresh_required",
+                            "traceId": event_id,
+                            "retryable": True,
+                        }
+                        connection.execute(
+                            """
+                            UPDATE mobile_uploads
+                            SET state = 'failed', error_json = ?, lease_owner = NULL,
+                                lease_expires_at = NULL
+                            WHERE upload_id = ?
+                            """,
+                            (self._closed_json(problem), row["upload_id"]),
+                        )
+            connection.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS mobile_upload_worker_queue
+                    ON mobile_uploads(state, commit_phase, lease_expires_at);
+                CREATE INDEX IF NOT EXISTS mobile_upload_cleanup_queue
+                    ON mobile_uploads(cleanup_pending, lease_expires_at);
                 """
             )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -738,29 +1259,243 @@ class MobileUploadRegistry:
             raise MobileUploadInvariantError("Stored upload error is invalid.")
         return value
 
+    def _processing_claim(
+        self, row: sqlite3.Row, worker_id: str
+    ) -> MobileProcessingClaim:
+        if (
+            row["lease_owner"] != worker_id
+            or not row["event_id"]
+            or not row["storage_path"]
+        ):
+            raise MobileUploadInvariantError("Claimed mobile upload is incomplete.")
+        return MobileProcessingClaim(
+            upload_id=row["upload_id"],
+            lease_owner=worker_id,
+            event_id=row["event_id"],
+            client_asset_id=row["client_asset_id"],
+            owner_user_iri=row["owner_user_iri"],
+            staging_area_id=row["staging_area_id"],
+            original_name=row["original_name"],
+            original_mime_type=row["original_mime_type"],
+            byte_length=int(row["byte_length"]),
+            checksum=row["checksum"],
+            comment=row["comment"],
+            storage_path=row["storage_path"],
+            upload_directory=self.uploads_root / row["upload_id"],
+            commit_phase=row["commit_phase"],
+            publication=(
+                self._json_object(row["publication_json"], "publication")
+                if row["publication_json"]
+                else None
+            ),
+            oldap_result=(
+                self._json_object(row["oldap_result_json"], "OLDAP result")
+                if row["oldap_result_json"]
+                else None
+            ),
+        )
+
+    def _advance_phase(
+        self,
+        claim: MobileProcessingClaim,
+        *,
+        expected: str,
+        target: str,
+        state: str,
+        assignments: Mapping[str, Any] | None = None,
+    ) -> MobileProcessingClaim:
+        allowed_columns = {
+            "verified_checksum",
+            "publication_json",
+            "oldap_result_json",
+            "error_json",
+        }
+        values = dict(assignments or {})
+        if not set(values) <= allowed_columns:
+            raise ValueError("Unsupported mobile phase assignment.")
+        with self._transaction() as connection:
+            row = self._leased_row(connection, claim)
+            if row["commit_phase"] != expected:
+                raise MobileUploadInvariantError(
+                    "Mobile commit phase changed unexpectedly."
+                )
+            now = self._now()
+            set_parts = [
+                "state = ?",
+                "commit_phase = ?",
+                "last_activity_at = ?",
+                "expires_at = ?",
+            ]
+            parameters: list[Any] = [
+                state,
+                target,
+                format_timestamp(now),
+                format_timestamp(
+                    now + timedelta(seconds=self.limits.inactivity_seconds)
+                ),
+            ]
+            for column, value in values.items():
+                set_parts.append(f"{column} = ?")
+                parameters.append(value)
+            parameters.extend([claim.upload_id, claim.lease_owner, expected])
+            changed = connection.execute(
+                f"""
+                UPDATE mobile_uploads SET {', '.join(set_parts)}
+                WHERE upload_id = ? AND lease_owner = ? AND commit_phase = ?
+                """,
+                tuple(parameters),
+            ).rowcount
+            if changed != 1:
+                raise MobileUploadInvariantError(
+                    "Mobile phase compare-and-swap failed."
+                )
+            return self._processing_claim(
+                self._row_for_id(connection, claim.upload_id), claim.lease_owner
+            )
+
+    def _leased_row(
+        self, connection: sqlite3.Connection, claim: MobileProcessingClaim
+    ) -> sqlite3.Row:
+        row = self._row_for_id(connection, claim.upload_id)
+        if (
+            row["lease_owner"] != claim.lease_owner
+            or not row["lease_expires_at"]
+            or parse_timestamp(row["lease_expires_at"]) <= self._now()
+        ):
+            raise MobileUploadInvariantError("Mobile processing lease was lost.")
+        return row
+
+    @staticmethod
+    def _closed_json(value: Mapping[str, Any]) -> str:
+        return json.dumps(
+            dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+
+    @staticmethod
+    def _json_object(value: str, label: str) -> dict[str, Any]:
+        parsed = json.loads(value)
+        if not isinstance(parsed, dict):
+            raise MobileUploadInvariantError(f"Stored {label} is invalid.")
+        return parsed
+
+    @staticmethod
+    def _failure_problem(
+        claim: MobileProcessingClaim, code: str, *, retryable: bool
+    ) -> dict[str, Any]:
+        return {
+            "type": f"https://oldap.org/problems/mobile/{code.replace('_', '-')}",
+            "title": "Mobile media processing failed",
+            "status": 503 if retryable else 422,
+            "code": code,
+            "traceId": claim.event_id,
+            "retryable": retryable,
+        }
+
+    @staticmethod
+    def _assert_publication(
+        claim: MobileProcessingClaim, value: Mapping[str, Any]
+    ) -> None:
+        required = {
+            "ownerUploadId",
+            "assetId",
+            "byteLength",
+            "checksum",
+            "derivativeNames",
+            "storagePath",
+        }
+        if set(value) != required or (
+            value.get("ownerUploadId") != claim.upload_id
+            or value.get("assetId") != claim.client_asset_id
+            or value.get("byteLength") != claim.byte_length
+            or value.get("checksum") != claim.checksum
+            or value.get("derivativeNames") != ["master.tif"]
+            or value.get("storagePath") != claim.storage_path
+        ):
+            raise MobileUploadInvariantError(
+                "Publication evidence differs from its claim."
+            )
+
+    @staticmethod
+    def _assert_oldap_result(
+        claim: MobileProcessingClaim, value: Mapping[str, Any]
+    ) -> None:
+        required = {
+            "eventId",
+            "uploadId",
+            "clientAssetId",
+            "stagingAreaId",
+            "assetId",
+            "resourceIri",
+            "checksum",
+            "committedAt",
+        }
+        if set(value) != required or (
+            value.get("eventId") != claim.event_id
+            or value.get("uploadId") != claim.upload_id
+            or value.get("clientAssetId") != claim.client_asset_id
+            or value.get("stagingAreaId") != claim.staging_area_id
+            or value.get("assetId") != claim.client_asset_id
+            or value.get("checksum") != claim.checksum
+            or not isinstance(value.get("resourceIri"), str)
+        ):
+            raise MobileUploadInvariantError("OLDAP result differs from its claim.")
+        try:
+            parse_timestamp(value["committedAt"])
+        except (TypeError, ValueError) as error:
+            raise MobileUploadInvariantError(
+                "OLDAP result timestamp is invalid."
+            ) from error
+
     def _expire_inactive(self, connection: sqlite3.Connection, now: datetime) -> None:
-        connection.execute(
+        rows = connection.execute(
             """
-            UPDATE mobile_uploads
-            SET state = 'expired'
-            WHERE state IN ('initialized', 'uploading') AND expires_at <= ?
+            SELECT * FROM mobile_uploads
+            WHERE state IN ('initialized', 'uploading', 'failed') AND expires_at <= ?
             """,
             (format_timestamp(now),),
-        )
+        ).fetchall()
+        for row in rows:
+            if self._is_safe_to_expire(row, now):
+                connection.execute(
+                    """
+                    UPDATE mobile_uploads
+                    SET state = 'expired', cleanup_pending = 1,
+                        lease_owner = NULL, lease_expires_at = NULL
+                    WHERE upload_id = ?
+                    """,
+                    (row["upload_id"],),
+                )
 
     def _expire_row(
         self, connection: sqlite3.Connection, row: sqlite3.Row, now: datetime
     ) -> sqlite3.Row:
-        if (
-            row["state"] in TRANSFER_STATES
-            and parse_timestamp(row["expires_at"]) <= now
+        if parse_timestamp(row["expires_at"]) <= now and self._is_safe_to_expire(
+            row, now
         ):
             connection.execute(
                 "UPDATE mobile_uploads SET state = 'expired' WHERE upload_id = ?",
                 (row["upload_id"],),
             )
+            connection.execute(
+                "UPDATE mobile_uploads SET cleanup_pending = 1 WHERE upload_id = ?",
+                (row["upload_id"],),
+            )
             return self._row_for_id(connection, row["upload_id"])
         return row
+
+    def _is_safe_to_expire(self, row: sqlite3.Row, now: datetime) -> bool:
+        """Return whether expiry can remove only unambiguous private work."""
+
+        if self._has_valid_lease(row, now):
+            return False
+        if row["state"] in TRANSFER_STATES:
+            return True
+        return (
+            row["state"] == "failed"
+            and row["commit_phase"] in PREPUBLICATION_PHASES
+            and (error := self._stored_error(row)) is not None
+            and error.get("retryable") is True
+        )
 
     def _require_logical_capacity(
         self,
@@ -896,7 +1631,7 @@ class MobileUploadRegistry:
     def _repair_unconfirmed_bytes(
         self, connection: sqlite3.Connection, row: sqlite3.Row
     ) -> None:
-        if row["state"] in {"cancelled", "expired"}:
+        if row["state"] in {"committed", "cancelled", "failed", "expired"}:
             return
         path = self._temp_path(row)
         expected = int(row["offset"])
@@ -1081,6 +1816,10 @@ class MobileUploadRegistry:
             row["staging_area_id"] != destination.staging_area_id
             or row["mobile_folder_id"] != destination.mobile_folder_id
             or row["default_role_id"] != destination.default_role_id
+            or (
+                row["storage_path"] is not None
+                and row["storage_path"] != destination.storage_path
+            )
         ):
             raise MobileUploadError(
                 409,
@@ -1103,6 +1842,20 @@ class MobileUploadRegistry:
             and row["lease_expires_at"]
             and parse_timestamp(row["lease_expires_at"]) > now
         )
+
+    @staticmethod
+    def _state_for_phase(phase: str) -> str:
+        if phase == "requested":
+            return "verifying"
+        if phase in {"checksum_verified", "derivatives_ready"}:
+            return "processing"
+        if phase in {"files_published", "oldap_committed", "compensating"}:
+            return "committing"
+        raise MobileUploadInvariantError(f"Unsupported mobile commit phase {phase!r}.")
+
+    @staticmethod
+    def _event_id(upload_id: str) -> str:
+        return str(uuid5(UUID(upload_id), "mobile-media-commit"))
 
     def _now(self) -> datetime:
         value = self._clock()

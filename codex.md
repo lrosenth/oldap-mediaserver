@@ -59,7 +59,8 @@
   current SIP/workspace until the parent revokes access after exit.
 - `mediaserver/oldap_client.py` wraps the OLDAP API calls used by upload and asset resolution.
 - `mediaserver/mobile_upload_domain.py`, `mobile_upload_registry.py`,
-  `mobile_staging.py`, and `mobile_upload_routes.py` implement the additive,
+  `mobile_staging.py`, `mobile_upload_routes.py`, `mobile_media_assets.py`,
+  `mobile_media_commit.py`, and `mobile_upload_worker.py` implement the additive,
   currently unrouted `/media/v1` resumable transport. A private SQLite registry
   and upload root bind each permanent `clientAssetId` to its account's immutable
   user IRI and StagingArea, persist exact offsets and idempotency receipts, and
@@ -68,11 +69,28 @@
   and inbox protection are revalidated before initialization, each accepted
   chunk, and commit acceptance. Bytes are flushed before SQLite advances;
   no-follow recovery truncates only an upload-owned unconfirmed suffix, and
-  reservations remain held until physical cancellation succeeds. Commit replay
-  is state-aware: the same stable key may restart an unleased retryable failure,
-  but cannot revive cancelled or non-retryable work. Step 11C ends
-  at durable `verifying` state; checksum/derivative processing and atomic OLDAP
-  commit remain Step 11D.
+  reservations remain held until physical cancellation or leased cleanup succeeds.
+  Commit replay is state-aware: the same stable key may restart an unleased
+  retryable failure from its last durable phase, but cannot revive cancelled or
+  non-retryable work. The separately runnable mobile worker verifies exact bytes
+  and image signatures, reuses the existing HEIF probe and derivative processor,
+  prepares and fsyncs upload-owned assets, publishes them no-replace, and calls
+  only the Step-11A internal OLDAP commit with a fresh purpose-specific service
+  JWT. Renewable leases cap processing at two jobs and make every phase
+  reclaimable. Per-upload file locks plus synchronous pre/post-effect lease
+  fencing prevent stale workers from racing replacement processing or cleanup.
+  Definitive OLDAP rejection uses a durable exact-ownership
+  compensation phase that atomically withdraws the final into private upload
+  storage before recoverable deletion; ambiguous responses retain published
+  files for identical replay. Only the closed expected OLDAP domain errors are
+  definitive; unknown transport, routing, or service-authentication responses
+  remain retryable. Retryable failures before publication expire safely after
+  inactivity, while ambiguous published work is retained for reconciliation.
+  Committed cleanup removes only the private upload directory. The registry
+  schema is version 2 and migrates queued Step-11C work to an explicit retryable
+  context-refresh state without deleting transport records or poisoning the
+  worker queue. Fully compensated uncommitted assets may be explicitly
+  cancelled and reinitialized, but are never reopened implicitly.
 - `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to Cantaloupe, `/asset/*` through Flask `forward_auth`, direct ZIP ingress to its bounded PUT handler, and only the JWT-protected retained-report GET from the internal import surface.
 - Export archive delivery uses an exclusive Caddy `handle` with an inner
   ordered `route`: the UUID is captured from the untouched public path,
@@ -166,12 +184,11 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   tagged.
 
 ## Roadmap / Next Steps
-- Mobile synchronization Step 11C is complete in the Flask application but is
-  intentionally absent from Caddy and Ansible routing. Step 11D must add bounded
-  verification/processing workers, exact checksum validation, derivative
-  generation, the purpose-authenticated atomic OLDAP commit, restart recovery,
-  and terminal cleanup. Step 11E must provide the persistent production mount,
-  routing, operational limits, and rollout before `/media/v1` is exposed.
+- Mobile synchronization Steps 11C and 11D are complete in the mediahelper code
+  and runtime image but intentionally absent from Caddy, Compose worker startup,
+  and Ansible deployment. Step 11E must provision the distinct mobile-media
+  service secret, persistent production mount, worker activation, routing,
+  operational limits, and controlled rollout before `/media/v1` is exposed.
 - Project-neutral ZIP export Phase 1 is implemented and locally accepted; its
   contracts live in `docs/zip-export/v1`.
   oldap-api will own jobs, authorization, projected manifests, leases,

@@ -76,6 +76,7 @@ def valid_responses(*, mobile_roles: dict[str, str] | None = None) -> list[Respo
                 "rdf:type": ["fasnacht:StagingArea"],
                 "fasnacht:depositingOrganisation": ORGANISATION,
                 "shared:stagingDefaultRole": ROLE,
+                "shared:mediaPath": "bmg",
             },
         ),
         Response(
@@ -113,6 +114,7 @@ def test_verifier_resolves_only_current_exact_read_only_mobile_inbox() -> None:
     assert result.staging_area_id == AREA
     assert result.mobile_folder_id == MOBILE
     assert result.default_role_id == ROLE
+    assert result.storage_path == "fasnacht/image/bmg"
     assert len(session.calls) == 4
     assert all(
         call[2]["headers"]["Authorization"] == "Bearer access-token"

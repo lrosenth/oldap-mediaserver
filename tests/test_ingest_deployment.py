@@ -72,7 +72,11 @@ def test_image_contains_ingest_modules_and_caddy_has_bounded_route() -> None:
         "export_service.py",
         "export_sources.py",
         "export_worker.py",
+        "mobile_media_assets.py",
+        "mobile_media_commit.py",
+        "mobile_upload_worker.py",
     ):
+        assert f"COPY mediaserver/{module} /app/{module}" in dockerfile
         assert f"!mediaserver/{module}" in dockerignore
     assert "COPY mediaserver/ingest_callback.py /app/ingest_callback.py" in dockerfile
     assert "COPY mediaserver/quarantine.py /app/quarantine.py" in dockerfile
@@ -105,6 +109,7 @@ def test_image_contains_ingest_modules_and_caddy_has_bounded_route() -> None:
         assert "@export_source_method not method POST" in proxy_config
         assert "max_size 10MB" in proxy_config
         assert "path /internal/*" not in proxy_config
+        assert "/media/v1" not in proxy_config
         # An exclusive handle must be sorted with the other handled routes,
         # before the final catch-all. A route directive would be unreachable.
         assert "handle @export_archive" in proxy_config
@@ -112,10 +117,7 @@ def test_image_contains_ingest_modules_and_caddy_has_bounded_route() -> None:
         assert "handle @export_archive {\n" in proxy_config
         assert "route {" in proxy_config
         assert "(?P<export_id>" in proxy_config
-        assert (
-            "uri /auth/exports/{re.export_archive.export_id}/archive"
-            in proxy_config
-        )
+        assert "uri /auth/exports/{re.export_archive.export_id}/archive" in proxy_config
         assert "uri /auth{http.request.uri}" not in proxy_config
 
 
