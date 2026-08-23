@@ -44,6 +44,7 @@ run:
 	set -a; . ../mediaserver.env; . ../mediahelper-access.env; set +a; \
 	OLDAP_API="http://localhost:8000" \
 	UPLOADER_IMGDIR="../imageserver/test-images" \
+	OLDAP_MOBILE_UPLOAD_ROOT="$(ROOT_DIR)/mobile-uploads" \
 	gunicorn -b 0.0.0.0:8080 app:app
 
 

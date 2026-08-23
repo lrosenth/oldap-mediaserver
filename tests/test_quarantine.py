@@ -62,6 +62,7 @@ def _token(import_id: str = IMPORT_ID, **overrides: object) -> str:
 def ingest_app(monkeypatch, tmp_path: Path):
     """Load mediahelper against isolated delivery and ingest roots."""
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path / "images"))
+    monkeypatch.setenv("OLDAP_MOBILE_UPLOAD_ROOT", str(tmp_path / "mobile-uploads"))
     monkeypatch.setenv("OLDAP_INGEST_ROOT", str(tmp_path / "ingest"))
     monkeypatch.setenv("OLDAP_IMPORT_UPLOAD_JWT_SECRET", UPLOAD_SECRET)
     monkeypatch.setenv("OLDAP_ACCESS_JWT_SECRET", ACCESS_SECRET)

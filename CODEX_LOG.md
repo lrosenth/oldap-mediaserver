@@ -1,5 +1,17 @@
 # CODEX_LOG
 
+### Update 2026-08-23 14:18
+- Decisions: Use immutable OLDAP user IRIs as mobile-upload ownership and idempotency scope; treat login user IDs as mutable audit context. Release temporary reservations only after confirmed upload-owned filesystem removal and fail closed on unsafe storage modes or paths.
+- Implementation: Corrected UUID-collision rollback ownership, cancellation failure handling, retained failed-upload reservations, no-follow regular-file repair/truncation, durable missing-data failure recording, canonical absolute-root and managed-entry validation, bounded numeric transport headers, state-aware same-key commit replay, thread-local OLDAP HTTP sessions, and the local Make root. Added focused rename, collision, cancellation, reservation, symlink, permission-mode, commit-retry, failure-persistence, header-bound, thread-concurrency, and disabled-routing regressions.
+- Open: Step 11D remains responsible for checksum/rendition processing, worker leases, atomic OLDAP commit orchestration, recovery, and expiry cleanup; Step 11E remains responsible for persistent deployment storage and public routing.
+- Risks/Assumptions: `/media/v1` remains absent from Caddy and Ansible routes. The untracked `imageserver/test-images/` fixtures remain unrelated and untouched.
+
+### Update 2026-08-22 17:32
+- Decisions: Keep mobile media upload additive under `/media/v1`, preserve `/upload`, revalidate current OLDAP authorization and the protected `top/Mobile` inbox before byte-writing operations, and leave all public routing disabled until Step 11E.
+- Implementation: Added closed versioned HTTP contracts for initialization, owner-only status, exact-offset chunks, commit acceptance, and cancellation; added a private SQLite/file registry with permanent `clientAssetId` ownership, idempotency receipts, quotas, expiry, locks, durable offsets, crash repair, and future worker leases; packaged the modules and added focused protocol, security, concurrency, capacity, restart, and compatibility tests.
+- Open: Step 11D must verify checksums, create derivatives, call the atomic OLDAP commit, recover leased work, and perform terminal cleanup. Step 11E must provision persistent storage and explicitly route/deploy `/media/v1`.
+- Risks/Assumptions: A Step 11C commit request intentionally stops in `verifying`; no production client can reach the routes through Caddy yet. The existing untracked `imageserver/test-images/` directory was not modified.
+
 ### Update 2026-08-19 22:52
 - Decisions: Fail closed when libvips omits HEIF image-count evidence and apply the same single-image policy to direct uploads and ZIP imports.
 - Implementation: Added a shared strict HEIF page-count probe, rejected multi-image direct uploads before derivative creation, added missing-metadata and multi-image regression tests, and completed a two-pass final review.

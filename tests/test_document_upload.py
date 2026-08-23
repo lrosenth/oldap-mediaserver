@@ -27,6 +27,7 @@ MEDIA_SECRET = "mediaserver-test-media-secret-at-least-32-bytes"
 def media_app(monkeypatch, tmp_path):
     """Import the Flask app with a temporary media root and mocked image runtime."""
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path))
+    monkeypatch.setenv("OLDAP_MOBILE_UPLOAD_ROOT", str(tmp_path / "mobile-uploads"))
     monkeypatch.setenv("OLDAP_ACCESS_JWT_SECRET", ACCESS_SECRET)
     monkeypatch.setenv("OLDAP_MEDIA_JWT_SECRET", MEDIA_SECRET)
     monkeypatch.setenv("MEDIA_BASE_URL", "http://media.example/")

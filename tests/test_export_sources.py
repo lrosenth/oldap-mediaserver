@@ -179,6 +179,7 @@ def export_app(monkeypatch, tmp_path: Path):
     """Import Flask with isolated roots and resolver authentication."""
 
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path))
+    monkeypatch.setenv("OLDAP_MOBILE_UPLOAD_ROOT", str(tmp_path / "mobile-uploads"))
     monkeypatch.setenv("OLDAP_INGEST_ROOT", str(tmp_path / "ingest"))
     monkeypatch.setenv("OLDAP_IMPORT_RECORDS_ROOT", str(tmp_path / "records"))
     monkeypatch.setenv("OLDAP_EXPORT_SERVICE_JWT_SECRET", EXPORT_SECRET)

@@ -86,6 +86,10 @@ COPY mediaserver/ingest_service.py /app/ingest_service.py
 COPY mediaserver/ingest_worker.py /app/ingest_worker.py
 COPY mediaserver/parser_sandbox.py /app/parser_sandbox.py
 COPY mediaserver/media.py /app/media.py
+COPY mediaserver/mobile_staging.py /app/mobile_staging.py
+COPY mediaserver/mobile_upload_domain.py /app/mobile_upload_domain.py
+COPY mediaserver/mobile_upload_registry.py /app/mobile_upload_registry.py
+COPY mediaserver/mobile_upload_routes.py /app/mobile_upload_routes.py
 COPY mediaserver/oldap_client.py /app/oldap_client.py
 COPY mediaserver/quarantine.py /app/quarantine.py
 COPY mediaserver/storage.py /app/storage.py

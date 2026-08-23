@@ -106,6 +106,49 @@ class IngestWorkerResources:
     pid_limit: int = 128
 
 
+@dataclass(frozen=True, slots=True)
+class MobileUploadLimits:
+    """Deployment-tunable limits bounded by the reviewed mobile v1 policy."""
+
+    max_original_bytes: int = 100 * 1_024**2
+    chunk_bytes: int = 4 * 1_024**2
+    inactivity_seconds: int = 7 * 24 * 60 * 60
+    lease_seconds: int = 5 * 60
+    max_active_per_user: int = 20
+    max_active_per_staging_area: int = 100
+    max_reserved_bytes_per_user: int = 2 * 1_024**3
+    max_reserved_bytes_per_staging_area: int = 20 * 1_024**3
+    max_processing_jobs: int = 2
+
+    @classmethod
+    def from_environment(cls) -> "MobileUploadLimits":
+        """Return reviewed defaults tightened, but never broadened, by operators."""
+
+        defaults = cls()
+        values = {
+            field: positive_environment_integer(environment, getattr(defaults, field))
+            for field, environment in {
+                "max_original_bytes": "OLDAP_MOBILE_MAX_ORIGINAL_BYTES",
+                "chunk_bytes": "OLDAP_MOBILE_CHUNK_BYTES",
+                "inactivity_seconds": "OLDAP_MOBILE_INACTIVITY_SECONDS",
+                "lease_seconds": "OLDAP_MOBILE_LEASE_SECONDS",
+                "max_active_per_user": "OLDAP_MOBILE_MAX_ACTIVE_PER_USER",
+                "max_active_per_staging_area": "OLDAP_MOBILE_MAX_ACTIVE_PER_STAGING_AREA",
+                "max_reserved_bytes_per_user": "OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_USER",
+                "max_reserved_bytes_per_staging_area": "OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_STAGING_AREA",
+                "max_processing_jobs": "OLDAP_MOBILE_MAX_PROCESSING_JOBS",
+            }.items()
+        }
+        for field, value in values.items():
+            if value > getattr(defaults, field):
+                raise ValueError(
+                    f"{field} may not exceed the reviewed mobile v1 ceiling."
+                )
+        if values["chunk_bytes"] != defaults.chunk_bytes:
+            raise ValueError("OLDAP_MOBILE_CHUNK_BYTES is fixed at 4 MiB for v1.")
+        return cls(**values)
+
+
 def parse_csv(value: str) -> tuple[str, ...]:
     """Return non-empty, whitespace-trimmed values from a CSV setting."""
 
@@ -132,6 +175,15 @@ def non_negative_environment_integer(name: str, default: int = 0) -> int:
     return value
 
 
+def positive_environment_integer(name: str, default: int) -> int:
+    """Parse one positive integer setting without accepting units."""
+
+    value = non_negative_environment_integer(name, default)
+    if value == 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class MediahelperSettings:
     """Runtime configuration shared by mediahelper application components."""
@@ -140,11 +192,13 @@ class MediahelperSettings:
     ingest_root: Path
     import_records_root: Path
     export_root: Path
+    mobile_upload_root: Path
     iiif_base_url: str
     media_base_url: str
     oldap_api_url: str
     cors_origins: tuple[str, ...]
     storage_absolute_reserve_bytes: int
+    mobile_upload_limits: MobileUploadLimits
 
     @classmethod
     def from_environment(cls) -> "MediahelperSettings":
@@ -164,6 +218,11 @@ class MediahelperSettings:
             export_root=Path(
                 os.environ.get("OLDAP_EXPORT_ROOT", "/data/exports").strip()
             ),
+            mobile_upload_root=Path(
+                os.environ.get(
+                    "OLDAP_MOBILE_UPLOAD_ROOT", "/data/mobile-uploads"
+                ).strip()
+            ),
             iiif_base_url=normalized_base_url(
                 os.environ.get("IIIF_BASE_URL", "http://localhost:8088/iiif/3/")
             ),
@@ -177,4 +236,5 @@ class MediahelperSettings:
             storage_absolute_reserve_bytes=non_negative_environment_integer(
                 "OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES"
             ),
+            mobile_upload_limits=MobileUploadLimits.from_environment(),
         )

@@ -340,6 +340,7 @@ def test_flask_export_auth_returns_only_fixed_finalized_archive(monkeypatch, tmp
         algorithm="HS256",
     )
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path / "media"))
+    monkeypatch.setenv("OLDAP_MOBILE_UPLOAD_ROOT", str(tmp_path / "mobile-uploads"))
     monkeypatch.setenv("OLDAP_INGEST_ROOT", str(tmp_path / "ingest"))
     monkeypatch.setenv("OLDAP_IMPORT_RECORDS_ROOT", str(tmp_path / "records"))
     monkeypatch.setenv("OLDAP_EXPORT_ROOT", str(exports))

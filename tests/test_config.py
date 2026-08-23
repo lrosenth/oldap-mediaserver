@@ -16,6 +16,7 @@ if str(MEDIAHELPER_SOURCE) not in sys.path:
 from config import (  # noqa: E402
     IngestWorkerResources,
     MediahelperSettings,
+    MobileUploadLimits,
     ZipImportLimits,
     normalized_base_url,
     non_negative_environment_integer,
@@ -31,9 +32,11 @@ def test_settings_parse_environment_without_touching_storage(
     media_root = tmp_path / "not-created"
     ingest_root = tmp_path / "ingest-not-created"
     records_root = tmp_path / "records-not-created"
+    mobile_root = tmp_path / "mobile-not-created"
     monkeypatch.setenv("UPLOADER_IMGDIR", str(media_root))
     monkeypatch.setenv("OLDAP_INGEST_ROOT", str(ingest_root))
     monkeypatch.setenv("OLDAP_IMPORT_RECORDS_ROOT", str(records_root))
+    monkeypatch.setenv("OLDAP_MOBILE_UPLOAD_ROOT", str(mobile_root))
     monkeypatch.setenv("IIIF_BASE_URL", "https://media.example/iiif/3")
     monkeypatch.setenv("MEDIA_BASE_URL", "https://media.example")
     monkeypatch.setenv("OLDAP_API_URL", " https://api.example ")
@@ -44,14 +47,17 @@ def test_settings_parse_environment_without_touching_storage(
     assert settings.media_root == media_root
     assert settings.ingest_root == ingest_root
     assert settings.import_records_root == records_root
+    assert settings.mobile_upload_root == mobile_root
     assert settings.iiif_base_url == "https://media.example/iiif/3/"
     assert settings.media_base_url == "https://media.example/"
     assert settings.oldap_api_url == "https://api.example"
     assert settings.cors_origins == ("https://one.example", "https://two.example")
     assert settings.storage_absolute_reserve_bytes == 0
+    assert settings.mobile_upload_limits == MobileUploadLimits()
     assert not media_root.exists()
     assert not ingest_root.exists()
     assert not records_root.exists()
+    assert not mobile_root.exists()
 
 
 def test_configuration_value_helpers_are_deterministic() -> None:
@@ -102,3 +108,19 @@ def test_absolute_storage_reserve_is_a_non_negative_byte_count(monkeypatch) -> N
     monkeypatch.setenv("OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES", "-1")
     with pytest.raises(ValueError, match="non-negative integer"):
         MediahelperSettings.from_environment()
+
+
+def test_mobile_limits_may_only_tighten_reviewed_v1_defaults(monkeypatch) -> None:
+    """Deployment variables cannot silently broaden the reviewed protocol envelope."""
+
+    monkeypatch.setenv("OLDAP_MOBILE_MAX_ACTIVE_PER_USER", "10")
+    assert MobileUploadLimits.from_environment().max_active_per_user == 10
+
+    monkeypatch.setenv("OLDAP_MOBILE_MAX_ACTIVE_PER_USER", "21")
+    with pytest.raises(ValueError, match="may not exceed"):
+        MobileUploadLimits.from_environment()
+
+    monkeypatch.setenv("OLDAP_MOBILE_MAX_ACTIVE_PER_USER", "20")
+    monkeypatch.setenv("OLDAP_MOBILE_CHUNK_BYTES", "1024")
+    with pytest.raises(ValueError, match="fixed at 4 MiB"):
+        MobileUploadLimits.from_environment()

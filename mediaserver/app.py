@@ -93,6 +93,10 @@ from storage import (
     validate_asset_identifier,
     validate_asset_path_segment,
 )
+from mobile_staging import OldapMobileStagingVerifier
+from mobile_upload_domain import MobileAccessIdentity, MobileUploadError
+from mobile_upload_registry import MobileUploadRegistry
+from mobile_upload_routes import register_mobile_upload_routes
 
 SETTINGS = MediahelperSettings.from_environment()
 iiif_base_url = SETTINGS.iiif_base_url
@@ -108,6 +112,11 @@ IMPORT_RECORD_STORE = ImportRecordStore(SETTINGS.import_records_root)
 EXPORT_ARTIFACT_STORE = ExportArtifactStore(
     SETTINGS.export_root,
     IMAGE_ROOT,
+    capacity_guard=CAPACITY_GUARD,
+)
+MOBILE_UPLOAD_REGISTRY = MobileUploadRegistry(
+    SETTINGS.mobile_upload_root,
+    SETTINGS.mobile_upload_limits,
     capacity_guard=CAPACITY_GUARD,
 )
 
@@ -182,6 +191,10 @@ def create_app() -> Flask:
             r"/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
             r"/auth/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
             r"/health": {"origins": cors_origins},
+            r"/media/v1/*": {
+                "origins": cors_origins,
+                "methods": ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+            },
             r"/imports/*": {
                 "origins": cors_origins,
                 "methods": ["PUT", "OPTIONS"],
@@ -192,8 +205,23 @@ def create_app() -> Flask:
             },
         },
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Upload-Request-Id"],
-        expose_headers=["Content-Disposition", "Location"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "Upload-Length",
+            "Upload-Offset",
+            "X-App-Version",
+            "X-Device-Id",
+            "X-Platform",
+            "X-Upload-Request-Id",
+        ],
+        expose_headers=[
+            "Content-Disposition",
+            "Location",
+            "Retry-After",
+            "Upload-Offset",
+        ],
         supports_credentials=False,
     )
 
@@ -205,6 +233,7 @@ def create_app() -> Flask:
     logger.info(f"Using private ingest root: {INGEST_ROOT}")
     logger.info(f"Using retained import records root: {SETTINGS.import_records_root}")
     logger.info(f"Using private export root: {SETTINGS.export_root}")
+    logger.info(f"Using private mobile upload root: {SETTINGS.mobile_upload_root}")
     logger.info(f"Using IIIF base URL: {iiif_base_url}")
     logger.info(f"Using Media base URL: {media_base_url}")
     logger.info(f"Using Oldap API URL: {oldap_api_url}")
@@ -244,6 +273,38 @@ def create_app() -> Flask:
             abort(503, description="Authentication service unavailable")
         except OldapError:
             abort(401, description="Invalid or expired access token")
+
+    def authenticate_mobile_access_token(token: str) -> MobileAccessIdentity:
+        """Validate a mobile access token without exposing legacy HTML errors."""
+
+        try:
+            authorization = token_codec.decode_access_token(token)
+        except OldapErrorConfiguration as error:
+            app.logger.error(
+                "Mobile access-token verification is not configured: %s", error
+            )
+            raise MobileUploadError(
+                503,
+                "authentication_unavailable",
+                "Authentication service is temporarily unavailable",
+                retryable=True,
+            ) from error
+        except OldapError as error:
+            raise MobileUploadError(
+                401,
+                "authentication_invalid",
+                "Access token is invalid or expired",
+            ) from error
+        return MobileAccessIdentity(
+            user_id=str(authorization.userId), user_iri=str(authorization.userIri)
+        )
+
+    register_mobile_upload_routes(
+        app,
+        MOBILE_UPLOAD_REGISTRY,
+        authenticate_mobile_access_token,
+        OldapMobileStagingVerifier(oldap_api_url),
+    )
 
     def decode_optional_query_token() -> Optional[dict]:
         """Decode optional JWT from `?token=` (HS256). Returns claims dict or None."""

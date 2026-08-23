@@ -29,6 +29,10 @@
 !mediaserver/ingest_worker.py
 !mediaserver/parser_sandbox.py
 !mediaserver/media.py
+!mediaserver/mobile_staging.py
+!mediaserver/mobile_upload_domain.py
+!mediaserver/mobile_upload_registry.py
+!mediaserver/mobile_upload_routes.py
 !mediaserver/oldap_client.py
 !mediaserver/quarantine.py
 !mediaserver/storage.py

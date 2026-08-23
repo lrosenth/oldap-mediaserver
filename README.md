@@ -227,6 +227,34 @@ curl -i -X OPTIONS \
   "http://localhost:8088/asset/<assetId>/original?token=<jwt>"
 ```
 
+## Mobile resumable upload transport
+
+Step 11C adds an additive Flask transport under `/media/v1` for durable mobile
+upload initialization, owner-only status lookup, exact-offset 4 MiB chunks,
+asynchronous commit requests, and cancellation. It does not change the legacy
+`/upload` route. Caddy and Ansible deliberately do not expose `/media/v1` yet;
+production routing remains disabled until the storage and rollout work in Step
+11E.
+
+The transport stores private temporary originals and a SQLite registry below
+`OLDAP_MOBILE_UPLOAD_ROOT` (default `/data/mobile-uploads`). The root must be a
+dedicated absolute path and is kept private with fail-closed filesystem modes.
+Each permanent `clientAssetId` is bound to its account's immutable user IRI and
+StagingArea; changing the mutable login user ID does not change ownership.
+Every byte-writing operation revalidates the current OLDAP permission and exact
+protected `top/Mobile` destination. Offsets advance only after file data is
+flushed; restart repair truncates any unconfirmed suffix without following
+replacement symlinks. Cancellation releases its reservation only after its
+private temporary directory has actually been removed. A commit request
+currently stops durably in `verifying`: checksum validation, derivative
+creation, the atomic OLDAP commit, recovery workers, and final cleanup belong
+to Step 11D.
+
+The reviewed v1 ceilings are 100 MiB per original, 20 active uploads and 2 GiB
+reserved per user, 100 active uploads and 20 GiB reserved per StagingArea, and
+seven days of transfer inactivity. Matching `OLDAP_MOBILE_*` environment values
+may tighten these limits but cannot broaden them; the 4 MiB chunk size is fixed.
+
 ## Local development notes
 
 Create the two ignored environment files before starting the stack:
@@ -250,6 +278,11 @@ read `mediahelper-access.env`. Recreate the worker with
 Generate independent values with `openssl rand -hex 32`; never reuse a key for
 another token purpose. Docker Compose gives Cantaloupe only `mediaserver.env`,
 while the Flask helper receives both files.
+
+`make -C mediaserver run` sets `OLDAP_MOBILE_UPLOAD_ROOT` to the ignored local
+`mobile-uploads/` directory. Other direct starts must provide their own
+dedicated absolute root instead of relying on the container-oriented `/data`
+default.
 
 Direct ZIP import uses `PUT /imports/{importId}/sip` with `application/zip`, a
 Bearer upload capability, an exact `Content-Length`, and a UUID

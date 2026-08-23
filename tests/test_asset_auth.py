@@ -17,6 +17,7 @@ MEDIA_SECRET = "mediaserver-test-media-secret-at-least-32-bytes"
 def media_app(monkeypatch, tmp_path):
     """Import the Flask app with a temporary media root and mocked image runtime."""
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path))
+    monkeypatch.setenv("OLDAP_MOBILE_UPLOAD_ROOT", str(tmp_path / "mobile-uploads"))
     monkeypatch.setenv("OLDAP_ACCESS_JWT_SECRET", ACCESS_SECRET)
     monkeypatch.setenv("OLDAP_MEDIA_JWT_SECRET", MEDIA_SECRET)
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,https://public.example")
@@ -83,6 +84,29 @@ def test_status_reports_mediahelper_component_version(media_app):
         "version": version_path.read_text(encoding="utf-8").strip(),
         "versionSource": f"file:{version_path}",
     }
+
+
+def test_mobile_routes_are_additive_and_reject_media_capabilities(media_app):
+    """The new transport is registered without weakening token-purpose separation."""
+
+    module, client, _ = media_app
+    rules: dict[str, set[str]] = {}
+    for rule in module.app.url_map.iter_rules():
+        rules.setdefault(rule.rule, set()).update(rule.methods or ())
+    rejected = client.post(
+        "/media/v1/uploads",
+        headers={"Authorization": f"Bearer {_asset_token('asset-iiif')}"},
+    )
+
+    assert "POST" in rules["/upload"]
+    assert "POST" in rules["/media/v1/uploads"]
+    assert "GET" in rules["/media/v1/uploads/<upload_id>"]
+    assert "PATCH" in rules["/media/v1/uploads/<upload_id>"]
+    assert "DELETE" in rules["/media/v1/uploads/<upload_id>"]
+    assert "POST" in rules["/media/v1/uploads/<upload_id>/commit"]
+    assert rejected.status_code == 401
+    assert rejected.content_type == "application/problem+json"
+    assert rejected.json["code"] == "authentication_invalid"
 
 
 def test_iiif_original_download_resolves_as_attachment(media_app):

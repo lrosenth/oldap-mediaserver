@@ -58,6 +58,21 @@
   deny network syscalls through inherited libseccomp, and access only their
   current SIP/workspace until the parent revokes access after exit.
 - `mediaserver/oldap_client.py` wraps the OLDAP API calls used by upload and asset resolution.
+- `mediaserver/mobile_upload_domain.py`, `mobile_upload_registry.py`,
+  `mobile_staging.py`, and `mobile_upload_routes.py` implement the additive,
+  currently unrouted `/media/v1` resumable transport. A private SQLite registry
+  and upload root bind each permanent `clientAssetId` to its account's immutable
+  user IRI and StagingArea, persist exact offsets and idempotency receipts, and
+  retain immutable server-resolved `top/Mobile` facts. The mutable login user ID
+  remains audit context and is not an ownership key. Current OLDAP permission
+  and inbox protection are revalidated before initialization, each accepted
+  chunk, and commit acceptance. Bytes are flushed before SQLite advances;
+  no-follow recovery truncates only an upload-owned unconfirmed suffix, and
+  reservations remain held until physical cancellation succeeds. Commit replay
+  is state-aware: the same stable key may restart an unleased retryable failure,
+  but cannot revive cancelled or non-retryable work. Step 11C ends
+  at durable `verifying` state; checksum/derivative processing and atomic OLDAP
+  commit remain Step 11D.
 - `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to Cantaloupe, `/asset/*` through Flask `forward_auth`, direct ZIP ingress to its bounded PUT handler, and only the JWT-protected retained-report GET from the internal import surface.
 - Export archive delivery uses an exclusive Caddy `handle` with an inner
   ordered `route`: the UUID is captured from the untouched public path,
@@ -151,6 +166,12 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   tagged.
 
 ## Roadmap / Next Steps
+- Mobile synchronization Step 11C is complete in the Flask application but is
+  intentionally absent from Caddy and Ansible routing. Step 11D must add bounded
+  verification/processing workers, exact checksum validation, derivative
+  generation, the purpose-authenticated atomic OLDAP commit, restart recovery,
+  and terminal cleanup. Step 11E must provide the persistent production mount,
+  routing, operational limits, and rollout before `/media/v1` is exposed.
 - Project-neutral ZIP export Phase 1 is implemented and locally accepted; its
   contracts live in `docs/zip-export/v1`.
   oldap-api will own jobs, authorization, projected manifests, leases,

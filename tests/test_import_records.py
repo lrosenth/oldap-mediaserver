@@ -163,6 +163,7 @@ def test_flask_internal_record_route_returns_exact_hashed_bytes(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("UPLOADER_IMGDIR", str(tmp_path / "images"))
+    monkeypatch.setenv("OLDAP_MOBILE_UPLOAD_ROOT", str(tmp_path / "mobile-uploads"))
     monkeypatch.setenv("OLDAP_INGEST_ROOT", str(tmp_path / "ingest"))
     monkeypatch.setenv("OLDAP_IMPORT_RECORDS_ROOT", str(tmp_path / "records"))
     monkeypatch.setenv("OLDAP_IMPORT_RECORDS_JWT_SECRET", RECORD_SECRET)
