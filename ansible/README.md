@@ -148,6 +148,19 @@ separate from the API refresh-cookie origin policy: browser PDF rendering and
 other direct media reads require CORS even though media authorization does not
 use the API refresh cookie.
 
+Both known deployment targets enable the additive `/media/v1` transport for
+their next explicit deployment. No deployment is performed by the Step-11E
+code change itself. Before that later rollout, the shared encrypted Vault must
+contain a distinct `oldap_mobile_media_service_jwt_secret`, and the same value
+must be supplied to the oldap-api runtime as
+`OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET`. The playbook fails before changing the
+host when the media feature is enabled and that value is absent, too short, or
+reused for another token purpose. An explicit rollback does not require a
+not-yet-provisioned mobile-media secret because it starts neither the route nor
+the worker. The API runtime also requires its configured
+`OLDAP_MOBILE_MEDIA_SERVICE_USER` and `OLDAP_MOBILE_MEDIA_SERVICE_PASSWORD`;
+those credentials remain API-owned and are never passed to the media worker.
+
 `host_vars/dhlab-iii.dhlab.unibas.ch.yml` enables the ZIP export worker for
 production. The shared encrypted Vault must therefore contain the distinct
 export-service/source-resolver and download-capability JWT secrets plus the
@@ -231,6 +244,24 @@ profiled ingest worker. In particular, routine backup should exclude the
 temporary ingest root where university tooling supports it, while final media,
 retained import records, and matching GraphDB state are critical restore data.
 
+### Mobile-upload durable state
+
+The private `media_mobile_upload_root` defaults to
+`/data/oldap-mobile-uploads` on the dedicated media filesystem. It contains the
+SQLite protocol registry, accepted originals, temporary renditions, ownership
+evidence, and recoverable processing state. Only mediahelper and the dedicated
+mobile worker mount it read-write; Caddy, Cantaloupe, and the ZIP workers do not
+mount it. Deployment rejects a symlinked root and compares canonical paths so
+the private root cannot alias, contain, or sit below any delivery, ingest,
+record, or export root.
+
+Accepted uploads must survive container and host restarts. Include this root in
+the operational backup policy until all contained work is terminal and cleaned
+up. A filesystem snapshot must be crash-consistent across the registry and its
+upload directories; pause the mediahelper and mobile worker when the snapshot
+technology cannot provide an atomic filesystem snapshot. Final media remains
+backed up independently under `media_root` together with matching GraphDB state.
+
 ## Optional flags
 - Deploy or roll back to a specific imageserver image:
 
@@ -270,16 +301,19 @@ make deploy-test ANSIBLE_ARGS='-e rollback=true'
 
 ## Authentication secrets
 
-The media deployment requires two independent signing keys:
+The media deployment uses independent signing keys for each token purpose,
+including:
 
 - `oldap_access_jwt_secret` verifies API Bearer tokens on `/upload`.
 - `oldap_media_jwt_secret` verifies `typ=media` capabilities on `/asset` and
   IIIF requests.
+- `oldap_mobile_media_service_jwt_secret` signs only the short-lived
+  media-to-OLDAP commit JWT used by the isolated mobile worker.
 
-Both values must exactly match the corresponding `OLDAP_ACCESS_JWT_SECRET` and
-`OLDAP_MEDIA_JWT_SECRET` values deployed to `oldap-api`, and each must contain
-at least 32 bytes. They must not equal one another. No secret is stored in
-`group_vars/all.yml` or committed to Git.
+Each value must exactly match its corresponding consumer and contain at least
+32 bytes. The mobile-media value must also be configured in oldap-api; the
+media Ansible playbook does not deploy the API. All token-purpose keys must be
+distinct. No secret is stored in `group_vars/all.yml` or committed to Git.
 
 The repository-root Makefile defaults to the shared encrypted
 `$HOME/ProgDev/OLDAP/auth/auth.vault.yml`, passes it as `auth_secrets_file`, and
@@ -299,8 +333,10 @@ make deploy-production \
   ANSIBLE_VAULT_ARGS='--vault-id production@prompt'
 ```
 
-The playbook validates both keys before changing the host. It renders a shared
+The playbook validates all required keys before changing the host. It renders a shared
 root-only `mediaserver.env` containing the media key and a separate root-only
 `mediahelper-access.env` containing the access key. Only the Flask media-helper
 container receives the access-key file; Cantaloupe receives only the media-key
-environment.
+environment. The isolated mobile worker receives a third root-only
+`mobile-media-worker.env` containing only its purpose-specific key and
+non-secret runtime limits.

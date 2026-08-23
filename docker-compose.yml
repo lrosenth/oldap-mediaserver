@@ -13,12 +13,23 @@ services:
       - OLDAP_IMPORT_CALLBACK_RECONCILE_SECONDS=${OLDAP_IMPORT_CALLBACK_RECONCILE_SECONDS:-60}
       - OLDAP_INGEST_PART_MAX_AGE_SECONDS=${OLDAP_INGEST_PART_MAX_AGE_SECONDS:-86400}
       - OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES=${OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES:-0}
+      - OLDAP_MOBILE_UPLOAD_ROOT=/data/mobile-uploads
+      - OLDAP_MOBILE_MAX_ORIGINAL_BYTES=${OLDAP_MOBILE_MAX_ORIGINAL_BYTES:-104857600}
+      - OLDAP_MOBILE_CHUNK_BYTES=${OLDAP_MOBILE_CHUNK_BYTES:-4194304}
+      - OLDAP_MOBILE_INACTIVITY_SECONDS=${OLDAP_MOBILE_INACTIVITY_SECONDS:-604800}
+      - OLDAP_MOBILE_LEASE_SECONDS=${OLDAP_MOBILE_LEASE_SECONDS:-300}
+      - OLDAP_MOBILE_MAX_ACTIVE_PER_USER=${OLDAP_MOBILE_MAX_ACTIVE_PER_USER:-20}
+      - OLDAP_MOBILE_MAX_ACTIVE_PER_STAGING_AREA=${OLDAP_MOBILE_MAX_ACTIVE_PER_STAGING_AREA:-100}
+      - OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_USER=${OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_USER:-2147483648}
+      - OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_STAGING_AREA=${OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_STAGING_AREA:-21474836480}
+      - OLDAP_MOBILE_MAX_PROCESSING_JOBS=${OLDAP_MOBILE_MAX_PROCESSING_JOBS:-2}
 
     volumes:
       - ${MEDIA_DATA_HOST:-./data}:/data/images
       - ${MEDIA_INGEST_HOST:-./ingest}:/data/ingest
       - ${MEDIA_IMPORT_RECORDS_HOST:-./import-records}:/data/import-records:ro
       - ${MEDIA_EXPORT_HOST:-./exports}:/data/exports:ro
+      - ${MEDIA_MOBILE_UPLOAD_HOST:-./mobile-uploads}:/data/mobile-uploads
     expose:
       - "8000"
     # Needed on Linux so host.docker.internal works
@@ -38,6 +49,46 @@ services:
        "--error-logfile", "-",
        "--log-level", "${GUNICORN_LOG_LEVEL:-info}",
        "app:app"]
+
+  # Additive mobile commit/recovery worker; start only through its explicit profile.
+  mobile-media-worker:
+    profiles: ["mobile-media"]
+    image: lrosenth/oldap-mediahelper:${OLDAP_MEDIAHELPER_TAG:-latest}
+    container_name: oldap-mobile-media-worker
+    environment:
+      OLDAP_API_URL: ${OLDAP_API_URL:-http://host.docker.internal:8000}
+      OLDAP_JWT_ISSUER: ${OLDAP_JWT_ISSUER:-https://oldap.org}
+      OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET: ${OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET:-}
+      OLDAP_MOBILE_UPLOAD_ROOT: /data/mobile-uploads
+      UPLOADER_IMGDIR: /data/images
+      OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES: ${OLDAP_STORAGE_ABSOLUTE_RESERVE_BYTES:-0}
+      OLDAP_MOBILE_MAX_ORIGINAL_BYTES: ${OLDAP_MOBILE_MAX_ORIGINAL_BYTES:-104857600}
+      OLDAP_MOBILE_CHUNK_BYTES: ${OLDAP_MOBILE_CHUNK_BYTES:-4194304}
+      OLDAP_MOBILE_INACTIVITY_SECONDS: ${OLDAP_MOBILE_INACTIVITY_SECONDS:-604800}
+      OLDAP_MOBILE_LEASE_SECONDS: ${OLDAP_MOBILE_LEASE_SECONDS:-300}
+      OLDAP_MOBILE_MAX_ACTIVE_PER_USER: ${OLDAP_MOBILE_MAX_ACTIVE_PER_USER:-20}
+      OLDAP_MOBILE_MAX_ACTIVE_PER_STAGING_AREA: ${OLDAP_MOBILE_MAX_ACTIVE_PER_STAGING_AREA:-100}
+      OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_USER: ${OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_USER:-2147483648}
+      OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_STAGING_AREA: ${OLDAP_MOBILE_MAX_RESERVED_BYTES_PER_STAGING_AREA:-21474836480}
+      OLDAP_MOBILE_MAX_PROCESSING_JOBS: ${OLDAP_MOBILE_MAX_PROCESSING_JOBS:-2}
+    volumes:
+      - ${MEDIA_DATA_HOST:-./data}:/data/images
+      - ${MEDIA_MOBILE_UPLOAD_HOST:-./mobile-uploads}:/data/mobile-uploads
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    cpus: 4.0
+    mem_limit: 6g
+    memswap_limit: 6g
+    pids_limit: 128
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    command: ["python", "-m", "mobile_upload_worker"]
 
   # Explicit operator opt-in until the ZIP-import pilot gate is approved.
   ingest-worker:

@@ -14,8 +14,8 @@ SOURCE = Path(__file__).resolve().parents[1] / "mediaserver"
 if str(SOURCE) not in sys.path:
     sys.path.insert(0, str(SOURCE))
 
+import mobile_media_assets as asset_module  # noqa: E402
 from mobile_media_assets import (  # noqa: E402
-    COMPENSATION_NAME,
     MobileAssetSpec,
     MobileMediaAssetError,
     MobileMediaAssetStore,
@@ -69,6 +69,32 @@ def test_prepare_publish_replay_and_exact_compensation(tmp_path: Path) -> None:
     assert not final.exists()
 
 
+def test_publication_and_compensation_rename_only_within_final_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Separate private/final bind mounts must never receive a cross-mount rename."""
+
+    item = spec(tmp_path, b"\xff\xd8\xffimage")
+    store = MobileMediaAssetStore(tmp_path / "media", derivatives=Derivatives())  # type: ignore[arg-type]
+    store.prepare(item)
+    original_rename = asset_module._rename_directory_noreplace
+    observed: list[tuple[Path, Path]] = []
+
+    def same_parent_rename(source: Path, destination: Path) -> None:
+        assert source.parent == destination.parent
+        observed.append((source, destination))
+        original_rename(source, destination)
+
+    monkeypatch.setattr(asset_module, "_rename_directory_noreplace", same_parent_rename)
+
+    store.publish(item)
+    store.compensate(item)
+
+    assert len(observed) == 2
+    assert observed[0][0] == store.publication_staging_root(item)
+    assert observed[1][1] == store.compensation_staging_root(item)
+
+
 def test_prepare_recovers_incomplete_private_work_without_owner_marker(
     tmp_path: Path,
 ) -> None:
@@ -118,13 +144,75 @@ def test_compensation_recovers_after_crash_during_private_deletion(
     store.prepare(item)
     store.publish(item)
     final = store.final_root(item)
-    withdrawn = item.upload_directory / COMPENSATION_NAME
+    withdrawn = store.compensation_staging_root(item)
 
     final.rename(withdrawn)
-    (withdrawn / ".oldap-mobile-owner.json").unlink()
-    (withdrawn / "derived" / "master.tif").unlink()
+    (withdrawn / "original" / "photo.jpg").unlink()
+    (withdrawn / "original").rmdir()
 
     store.compensate(item)
 
     assert not final.exists()
     assert not withdrawn.exists()
+
+
+def test_publication_recovers_exact_owned_incomplete_final_staging(
+    tmp_path: Path,
+) -> None:
+    item = spec(tmp_path, b"\xff\xd8\xffimage")
+    store = MobileMediaAssetStore(tmp_path / "media", derivatives=Derivatives())  # type: ignore[arg-type]
+    store.prepare(item)
+    work = item.upload_directory / "asset.work"
+    staging = store.publication_staging_root(item)
+    staging.parent.mkdir(parents=True)
+    store._stage_for_publication(work, staging, item)
+    (staging / "derived" / "master.tif").unlink()
+
+    store.publish(item)
+
+    assert not staging.exists()
+    assert (store.final_root(item) / "derived" / "master.tif").is_file()
+
+
+def test_publication_recovers_interrupted_atomic_owner_marker(tmp_path: Path) -> None:
+    item = spec(tmp_path, b"\xff\xd8\xffimage")
+    store = MobileMediaAssetStore(tmp_path / "media", derivatives=Derivatives())  # type: ignore[arg-type]
+    store.prepare(item)
+    staging = store.publication_staging_root(item)
+    staging.mkdir(parents=True)
+    (staging / asset_module.OWNER_MARKER_TEMP).write_bytes(b'{"partial":')
+
+    store.publish(item)
+
+    assert not staging.exists()
+    assert (store.final_root(item) / "original" / "photo.jpg").is_file()
+
+
+def test_publication_refuses_unowned_final_staging(tmp_path: Path) -> None:
+    item = spec(tmp_path, b"\xff\xd8\xffimage")
+    store = MobileMediaAssetStore(tmp_path / "media", derivatives=Derivatives())  # type: ignore[arg-type]
+    store.prepare(item)
+    staging = store.publication_staging_root(item)
+    staging.mkdir(parents=True)
+    (staging / "foreign").write_bytes(b"do not remove")
+
+    with pytest.raises(MobileMediaAssetError, match="unowned"):
+        store.publish(item)
+
+    assert (staging / "foreign").read_bytes() == b"do not remove"
+
+
+def test_publication_refuses_extra_data_in_exact_owned_staging(tmp_path: Path) -> None:
+    item = spec(tmp_path, b"\xff\xd8\xffimage")
+    store = MobileMediaAssetStore(tmp_path / "media", derivatives=Derivatives())  # type: ignore[arg-type]
+    store.prepare(item)
+    work = item.upload_directory / "asset.work"
+    staging = store.publication_staging_root(item)
+    staging.parent.mkdir(parents=True)
+    store._stage_for_publication(work, staging, item)
+    (staging / "derived" / "unexpected.txt").write_text("foreign", encoding="utf-8")
+
+    with pytest.raises(MobileMediaAssetError, match="unexpected"):
+        store.publish(item)
+
+    assert (staging / "derived" / "unexpected.txt").is_file()

@@ -23,6 +23,18 @@ export_worker_heartbeat_seconds: 60
 export_worker_lease_seconds: 300
 # Start only after the purpose-specific production secrets have been provisioned.
 zip_export_worker_enabled: false
+# Activation remains explicit for unprepared hosts. Known Step-11 targets opt in
+# through host_vars and fail closed until the purpose-specific Vault key exists.
+mobile_media_enabled: false
+mobile_max_original_bytes: 104857600
+mobile_chunk_bytes: 4194304
+mobile_inactivity_seconds: 604800
+mobile_lease_seconds: 300
+mobile_max_active_per_user: 20
+mobile_max_active_per_staging_area: 100
+mobile_max_reserved_bytes_per_user: 2147483648
+mobile_max_reserved_bytes_per_staging_area: 21474836480
+mobile_max_processing_jobs: 2
 # The frozen 20% filesystem reserve always applies. Set this byte count only
 # when operations require a larger absolute reserve.
 storage_absolute_reserve_bytes: 0
@@ -34,6 +46,7 @@ media_root: /data/media
 media_ingest_root: /data/oldap-ingest
 media_import_records_root: /data/oldap-import-records
 media_export_root: /data/oldap-exports
+media_mobile_upload_root: /data/oldap-mobile-uploads
 media_storage_mountpoint: /data
 deploy_root: /opt/oldap-mediaserver
 compose_dir: "{{ deploy_root }}/compose"

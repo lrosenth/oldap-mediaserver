@@ -216,6 +216,8 @@ fasnacht-media-*
 /ansible/auth-secrets.yml
 /mediaserver.env
 /mediahelper-access.env
+/mobile-media-worker.env
+/mobile-uploads/
 /root.crt
 /caddy-conf/
 /caddy-data/

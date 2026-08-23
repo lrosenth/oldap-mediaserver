@@ -73,6 +73,20 @@
         reverse_proxy mediaserver:8000
     }
 
+{% if mobile_media_enabled | bool %}
+    # Additive mobile resumable-upload transport. Caddy never mounts its private
+    # workspace and accepts at most one 4 MiB chunk plus a framing margin.
+    @mobile_media path /media/v1 /media/v1/*
+    handle @mobile_media {
+        @mobile_media_method not method GET POST PATCH DELETE OPTIONS
+        respond @mobile_media_method "method not allowed" 405
+        request_body {
+            max_size 5MB
+        }
+        reverse_proxy mediaserver:8000
+    }
+
+{% endif %}
     @import_sip path_regexp import_sip ^/imports/[0-9a-fA-F-]{36}/sip$
     handle @import_sip {
         @import_method not method PUT OPTIONS

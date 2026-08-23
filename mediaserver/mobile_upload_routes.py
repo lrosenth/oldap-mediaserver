@@ -1,4 +1,4 @@
-"""Flask transport for the additive, unrouted mobile media upload v1 API."""
+"""Flask transport for the additive mobile media upload v1 API."""
 
 from __future__ import annotations
 

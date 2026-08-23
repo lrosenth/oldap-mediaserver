@@ -92,6 +92,19 @@
 		reverse_proxy mediaserver:8000
 	}
 
+	# Additive mobile resumable-upload transport. The private upload workspace is
+	# mounted only into mediahelper and its worker; Caddy proxies at most one 4 MiB
+	# chunk plus a small framing margin and cannot serve temporary bytes.
+	@mobile_media path /media/v1 /media/v1/*
+	handle @mobile_media {
+		@mobile_media_method not method GET POST PATCH DELETE OPTIONS
+		respond @mobile_media_method "method not allowed" 405
+		request_body {
+			max_size 5MB
+		}
+		reverse_proxy mediaserver:8000
+	}
+
 	# Direct ZIP SIP ingress. The private ingest volume is mounted only into
 	# mediahelper; Caddy proxies bytes and cannot serve quarantine files.
 	@import_sip path_regexp import_sip ^/imports/[0-9a-fA-F-]{36}/sip$

@@ -68,6 +68,7 @@ def test_production_inventory_preserves_public_media_clients() -> None:
     assert host["media_domain"] == "media.oldap.org"
     assert host["oldap_api_url"] == "https://api.oldap.org"
     assert host["zip_export_worker_enabled"] is True
+    assert host["mobile_media_enabled"] is True
     assert origins == {
         "https://app.oldap.org",
         "https://fasnacht.oldap.org",
@@ -82,6 +83,7 @@ def test_home_inventory_cannot_inherit_production_endpoints() -> None:
 
     assert host["media_domain"] == "media.home.org"
     assert host["oldap_api_url"] == "http://api.home.org"
+    assert host["mobile_media_enabled"] is True
     assert origins == {
         "https://app.home.org",
         "https://fasnacht.home.org",

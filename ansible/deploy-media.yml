@@ -24,7 +24,9 @@
         oldap_import_service_jwt_secret is not defined or
         oldap_import_records_jwt_secret is not defined or
         oldap_export_service_jwt_secret is not defined or
-        oldap_export_download_jwt_secret is not defined
+        oldap_export_download_jwt_secret is not defined or
+        (not (rollback | bool) and mobile_media_enabled | bool and
+         oldap_mobile_media_service_jwt_secret is not defined)
       no_log: true
 
     - name: Validate purpose-specific mediahelper token secrets
@@ -58,10 +60,34 @@
           - (oldap_export_download_jwt_secret | default('')) != (oldap_import_service_jwt_secret | default(''))
           - (oldap_export_download_jwt_secret | default('')) != (oldap_import_records_jwt_secret | default(''))
           - (oldap_export_download_jwt_secret | default('')) != (oldap_export_service_jwt_secret | default(''))
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('') | string | length) >= 32
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('')) != (oldap_access_jwt_secret | default(''))
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('')) != (oldap_media_jwt_secret | default(''))
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('')) != (oldap_import_upload_jwt_secret | default(''))
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('')) != (oldap_import_service_jwt_secret | default(''))
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('')) != (oldap_import_records_jwt_secret | default(''))
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('')) != (oldap_export_service_jwt_secret | default(''))
+          - >-
+            rollback | bool or not (mobile_media_enabled | bool) or
+            (oldap_mobile_media_service_jwt_secret | default('')) != (oldap_export_download_jwt_secret | default(''))
         fail_msg: >-
           Supply distinct OLDAP access, media, ZIP-upload, import-service, and
-          import-records, export-service, and export-download JWT secrets of at least 32 bytes through auth-secrets.yml
-          or Ansible Vault.
+          import-records, export-service, export-download, and enabled mobile-media
+          JWT secrets of at least 32 bytes through auth-secrets.yml or Ansible Vault.
       no_log: true
 
     - name: Validate private ingest storage separation
@@ -96,6 +122,86 @@
         fail_msg: >-
           Export artifacts must use a dedicated root outside media originals,
           temporary ingest data, and retained import records.
+
+    - name: Validate private mobile-upload storage separation
+      ansible.builtin.assert:
+        that:
+          - media_mobile_upload_root != media_root
+          - media_mobile_upload_root != media_ingest_root
+          - media_mobile_upload_root != media_import_records_root
+          - media_mobile_upload_root != media_export_root
+          - not (media_mobile_upload_root.startswith(media_root.rstrip('/') + '/'))
+          - not (media_mobile_upload_root.startswith(media_ingest_root.rstrip('/') + '/'))
+          - not (media_mobile_upload_root.startswith(media_import_records_root.rstrip('/') + '/'))
+          - not (media_mobile_upload_root.startswith(media_export_root.rstrip('/') + '/'))
+          - not (media_root.startswith(media_mobile_upload_root.rstrip('/') + '/'))
+          - not (media_ingest_root.startswith(media_mobile_upload_root.rstrip('/') + '/'))
+          - not (media_import_records_root.startswith(media_mobile_upload_root.rstrip('/') + '/'))
+          - not (media_export_root.startswith(media_mobile_upload_root.rstrip('/') + '/'))
+          - media_mobile_upload_root.startswith(media_storage_mountpoint.rstrip('/') + '/')
+        fail_msg: >-
+          Mobile upload state must use its own private root on the dedicated media
+          filesystem, outside final media, ZIP ingest, records, and export roots.
+
+    - name: Inspect private mobile-upload root without following symlinks
+      ansible.builtin.stat:
+        path: "{{ media_mobile_upload_root }}"
+        follow: false
+      register: mobile_upload_root_stat
+
+    - name: Reject a symlinked or non-directory mobile-upload root
+      ansible.builtin.assert:
+        that:
+          - >-
+            not mobile_upload_root_stat.stat.exists or
+            (mobile_upload_root_stat.stat.isdir and
+             not mobile_upload_root_stat.stat.islnk)
+        fail_msg: >-
+          The mobile upload root must be absent or an existing real directory;
+          symlinks and other filesystem types are not accepted.
+
+    - name: Resolve canonical media storage boundaries
+      ansible.builtin.command:
+        argv:
+          - realpath
+          - -m
+          - "{{ item }}"
+      loop:
+        - "{{ media_root }}"
+        - "{{ media_ingest_root }}"
+        - "{{ media_import_records_root }}"
+        - "{{ media_export_root }}"
+        - "{{ media_mobile_upload_root }}"
+        - "{{ media_storage_mountpoint }}"
+      register: media_storage_realpaths
+      changed_when: false
+
+    - name: Validate canonical mobile-upload storage separation
+      vars:
+        resolved_media_root: "{{ media_storage_realpaths.results[0].stdout }}"
+        resolved_ingest_root: "{{ media_storage_realpaths.results[1].stdout }}"
+        resolved_import_records_root: "{{ media_storage_realpaths.results[2].stdout }}"
+        resolved_export_root: "{{ media_storage_realpaths.results[3].stdout }}"
+        resolved_mobile_root: "{{ media_storage_realpaths.results[4].stdout }}"
+        resolved_mountpoint: "{{ media_storage_realpaths.results[5].stdout }}"
+      ansible.builtin.assert:
+        that:
+          - resolved_mobile_root != resolved_media_root
+          - resolved_mobile_root != resolved_ingest_root
+          - resolved_mobile_root != resolved_import_records_root
+          - resolved_mobile_root != resolved_export_root
+          - not (resolved_mobile_root.startswith(resolved_media_root.rstrip('/') + '/'))
+          - not (resolved_mobile_root.startswith(resolved_ingest_root.rstrip('/') + '/'))
+          - not (resolved_mobile_root.startswith(resolved_import_records_root.rstrip('/') + '/'))
+          - not (resolved_mobile_root.startswith(resolved_export_root.rstrip('/') + '/'))
+          - not (resolved_media_root.startswith(resolved_mobile_root.rstrip('/') + '/'))
+          - not (resolved_ingest_root.startswith(resolved_mobile_root.rstrip('/') + '/'))
+          - not (resolved_import_records_root.startswith(resolved_mobile_root.rstrip('/') + '/'))
+          - not (resolved_export_root.startswith(resolved_mobile_root.rstrip('/') + '/'))
+          - resolved_mobile_root.startswith(resolved_mountpoint.rstrip('/') + '/')
+        fail_msg: >-
+          Canonical mobile upload storage must remain private, non-overlapping,
+          and below the dedicated media filesystem mountpoint.
 
     - name: Verify the dedicated media filesystem is mounted
       ansible.builtin.command:
@@ -202,6 +308,14 @@
         group: root
         mode: "0700"
 
+    - name: Create private mobile upload directory
+      ansible.builtin.file:
+        path: "{{ media_mobile_upload_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
     - name: Render docker-compose.yml
       ansible.builtin.template:
         src: templates/docker-compose.yml.j2
@@ -257,6 +371,15 @@
         mode: "0600"
       no_log: true
 
+    - name: Render restricted mobile-media worker environment
+      ansible.builtin.template:
+        src: templates/mobile-media-worker.env.j2
+        dest: "{{ compose_dir }}/mobile-media-worker.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
     - name: Validate rendered Docker Compose configuration
       ansible.builtin.command:
         cmd: docker compose config --quiet
@@ -277,7 +400,9 @@
           {{ ((zip_import_worker_enabled | bool)
               | ternary(['zip-import-validation'], []))
              + ((zip_export_worker_enabled | bool)
-              | ternary(['zip-export-worker'], [])) }}
+              | ternary(['zip-export-worker'], []))
+             + ((mobile_media_enabled | bool)
+              | ternary(['mobile-media'], [])) }}
         state: present
         pull: "{{ 'always' if force_pull | bool else 'missing' }}"
         remove_orphans: true
@@ -309,6 +434,18 @@
         - not rollback | bool
         - not zip_export_worker_enabled | bool
 
+    - name: Stop mobile-media worker when explicitly disabled
+      community.docker.docker_compose_v2:
+        project_src: "{{ compose_dir }}"
+        profiles:
+          - mobile-media
+        services:
+          - mobile-media-worker
+        state: stopped
+      when:
+        - not rollback | bool
+        - not mobile_media_enabled | bool
+
     - name: Apply pending Caddy configuration before health verification
       ansible.builtin.meta: flush_handlers
       when: not rollback | bool
@@ -320,7 +457,9 @@
           {{ ((zip_import_worker_enabled | bool)
               | ternary(['zip-import-validation'], []))
              + ((zip_export_worker_enabled | bool)
-              | ternary(['zip-export-worker'], [])) }}
+              | ternary(['zip-export-worker'], []))
+             + ((mobile_media_enabled | bool)
+              | ternary(['mobile-media'], [])) }}
         state: present
       register: compose_result
       changed_when: false
@@ -353,6 +492,20 @@
       when:
         - not rollback | bool
         - zip_export_worker_enabled | bool
+
+    - name: Verify mobile-media worker is running when enabled
+      ansible.builtin.assert:
+        that:
+          - >-
+            (compose_result.containers
+             | selectattr('Service', 'equalto', 'mobile-media-worker')
+             | selectattr('State', 'equalto', 'running')
+             | list | length) == 1
+        fail_msg: >-
+          Mobile media is enabled, but exactly one mobile-media-worker is not running.
+      when:
+        - not rollback | bool
+        - mobile_media_enabled | bool
 
     - name: Print compose status
       ansible.builtin.debug:
@@ -391,6 +544,21 @@
       retries: 24
       delay: 5
       when: not rollback | bool
+
+    - name: Verify the public mobile-media authentication boundary
+      ansible.builtin.uri:
+        url: "https://{{ media_domain }}/media/v1/uploads/00000000-0000-4000-8000-000000000000"
+        method: GET
+        status_code: 401
+        timeout: 10
+        validate_certs: "{{ not (caddy_tls_internal | default(false) | bool) }}"
+      register: mobile_media_auth_probe
+      until: mobile_media_auth_probe.status == 401
+      retries: 24
+      delay: 5
+      when:
+        - not rollback | bool
+        - mobile_media_enabled | bool
 
   handlers:
     - name: Reload Caddyfile

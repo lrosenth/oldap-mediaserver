@@ -399,8 +399,11 @@ def test_oversized_numeric_upload_header_stays_in_closed_error_contract(
     "configuration",
     ["Caddyfile", "ansible/templates/Caddyfile.j2"],
 )
-def test_mobile_transport_remains_absent_from_public_routing(
+def test_mobile_transport_has_only_the_reviewed_public_route(
     configuration: str,
 ) -> None:
     value = (REPOSITORY_ROOT / configuration).read_text(encoding="utf-8")
-    assert "/media/v1" not in value
+    assert "@mobile_media path /media/v1 /media/v1/*" in value
+    assert "@mobile_media_method not method GET POST PATCH DELETE OPTIONS" in value
+    assert "path /media/*" not in value
+    assert "/internal/mobile-media" not in value

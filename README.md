@@ -229,12 +229,13 @@ curl -i -X OPTIONS \
 
 ## Mobile resumable upload transport
 
-Steps 11C and 11D add an additive Flask transport under `/media/v1` for durable mobile
+Steps 11C through 11E add an additive Flask transport under `/media/v1` for durable mobile
 upload initialization, owner-only status lookup, exact-offset 4 MiB chunks,
 asynchronous commit requests, processing/status polling, and cancellation. They do not change the legacy
-`/upload` route. Caddy and Ansible deliberately do not expose `/media/v1` yet;
-production routing remains disabled until the storage and rollout work in Step
-11E.
+`/upload` route. Step 11E adds the exact Caddy route and deployment configuration
+but does not deploy it. The shared Ansible default remains disabled; the known
+production and home targets opt in and will expose the route only on their next
+explicit deployment after the required secret has been provisioned.
 
 The transport stores private temporary originals and a SQLite registry below
 `OLDAP_MOBILE_UPLOAD_ROOT` (default `/data/mobile-uploads`). The root must be a
@@ -256,11 +257,15 @@ race its replacement. JPEG, PNG, HEIC, and HEIF
 originals are checked against their exact length, SHA-256, declared MIME type,
 and decoder evidence before the existing image derivative processor creates
 `master.tif`. Complete upload-owned asset directories are fsynced and promoted
-without replacement. The worker then calls only the purpose-authenticated
-Step-11A OLDAP endpoint with a fresh short-lived service JWT and immutable
-publication evidence. A definitive rejection enters a durable compensation
-phase and atomically withdraws the exact owner-marked final asset into private
-upload storage before recoverable deletion. Only the closed OLDAP validation,
+without replacement. Because private uploads and final media are separate
+container mounts, the worker first copies and fsyncs the exact owner-marked
+asset into a hidden staging directory beside its final path, then performs the
+atomic no-replace rename entirely within the final-media mount. The temporary
+capacity guard reserves both complete copies. The worker then calls only the
+purpose-authenticated Step-11A OLDAP endpoint with a fresh short-lived service
+JWT and immutable publication evidence. A definitive rejection enters a durable
+compensation phase and atomically withdraws the exact owner-marked final asset
+to a hidden same-mount path before marker-last recoverable deletion. Only the closed OLDAP validation,
 permission, destination, and identity errors are definitive; unknown HTTP
 failures, service authentication/configuration failures, timeouts, 5xx
 responses, and invalid success receipts retain publication for an idempotent
@@ -277,10 +282,12 @@ fills that context before processing resumes. A fully compensated definitive
 rejection can be explicitly cancelled and reinitialized with the same
 uncommitted `clientAssetId`; implicit reopening remains forbidden.
 
-Step 11D packages this worker but does not start it. Step 11E must provision the
-distinct `OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET`, persistent mount, worker
-process, operational settings, and public route before mobile uploads are
-enabled in any deployment.
+The deployment starts one hardened `mobile-media-worker` through the
+`mobile-media` Compose profile and mounts `/data/oldap-mobile-uploads` only into
+that worker and the Flask service. Caddy and Cantaloupe cannot read the private
+registry or accepted bytes. The worker receives only its distinct
+`OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET`; it does not receive access, media/IIIF,
+ZIP-import, or ZIP-export signing keys. No Step-11 deployment was performed.
 
 The reviewed v1 ceilings are 100 MiB per original, 20 active uploads and 2 GiB
 reserved per user, 100 active uploads and 20 GiB reserved per StagingArea, and
@@ -307,6 +314,11 @@ For local ZIP-export worker startup, also place
 repository-root `.env`; Compose interpolation for the isolated worker does not
 read `mediahelper-access.env`. Recreate the worker with
 `docker compose --profile zip-export-worker up -d --force-recreate export-worker`.
+For the mobile worker, place the distinct
+`OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET` in the same ignored repository-root
+`.env`, configure the identical value in the local oldap-api runtime, and start
+the profile with
+`docker compose --profile mobile-media up -d --force-recreate mediaserver mobile-media-worker caddy`.
 Generate independent values with `openssl rand -hex 32`; never reuse a key for
 another token purpose. Docker Compose gives Cantaloupe only `mediaserver.env`,
 while the Flask helper receives both files.

@@ -61,7 +61,7 @@
 - `mediaserver/mobile_upload_domain.py`, `mobile_upload_registry.py`,
   `mobile_staging.py`, `mobile_upload_routes.py`, `mobile_media_assets.py`,
   `mobile_media_commit.py`, and `mobile_upload_worker.py` implement the additive,
-  currently unrouted `/media/v1` resumable transport. A private SQLite registry
+  deployment-configured `/media/v1` resumable transport. A private SQLite registry
   and upload root bind each permanent `clientAssetId` to its account's immutable
   user IRI and StagingArea, persist exact offsets and idempotency receipts, and
   retain immutable server-resolved `top/Mobile` facts. The mutable login user ID
@@ -74,14 +74,17 @@
   retryable failure from its last durable phase, but cannot revive cancelled or
   non-retryable work. The separately runnable mobile worker verifies exact bytes
   and image signatures, reuses the existing HEIF probe and derivative processor,
-  prepares and fsyncs upload-owned assets, publishes them no-replace, and calls
-  only the Step-11A internal OLDAP commit with a fresh purpose-specific service
-  JWT. Renewable leases cap processing at two jobs and make every phase
+  prepares and fsyncs upload-owned assets, copies them into an owner-marked
+  hidden staging path on the final-media mount, installs ownership evidence
+  atomically with crash recovery, publishes there with a same-mount no-replace
+  rename, and calls only the Step-11A internal OLDAP commit with a fresh
+  purpose-specific service JWT. The capacity guard includes both temporary
+  complete copies. Renewable leases cap processing at two jobs and make every phase
   reclaimable. Per-upload file locks plus synchronous pre/post-effect lease
   fencing prevent stale workers from racing replacement processing or cleanup.
   Definitive OLDAP rejection uses a durable exact-ownership
-  compensation phase that atomically withdraws the final into private upload
-  storage before recoverable deletion; ambiguous responses retain published
+  compensation phase that atomically withdraws the final to a hidden path on
+  the same final-media mount before marker-last recoverable deletion; ambiguous responses retain published
   files for identical replay. Only the closed expected OLDAP domain errors are
   definitive; unknown transport, routing, or service-authentication responses
   remain retryable. Retryable failures before publication expire safely after
@@ -91,7 +94,11 @@
   context-refresh state without deleting transport records or poisoning the
   worker queue. Fully compensated uncommitted assets may be explicitly
   cancelled and reinitialized, but are never reopened implicitly.
-- `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to Cantaloupe, `/asset/*` through Flask `forward_auth`, direct ZIP ingress to its bounded PUT handler, and only the JWT-protected retained-report GET from the internal import surface.
+- `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to Cantaloupe,
+  `/asset/*` through Flask `forward_auth`, direct ZIP ingress to its bounded PUT
+  handler, the exact additive `/media/v1` methods to mediahelper, and only the
+  JWT-protected retained-report GET from the internal import surface. The
+  private mobile upload root is never mounted into Caddy.
 - Export archive delivery uses an exclusive Caddy `handle` with an inner
   ordered `route`: the UUID is captured from the untouched public path,
   authenticated through the explicit internal mediahelper endpoint, and only
@@ -144,6 +151,15 @@
   verify exactly one running ingest worker. `zip_import_worker_enabled=false`
   is the explicit maintenance/incident switch. Deployment also refuses to
   create media/ingest paths unless `/data` is an active mountpoint.
+- Mobile media remains disabled in shared Ansible defaults. Both reviewed hosts
+  opt in for their next explicit deployment, which fails before changing the
+  host unless the distinct mobile-media JWT secret is present and unlike every
+  other token-purpose key. The dedicated worker receives only that secret and
+  mounts final media plus the private persistent mobile-upload root; Caddy,
+  Cantaloupe, and ZIP workers cannot access the latter. No Step-11 deployment or
+  secret access has occurred. Canonical path and non-symlink preflight checks
+  enforce storage separation, while explicit rollback does not depend on an
+  unprovisioned mobile-only secret.
 
 ## Storage Model
 Assets are stored below the media root as:
@@ -184,11 +200,14 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   tagged.
 
 ## Roadmap / Next Steps
-- Mobile synchronization Steps 11C and 11D are complete in the mediahelper code
-  and runtime image but intentionally absent from Caddy, Compose worker startup,
-  and Ansible deployment. Step 11E must provision the distinct mobile-media
-  service secret, persistent production mount, worker activation, routing,
-  operational limits, and controlled rollout before `/media/v1` is exposed.
+- Mobile backend Step 11 is complete in code and deployment templates. The
+  additive route, private persistent state, hardened worker, reviewed limits,
+  fail-closed secret checks, and known-host opt-in are configured but have not
+  been deployed. A later operator-controlled rollout must provision the same
+  distinct mobile-media JWT secret in oldap-mediaserver and oldap-api plus the
+  API-owned service identity, then run the documented Ansible and public
+  authentication-boundary checks. Fasnacht Capture Step 12 will add the client
+  queue that consumes this protocol.
 - Project-neutral ZIP export Phase 1 is implemented and locally accepted; its
   contracts live in `docs/zip-export/v1`.
   oldap-api will own jobs, authorization, projected manifests, leases,

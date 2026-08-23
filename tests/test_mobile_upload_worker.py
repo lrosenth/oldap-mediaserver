@@ -28,7 +28,10 @@ from mobile_upload_domain import (  # noqa: E402
     ResolvedMobileInbox,
 )
 from mobile_upload_registry import MobileUploadRegistry  # noqa: E402
-from mobile_upload_worker import MobileUploadWorker  # noqa: E402
+from mobile_upload_worker import (  # noqa: E402
+    MOBILE_PROCESSING_PEAK_FACTOR,
+    MobileUploadWorker,
+)
 from storage_capacity import (  # noqa: E402
     DiskUsage,
     StorageCapacityGuard,
@@ -112,8 +115,10 @@ class Oldap:
 class Capacity:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
+        self.calls: list[tuple[Path, int]] = []
 
     def require(self, path: Path, *, additional_bytes: int):
+        self.calls.append((path, additional_bytes))
         if self.fail:
             guard = StorageCapacityGuard(
                 disk_usage=lambda unused: DiskUsage(total=100, used=100, free=0)
@@ -218,6 +223,20 @@ def test_happy_commit_is_atomic_and_cleanup_never_removes_final_asset(
     assert not (registry.uploads_root / status.upload_id).exists()
     assert registry.get_status(status.upload_id, OWNER).state == "committed"
     assert runner.run_once() is False
+
+
+def test_processing_reserves_cross_mount_publication_peak(
+    registry: MobileUploadRegistry,
+) -> None:
+    queued(registry)
+    capacity = Capacity()
+
+    worker(registry, capacity=capacity).run_once()
+
+    assert len(capacity.calls) == 2
+    assert {additional for _, additional in capacity.calls} == {
+        len(CONTENT) * MOBILE_PROCESSING_PEAK_FACTOR
+    }
 
 
 def test_every_durable_phase_can_be_reclaimed_after_a_worker_crash(

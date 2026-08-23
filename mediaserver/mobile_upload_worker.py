@@ -31,6 +31,7 @@ from storage_capacity import PhysicalCapacityInsufficient, StorageCapacityGuard
 
 
 LOGGER = logging.getLogger(__name__)
+MOBILE_PROCESSING_PEAK_FACTOR = 8
 
 
 class CommitClient(Protocol):
@@ -155,7 +156,7 @@ class MobileUploadWorker:
 
     @classmethod
     def from_environment(cls) -> "MobileUploadWorker":
-        """Build the dormant Step-11D worker; Step 11E will activate deployment."""
+        """Build the separately deployed mobile processing worker."""
 
         settings = MediahelperSettings.from_environment()
         capacity = StorageCapacityGuard(settings.storage_absolute_reserve_bytes)
@@ -210,13 +211,22 @@ class MobileUploadWorker:
                         checksum = self.assets.verify_original(spec)
                     claim = self.registry.record_checksum_verified(claim, checksum)
                 if claim.commit_phase == "checksum_verified":
+                    # Preparation and cross-mount-safe publication can
+                    # temporarily retain both a work tree and a final-filesystem
+                    # staging copy. Apply the full peak estimate to both paths;
+                    # this is intentionally conservative when they use separate
+                    # physical filesystems.
                     self.capacity.require(
                         claim.upload_directory,
-                        additional_bytes=claim.byte_length * 4,
+                        additional_bytes=(
+                            claim.byte_length * MOBILE_PROCESSING_PEAK_FACTOR
+                        ),
                     )
                     self.capacity.require(
                         self.assets.media_root,
-                        additional_bytes=claim.byte_length * 4,
+                        additional_bytes=(
+                            claim.byte_length * MOBILE_PROCESSING_PEAK_FACTOR
+                        ),
                     )
                     with self._file_operation(claim, heartbeat):
                         self.assets.prepare(spec)
@@ -330,7 +340,7 @@ class MobileUploadWorker:
 
 
 def main() -> None:
-    """Run the standalone worker entry point prepared for Step 11E."""
+    """Run the standalone mobile-media worker entry point."""
 
     logging.basicConfig(level=logging.INFO)
     MobileUploadWorker.from_environment().run_forever()

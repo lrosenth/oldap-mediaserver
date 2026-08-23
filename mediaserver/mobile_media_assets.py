@@ -25,8 +25,8 @@ from storage import AssetAlreadyExistsError, safe_subpath, store_original_with_s
 
 
 OWNER_MARKER = ".oldap-mobile-owner.json"
+OWNER_MARKER_TEMP = f"{OWNER_MARKER}.tmp"
 DERIVATIVE_NAME = "master.tif"
-COMPENSATION_NAME = "asset.compensating"
 RENAME_NOREPLACE = 1
 
 
@@ -164,46 +164,55 @@ class MobileMediaAssetStore:
             raise
 
     def publish(self, spec: MobileAssetSpec) -> MobilePublication:
-        """Atomically publish or verify the one exact upload-owned final asset."""
+        """Copy durably, then atomically publish one exact upload-owned asset.
+
+        Private upload state and final media are separate container mounts in
+        production. Linux cannot rename across those mountpoints, even when the
+        host paths share a physical filesystem. The complete private work tree
+        is therefore copied to an owner-marked staging directory beside the
+        final asset before the same-mount no-replace rename.
+        """
 
         final = self.final_root(spec)
         work = self._work_root(spec)
+        staging = self.publication_staging_root(spec)
         final.parent.mkdir(parents=True, exist_ok=True)
         _require_within(final.parent.resolve(), self.media_root)
         if final.exists() or final.is_symlink():
             self._verify_asset(final, spec)
+            self._remove_owned_staging_if_present(staging, spec)
             self._remove_owned_work_if_present(work, spec)
             return self.publication(spec)
         if work.is_symlink() or not work.is_dir():
             raise MobileMediaAssetError("Prepared mobile asset is unavailable.")
         self._verify_asset(work, spec)
-        _rename_directory_noreplace(work, final)
+        self._stage_for_publication(work, staging, spec)
+        try:
+            _rename_directory_noreplace(staging, final)
+        except AssetAlreadyExistsError:
+            self._verify_asset(final, spec)
+            self._remove_owned_staging_if_present(staging, spec)
         _fsync_directory(final.parent)
         self._verify_asset(final, spec)
+        self._remove_owned_work_if_present(work, spec)
         return self.publication(spec)
 
     def compensate(self, spec: MobileAssetSpec) -> None:
-        """Atomically withdraw an exact-owned final before private deletion."""
+        """Atomically hide an exact-owned final and resume safe deletion."""
 
         final = self.final_root(spec)
-        withdrawn = spec.upload_directory / COMPENSATION_NAME
+        withdrawn = self.compensation_staging_root(spec)
         if final.exists() or final.is_symlink():
             if withdrawn.exists() or withdrawn.is_symlink():
                 raise MobileMediaAssetError(
-                    "Mobile compensation has conflicting public and private assets."
+                    "Mobile compensation has conflicting final and withdrawn assets."
                 )
             self._verify_asset(final, spec)
             _rename_directory_noreplace(final, withdrawn)
             _fsync_directory(final.parent)
-            _fsync_directory(spec.upload_directory)
         if not withdrawn.exists() and not withdrawn.is_symlink():
             return
-        if withdrawn.is_symlink() or not withdrawn.is_dir():
-            raise MobileMediaAssetError("Mobile compensation path is unsafe.")
-        # Once publication has been durably withdrawn, cleanup may recover even
-        # after a prior process died midway through deleting the private copy.
-        shutil.rmtree(withdrawn)
-        _fsync_directory(spec.upload_directory)
+        self._remove_owned_staging_if_present(withdrawn, spec)
 
     def publication(self, spec: MobileAssetSpec) -> MobilePublication:
         self._verify_asset(self.final_root(spec), spec)
@@ -221,6 +230,18 @@ class MobileMediaAssetStore:
         _require_within(path.parent.resolve(), self.media_root)
         return path
 
+    def publication_staging_root(self, spec: MobileAssetSpec) -> Path:
+        """Return the deterministic same-filesystem pre-publication directory."""
+
+        final = self.final_root(spec)
+        return final.parent / f".{spec.client_asset_id}.{spec.upload_id}.publishing"
+
+    def compensation_staging_root(self, spec: MobileAssetSpec) -> Path:
+        """Return the deterministic same-filesystem withdrawn directory."""
+
+        final = self.final_root(spec)
+        return final.parent / f".{spec.client_asset_id}.{spec.upload_id}.compensating"
+
     @staticmethod
     def _source(spec: MobileAssetSpec) -> Path:
         if spec.upload_directory.is_symlink() or not spec.upload_directory.is_dir():
@@ -234,11 +255,107 @@ class MobileMediaAssetStore:
     def _work_root(spec: MobileAssetSpec) -> Path:
         return spec.upload_directory / "asset.work"
 
+    def _stage_for_publication(
+        self, work: Path, staging: Path, spec: MobileAssetSpec
+    ) -> None:
+        """Create or recover one complete owner-marked publication staging tree."""
+
+        if staging.exists() or staging.is_symlink():
+            if _read_json(staging / OWNER_MARKER) == _owner_marker(spec):
+                try:
+                    self._verify_asset(staging, spec)
+                    return
+                except MobileMediaAssetError:
+                    self._remove_owned_staging_if_present(staging, spec)
+            else:
+                self._remove_owned_staging_if_present(staging, spec)
+
+        staging.mkdir(mode=0o700)
+        try:
+            _write_json_atomic(staging / OWNER_MARKER, _owner_marker(spec))
+            original = staging / "original"
+            derived = staging / "derived"
+            original.mkdir()
+            derived.mkdir()
+            shutil.copyfile(
+                work / "original" / spec.original_name,
+                original / spec.original_name,
+            )
+            shutil.copyfile(
+                work / "derived" / DERIVATIVE_NAME,
+                derived / DERIVATIVE_NAME,
+            )
+            _fsync_tree(staging)
+            _fsync_directory(staging.parent)
+            self._verify_asset(staging, spec)
+        except Exception:
+            self._remove_owned_staging_if_present(staging, spec)
+            raise
+
+    @staticmethod
+    def _remove_owned_staging_if_present(staging: Path, spec: MobileAssetSpec) -> None:
+        """Remove only a deterministic exact-owned partial tree, marker last."""
+
+        if not staging.exists() and not staging.is_symlink():
+            return
+        if staging.is_symlink() or not staging.is_dir():
+            raise MobileMediaAssetError("Mobile staging path is unsafe.")
+        marker = _read_json(staging / OWNER_MARKER)
+        entries = {entry.name for entry in staging.iterdir()}
+        if marker is None:
+            if entries == {OWNER_MARKER_TEMP}:
+                temporary_marker = staging / OWNER_MARKER_TEMP
+                if temporary_marker.is_symlink() or not temporary_marker.is_file():
+                    raise MobileMediaAssetError("Mobile staging content is unsafe.")
+                temporary_marker.unlink()
+                staging.rmdir()
+                _fsync_directory(staging.parent)
+                return
+            if entries:
+                raise MobileMediaAssetError(
+                    "Refusing to remove unowned mobile staging data."
+                )
+            staging.rmdir()
+            _fsync_directory(staging.parent)
+            return
+        if marker != _owner_marker(spec):
+            raise MobileMediaAssetError(
+                "Refusing to remove foreign mobile staging data."
+            )
+        expected_root_entries = {OWNER_MARKER, "original", "derived"}
+        if not entries.issubset(expected_root_entries):
+            raise MobileMediaAssetError(
+                "Refusing to remove unexpected mobile staging data."
+            )
+        _validate_removable_directory(
+            staging / "original", allowed_files={spec.original_name}
+        )
+        _validate_removable_directory(
+            staging / "derived", allowed_files={DERIVATIVE_NAME}
+        )
+        _remove_known_file(staging / "original" / spec.original_name)
+        _remove_known_file(staging / "derived" / DERIVATIVE_NAME)
+        _remove_empty_directory(staging / "original")
+        _remove_empty_directory(staging / "derived")
+        (staging / OWNER_MARKER).unlink()
+        staging.rmdir()
+        _fsync_directory(staging.parent)
+
     def _verify_asset(self, root: Path, spec: MobileAssetSpec) -> None:
         if root.is_symlink() or not root.is_dir():
             raise MobileMediaAssetError("Mobile asset path is unsafe.")
+        if {entry.name for entry in root.iterdir()} != {
+            OWNER_MARKER,
+            "original",
+            "derived",
+        }:
+            raise MobileMediaAssetError("Mobile asset layout is not closed.")
         if _read_json(root / OWNER_MARKER) != _owner_marker(spec):
             raise MobileMediaAssetError("Mobile asset is not owned by this upload.")
+        _require_exact_asset_directory(
+            root / "original", expected_file=spec.original_name
+        )
+        _require_exact_asset_directory(root / "derived", expected_file=DERIVATIVE_NAME)
         original = root / "original" / spec.original_name
         derivative = root / "derived" / DERIVATIVE_NAME
         if (
@@ -306,6 +423,59 @@ def _write_json_exclusive(path: Path, value: dict[str, Any]) -> None:
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    """Install complete JSON atomically, leaving only a known recovery temp."""
+
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(path)
+    temporary = path.with_name(OWNER_MARKER_TEMP)
+    if temporary.exists() or temporary.is_symlink():
+        raise MobileMediaAssetError("Mobile ownership marker staging is unsafe.")
+    _write_json_exclusive(temporary, value)
+    os.replace(temporary, path)
+    _fsync_directory(path.parent)
+
+
+def _validate_removable_directory(path: Path, *, allowed_files: set[str]) -> None:
+    """Reject symlinks, non-directories, and unexpected compensation entries."""
+
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise MobileMediaAssetError("Mobile staging content is unsafe.")
+    entries = list(path.iterdir())
+    if any(entry.name not in allowed_files for entry in entries):
+        raise MobileMediaAssetError("Mobile staging contains unexpected data.")
+    if any(entry.is_symlink() or not entry.is_file() for entry in entries):
+        raise MobileMediaAssetError("Mobile staging content is unsafe.")
+
+
+def _require_exact_asset_directory(path: Path, *, expected_file: str) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise MobileMediaAssetError("Mobile asset layout is unsafe.")
+    entries = list(path.iterdir())
+    if {entry.name for entry in entries} != {expected_file}:
+        raise MobileMediaAssetError("Mobile asset layout is not closed.")
+    if entries[0].is_symlink() or not entries[0].is_file():
+        raise MobileMediaAssetError("Mobile asset layout is unsafe.")
+
+
+def _remove_known_file(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_file():
+        raise MobileMediaAssetError("Mobile staging content is unsafe.")
+    path.unlink()
+
+
+def _remove_empty_directory(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise MobileMediaAssetError("Mobile staging content is unsafe.")
+    path.rmdir()
 
 
 def _file_checksum(path: Path) -> str:

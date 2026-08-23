@@ -109,7 +109,12 @@ def test_image_contains_ingest_modules_and_caddy_has_bounded_route() -> None:
         assert "@export_source_method not method POST" in proxy_config
         assert "max_size 10MB" in proxy_config
         assert "path /internal/*" not in proxy_config
-        assert "/media/v1" not in proxy_config
+        assert "@mobile_media path /media/v1 /media/v1/*" in proxy_config
+        assert (
+            "@mobile_media_method not method GET POST PATCH DELETE OPTIONS"
+            in proxy_config
+        )
+        assert "max_size 5MB" in proxy_config
         # An exclusive handle must be sorted with the other handled routes,
         # before the final catch-all. A route directive would be unreachable.
         assert "handle @export_archive" in proxy_config
