@@ -17,13 +17,14 @@ help:
 	@echo "Usage: make [target] ..."
 	@echo ""
 	@echo "Available targets:"
-	@echo "  help              Show this help message"
-	@echo "  show-version      Show the mediahelper component version"
-	@echo "  show-tag          Show the derived Docker tag"
-	@echo "  show-image        Show the complete versioned image reference"
-	@echo "  run               Run the mediahelper directly with Gunicorn"
-	@echo "  docker-build      Build and push the versioned mediahelper image"
-	@echo "  docker-run        Run the versioned mediahelper Docker image"
+	@echo "  help               Show this help message"
+	@echo "  show-version       Show the mediahelper component version"
+	@echo "  show-tag           Show the derived Docker tag"
+	@echo "  show-image         Show the complete versioned image reference"
+	@echo "  run                Run the mediahelper directly with Gunicorn"
+	@echo "  docker-build       Build and push the versioned mediahelper image"
+	@echo "  docker-build-local Build a local-only docker image"
+	@echo "  docker-run         Run the versioned mediahelper Docker image"
 
 check-version:
 	@printf '%s\n' "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$$' || { \

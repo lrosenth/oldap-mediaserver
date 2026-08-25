@@ -40,7 +40,9 @@ class OldapClient:
 
             data = resp.json()
             if not isinstance(data, dict) or "token" not in data:
-                raise RuntimeError("oldap-api login returned unexpected payload (expected JSON with 'token')")
+                raise RuntimeError(
+                    "oldap-api login returned unexpected payload (expected JSON with 'token')"
+                )
 
             token = str(data["token"]).strip()
             if not token:
@@ -66,7 +68,9 @@ class OldapClient:
             cls._unknown_token = None
             cls._unknown_token_exp = 0.0
 
-    def __init__(self, oldap_api_url: str, projectId: str | None = None, token: str | None = None):
+    def __init__(
+        self, oldap_api_url: str, projectId: str | None = None, token: str | None = None
+    ):
         self.oldap_api_url = oldap_api_url
         self.token = token
         self.projectId = projectId
@@ -76,11 +80,13 @@ class OldapClient:
 
         self.project = None
         if self.projectId is not None:
-            headers = {'Authorization': f'Bearer {self.token}'} if self.token else {}
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             try:
-                response = requests.get(f'{oldap_api_url}/admin/project/{self.projectId}',
-                                        headers=headers,
-                                        timeout=5)
+                response = requests.get(
+                    f"{oldap_api_url}/admin/project/{self.projectId}",
+                    headers=headers,
+                    timeout=5,
+                )
             except requests.exceptions.Timeout as exc:
                 raise RuntimeError(f"Could not connect to oldap: {exc}") from exc
             except requests.exceptions.RequestException as exc:
@@ -89,14 +95,56 @@ class OldapClient:
             self.project = response.json()
 
     def create_resource(self, resource: str, resource_data: dict) -> dict:
-        headers = {'Authorization': f'Bearer {self.token}'} if self.token else {}
-        response = requests.put(f'{self.oldap_api_url}/data/{self.projectId}/{resource}',
-                                json=resource_data,
-                                headers=headers,
-                                timeout=5)
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        response = requests.put(
+            f"{self.oldap_api_url}/data/{self.projectId}/{resource}",
+            json=resource_data,
+            headers=headers,
+            timeout=5,
+        )
         response.raise_for_status()
         return response.json()
 
+    def update_resource(self, resource_iri: str, resource_data: dict) -> dict:
+        """Update an existing project resource through the normal OLDAP API.
+
+        Args:
+            resource_iri: QName or full IRI of the existing resource.
+            resource_data: Property updates accepted by the instance endpoint.
+
+        Returns:
+            The decoded OLDAP response augmented with the stable resource IRI.
+        """
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        encoded_iri = quote(str(resource_iri), safe="")
+        response = requests.post(
+            f"{self.oldap_api_url}/data/{self.projectId}/{encoded_iri}",
+            json=resource_data,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("oldap-api returned an unexpected update response")
+        return data | {"iri": str(resource_iri)}
+
+    def get_mediaobject_by_iri(self, resource_iri: str) -> dict | None:
+        """Read an authorized MediaObject or subclass by its stable IRI."""
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        encoded_iri = quote(str(resource_iri), safe="")
+        response = requests.get(
+            f"{self.oldap_api_url}/data/mediaobject/iri/{encoded_iri}",
+            headers=headers,
+            timeout=10,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("oldap-api returned an unexpected MediaObject response")
+        return data
 
     def get_mediaobject_by_assetid_unknown(self, asset_id: str) -> dict:
         """Resolve a MediaObject by assetId using the cached unknown-user token."""

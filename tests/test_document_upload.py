@@ -31,7 +31,9 @@ def media_app(monkeypatch, tmp_path):
     monkeypatch.setenv("OLDAP_ACCESS_JWT_SECRET", ACCESS_SECRET)
     monkeypatch.setenv("OLDAP_MEDIA_JWT_SECRET", MEDIA_SECRET)
     monkeypatch.setenv("MEDIA_BASE_URL", "http://media.example/")
-    monkeypatch.setitem(sys.modules, "pyvips", types.SimpleNamespace(Image=types.SimpleNamespace()))
+    monkeypatch.setitem(
+        sys.modules, "pyvips", types.SimpleNamespace(Image=types.SimpleNamespace())
+    )
 
     media_path = str(Path.cwd() / "mediaserver")
     if media_path not in sys.path:
@@ -53,7 +55,9 @@ def _upload_token() -> str:
     context = AuthorizationContext(
         userIri=Iri("https://example.test/users/tester"),
         userId=Xsd_NCName("tester"),
-        inProject=InProjectClass({Iri("oldap:TestProject"): {AdminPermission.ADMIN_CREATE}}),
+        inProject=InProjectClass(
+            {Iri("oldap:TestProject"): {AdminPermission.ADMIN_CREATE}}
+        ),
         hasRole=ObservableDict(),
     )
     return _codec().issue_access_token(context)
@@ -92,7 +96,9 @@ def test_image_target_format_normalizes_to_tiff(media_app, target_format):
     """Images use pyramidal TIFF whether the target is omitted or explicit."""
     module, _, _ = media_app
 
-    assert module.validate_target_format(module.MediaType.IMAGE, target_format) == "tiff"
+    assert (
+        module.validate_target_format(module.MediaType.IMAGE, target_format) == "tiff"
+    )
 
 
 @pytest.mark.parametrize("target_format", ["jp2", "j2k", "jpeg"])
@@ -108,8 +114,12 @@ class FakeOldapClient:
     """Capture media resource creation without contacting oldap-api."""
 
     created: list[tuple[str, dict]] = []
+    updated: list[tuple[str, dict]] = []
+    existing_media: dict | None = None
 
-    def __init__(self, oldap_api_url: str, projectId: str | None = None, token: str | None = None):
+    def __init__(
+        self, oldap_api_url: str, projectId: str | None = None, token: str | None = None
+    ):
         self.project = {
             "projectIri": "oldap:TestProject",
             "projectShortName": "testproject",
@@ -119,12 +129,26 @@ class FakeOldapClient:
         self.created.append((resource, resource_data))
         return {"iri": "test:mediaObject"}
 
+    def get_mediaobject_by_iri(self, resource_iri: str) -> dict | None:
+        return self.existing_media
+
+    def update_resource(self, resource_iri: str, resource_data: dict) -> dict:
+        self.updated.append((resource_iri, resource_data))
+        return {"iri": resource_iri, "message": "Instance successfully updated"}
+
 
 class FailingCreateOldapClient(FakeOldapClient):
     """Simulate an OLDAP registration failure after local derivatives exist."""
 
     def create_resource(self, resource: str, resource_data: dict) -> dict:
         raise RuntimeError("OLDAP create failed")
+
+
+class FailingUpdateOldapClient(FakeOldapClient):
+    """Simulate OLDAP rejecting attachment after local derivatives exist."""
+
+    def update_resource(self, resource_iri: str, resource_data: dict) -> dict:
+        raise RuntimeError("OLDAP update failed")
 
 
 def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
@@ -175,9 +199,10 @@ def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
     assert (asset_root / "original" / "scan.png").read_bytes() == b"image bytes"
     assert (asset_root / "derived" / "master.tif").read_bytes() == b"pyramidal tiff"
     assert FakeOldapClient.created[0][1]["shared:derivativeName"] == "master.tif"
-    assert FakeOldapClient.created[0][1]["shared:checksum"] == hashlib.sha256(
-        b"image bytes"
-    ).hexdigest()
+    assert (
+        FakeOldapClient.created[0][1]["shared:checksum"]
+        == hashlib.sha256(b"image bytes").hexdigest()
+    )
 
 
 def test_heic_upload_uses_content_derived_mime_and_pyramidal_tiff(
@@ -227,6 +252,194 @@ def test_heic_upload_uses_content_derived_mime_and_pyramidal_tiff(
     assert FakeOldapClient.created[0][1]["shared:originalMimeType"] == "image/heic"
 
 
+def test_heic_upload_attaches_asset_to_existing_mediaobject(media_app, monkeypatch):
+    """An existing catalogue record receives only verified delivery metadata."""
+
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    FakeOldapClient.updated = []
+    heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" b"content"
+    checksum = hashlib.sha256(heic).hexdigest()
+    FakeOldapClient.existing_media = {
+        "iri": "test:IMG_0001",
+        "dcterms:type": "dcmitype:StillImage",
+        "shared:originalName": "IMG_0001.HEIC",
+        "shared:originalMimeType": "image/heic",
+        "shared:checksum": checksum,
+        "shared:mediaAccessMode": "local",
+        "shared:protocol": "custom",
+    }
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+
+    class FakeVipsImage:
+        def get_typeof(self, name: str) -> int:
+            return 1 if name in {"vips-loader", "n-pages"} else 0
+
+        def get(self, name: str):
+            return {"vips-loader": "heifload", "n-pages": 1}[name]
+
+        def tiffsave(self, destination: str, **options) -> None:
+            Path(destination).write_bytes(b"pyramidal heic derivative")
+
+    monkeypatch.setattr(
+        module.DERIVATIVE_PROCESSOR,
+        "vips_loader",
+        lambda *args, **kwargs: FakeVipsImage(),
+    )
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "catalogue",
+            "identifier": "IMG_0001",
+            "existingResourceIri": "test:IMG_0001",
+            "untrusted:description": "must not be forwarded",
+            "file": (io.BytesIO(heic), "IMG_0001.HEIC", "application/octet-stream"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["attachedToExistingResource"] is True
+    assert FakeOldapClient.created == []
+    assert FakeOldapClient.updated == [
+        (
+            "test:IMG_0001",
+            {
+                "shared:serverUrl": "http://localhost:8088/iiif/3/",
+                "shared:assetId": "IMG_0001",
+                "shared:protocol": "iiif",
+                "shared:derivativeName": "master.tif",
+                "shared:path": "testproject/image/catalogue",
+            },
+        )
+    ]
+    asset_root = media_root / "testproject" / "image" / "catalogue" / "IMG_0001"
+    assert (asset_root / "original" / "IMG_0001.HEIC").read_bytes() == heic
+    assert (asset_root / "derived" / "master.tif").is_file()
+
+
+def test_attach_rejects_existing_delivery_metadata_without_writing(
+    media_app, monkeypatch
+):
+    """Attaching never replaces an existing local or external delivery binding."""
+
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    FakeOldapClient.updated = []
+    FakeOldapClient.existing_media = {
+        "iri": "test:IMG_0001",
+        "shared:assetId": "already-bound",
+    }
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "identifier": "replacement",
+            "existingResourceIri": "test:IMG_0001",
+            "file": (io.BytesIO(b"image bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 409
+    assert "shared:assetId" in response.get_json()["message"]
+    assert FakeOldapClient.created == []
+    assert FakeOldapClient.updated == []
+    assert not (media_root / "testproject" / "image" / "replacement").exists()
+
+
+def test_attach_rejects_file_metadata_conflict_and_removes_asset(
+    media_app, monkeypatch
+):
+    """A mismatching binary cannot be attached to an existing catalogue record."""
+
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    FakeOldapClient.updated = []
+    FakeOldapClient.existing_media = {
+        "iri": "test:IMG_0001",
+        "shared:originalName": "different.png",
+    }
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+
+    class FakeVipsImage:
+        def tiffsave(self, destination: str, **options) -> None:
+            Path(destination).write_bytes(b"pyramidal tiff")
+
+    monkeypatch.setattr(
+        module.DERIVATIVE_PROCESSOR,
+        "vips_loader",
+        lambda *args, **kwargs: FakeVipsImage(),
+    )
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "identifier": "IMG_0001",
+            "existingResourceIri": "test:IMG_0001",
+            "file": (io.BytesIO(b"image bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["conflicts"]["shared:originalName"] == {
+        "existing": "different.png",
+        "uploaded": "scan.png",
+    }
+    assert FakeOldapClient.updated == []
+    assert not (media_root / "testproject" / "image" / "IMG_0001").exists()
+
+
+def test_attach_update_failure_removes_new_asset(media_app, monkeypatch):
+    """A rejected OLDAP attachment leaves no unregistered asset directory."""
+
+    module, client, media_root = media_app
+    FailingUpdateOldapClient.existing_media = {
+        "iri": "test:IMG_0001",
+        "shared:originalName": "scan.png",
+        "shared:originalMimeType": "image/png",
+        "shared:checksum": hashlib.sha256(b"image bytes").hexdigest(),
+        "shared:mediaAccessMode": "local",
+        "shared:protocol": "custom",
+    }
+    monkeypatch.setattr(module, "OldapClient", FailingUpdateOldapClient)
+
+    class FakeVipsImage:
+        def tiffsave(self, destination: str, **options) -> None:
+            Path(destination).write_bytes(b"pyramidal tiff")
+
+    monkeypatch.setattr(
+        module.DERIVATIVE_PROCESSOR,
+        "vips_loader",
+        lambda *args, **kwargs: FakeVipsImage(),
+    )
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "identifier": "IMG_0001",
+            "existingResourceIri": "test:IMG_0001",
+            "file": (io.BytesIO(b"image bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 500
+    assert "Failed to update OLDAP resource" in response.get_json()["error"]
+    assert not (media_root / "testproject" / "image" / "IMG_0001").exists()
+
+
 def test_multi_image_heif_single_upload_is_rejected(media_app, monkeypatch):
     """Single upload cannot silently reduce a HEIF collection to its first image."""
 
@@ -264,11 +477,7 @@ def test_multi_image_heif_single_upload_is_rejected(media_app, monkeypatch):
         "Multi-image HEIF files are not supported."
     )
     assert not (
-        media_root
-        / "testproject"
-        / "image"
-        / "archive"
-        / "asset-heif-collection"
+        media_root / "testproject" / "image" / "archive" / "asset-heif-collection"
     ).exists()
 
 
@@ -492,7 +701,9 @@ def test_conversion_failure_removes_new_non_document_asset(media_app, monkeypatc
     ).exists()
 
 
-def test_invalid_pdf_upload_is_rejected_before_resource_creation(media_app, monkeypatch):
+def test_invalid_pdf_upload_is_rejected_before_resource_creation(
+    media_app, monkeypatch
+):
     """Spoofed or incomplete PDF uploads do not create OLDAP resources or asset folders."""
     module, client, media_root = media_app
     FakeOldapClient.created = []
@@ -504,7 +715,11 @@ def test_invalid_pdf_upload_is_rejected_before_resource_creation(media_app, monk
         data={
             "projectId": "test",
             "identifier": "bad-pdf",
-            "file": (io.BytesIO(b"%PDF-1.4\nmissing EOF"), "bad.pdf", "application/pdf"),
+            "file": (
+                io.BytesIO(b"%PDF-1.4\nmissing EOF"),
+                "bad.pdf",
+                "application/pdf",
+            ),
         },
         content_type="multipart/form-data",
     )
@@ -539,7 +754,9 @@ def test_upload_rejects_unsafe_asset_identifier(media_app, monkeypatch, identifi
     assert not (media_root / "escaped-asset").exists()
 
 
-def test_upload_rejects_asset_path_symlink_escape(media_app, monkeypatch, tmp_path_factory):
+def test_upload_rejects_asset_path_symlink_escape(
+    media_app, monkeypatch, tmp_path_factory
+):
     """A storage subpath symlink cannot redirect an upload outside the media root."""
     module, client, media_root = media_app
     FakeOldapClient.created = []
@@ -567,13 +784,22 @@ def test_upload_rejects_asset_path_symlink_escape(media_app, monkeypatch, tmp_pa
     assert not (outside / "symlink-escape").exists()
 
 
-def test_existing_asset_identifier_is_rejected_without_modification(media_app, monkeypatch):
+def test_existing_asset_identifier_is_rejected_without_modification(
+    media_app, monkeypatch
+):
     """A duplicate asset identifier is rejected before existing files are touched."""
     module, client, media_root = media_app
     FakeOldapClient.created = []
     monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
 
-    existing = media_root / "testproject" / "document" / "existing-pdf" / "derived" / "document.pdf"
+    existing = (
+        media_root
+        / "testproject"
+        / "document"
+        / "existing-pdf"
+        / "derived"
+        / "document.pdf"
+    )
     existing.parent.mkdir(parents=True)
     existing.write_bytes(PDF_BYTES)
     existing_thumbnail = existing.parent / "thumb256.jpg"
@@ -665,7 +891,15 @@ def test_pdf_derivative_resolves_as_http_asset(media_app):
     """PDF derivatives are delivered through the HTTP asset path, not IIIF."""
     _, client, media_root = media_app
     asset_id = "asset-pdf"
-    derived = media_root / "fasnacht" / "document" / "archive" / asset_id / "derived" / "document.pdf"
+    derived = (
+        media_root
+        / "fasnacht"
+        / "document"
+        / "archive"
+        / asset_id
+        / "derived"
+        / "document.pdf"
+    )
     derived.parent.mkdir(parents=True)
     derived.write_bytes(PDF_BYTES)
     thumbnail = derived.parent / "thumb256.jpg"
@@ -686,12 +920,17 @@ def test_pdf_derivative_resolves_as_http_asset(media_app):
     assert response.status_code == 204
     assert response.headers["X-OLDAP-Internal-Path"] == str(derived.resolve())
     assert response.headers["X-OLDAP-Content-Type"] == "application/pdf"
-    assert response.headers["X-OLDAP-Content-Disposition"] == 'inline; filename="document.pdf"'
+    assert (
+        response.headers["X-OLDAP-Content-Disposition"]
+        == 'inline; filename="document.pdf"'
+    )
 
     thumbnail_response = client.get(
         f"/auth/asset/{asset_id}?token={token}&derivative=thumb256.jpg"
     )
 
     assert thumbnail_response.status_code == 204
-    assert thumbnail_response.headers["X-OLDAP-Internal-Path"] == str(thumbnail.resolve())
+    assert thumbnail_response.headers["X-OLDAP-Internal-Path"] == str(
+        thumbnail.resolve()
+    )
     assert thumbnail_response.headers["X-OLDAP-Content-Type"] == "image/jpeg"

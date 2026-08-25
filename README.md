@@ -91,6 +91,28 @@ For image delivery via Cantaloupe, the `shared:MediaObject` (or subclass) must p
 The successful `/upload` response exposes the same digest as `checksum`. This
 is an additive response field; existing clients may ignore it.
 
+### Attaching a binary to an existing MediaObject
+
+The normal `/upload` contract remains create-oriented. A caller may additionally
+send `existingResourceIri=<QName-or-IRI>` to attach the uploaded binary and its
+generated derivatives to an already catalogued `shared:MediaObject` subclass.
+This mode is intended for incremental catalogue-first workflows.
+
+Before writing, Mediahelper verifies through OLDAP that the target is an
+authorized MediaObject and has no existing local or external delivery binding.
+After processing, any existing `dcterms:type`, original filename, original MIME,
+or checksum must exactly match the uploaded file. Only missing server-managed
+media facts are added; arbitrary multipart metadata and `attachedToRole` are not
+forwarded, so descriptive metadata and permissions remain unchanged. A conflict
+returns `409` and removes the newly reserved asset directory. OLDAP continues to
+enforce the caller's update permission on the existing instance.
+
+An otherwise unbound record may already contain `shared:mediaAccessMode=local`
+and the provisional `shared:protocol=custom`. Attach mode preserves the access
+mode and replaces only that placeholder protocol with the generated delivery
+protocol. Any actual asset ID, path, server URL, derivative, external URL, or
+non-placeholder protocol still blocks attachment.
+
 ## PDF document uploads
 
 The upload helper treats documents as **PDF-only** assets. A document upload is accepted when media detection identifies a PDF and the stored temporary file contains a PDF header plus EOF marker. This intentionally avoids accepting arbitrary office/document formats until a real conversion and security policy exists.

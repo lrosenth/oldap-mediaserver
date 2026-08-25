@@ -5,6 +5,13 @@
 
 ## Current Architecture
 - `mediaserver/app.py` contains the Flask app. It validates uploads, stores originals and derivatives, registers `shared:MediaObject` resources through `oldap-api`, and resolves `/asset/...` requests for Caddy.
+- The single-file `/upload` route remains create-oriented by default and also
+  accepts an optional `existingResourceIri`. That additive mode attaches a new
+  asset only to an authorized MediaObject without delivery metadata, verifies
+  existing file identity facts, and updates only missing server-managed media
+  properties; it never forwards descriptive fields or changes permissions. An
+  unbound `local`/`custom` catalogue placeholder may transition to its generated
+  IIIF or HTTP protocol, while any real delivery binding remains immutable.
 - `mediaserver/config.py` parses environment-backed mediahelper settings without
   filesystem or network side effects and freezes the approved ZIP/worker
   security limits. `mediaserver/storage.py` provides the Flask-independent

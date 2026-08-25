@@ -15,6 +15,7 @@ help:
 	@echo "  show-versions     Show component tags passed to deployment"
 	@echo "  deploy-production Deploy the media stack to production"
 	@echo "  deploy-test       Deploy the media stack to media.home.org"
+	@echo "  run-local         Start docker images locally"
 
 show-versions:
 	@echo "IMAGESERVER_TAG=$(IMAGESERVER_TAG)"
@@ -48,3 +49,9 @@ deploy-test: check-auth-secrets
 		-e "auth_secrets_file=$(AUTH_SECRETS_FILE)" $(ANSIBLE_VAULT_ARGS) \
 		-e oldap_imageserver_tag="$(IMAGESERVER_TAG)" \
 		-e oldap_mediahelper_tag="$(MEDIAHELPER_TAG)" $(ANSIBLE_ARGS)
+
+run-local:
+	docker compose \
+		--profile zip-import-validation \
+		--profile zip-export-worker \
+		up -d

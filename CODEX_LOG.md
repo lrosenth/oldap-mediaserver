@@ -42,6 +42,18 @@
 - Open: Step 11D must verify checksums, create derivatives, call the atomic OLDAP commit, recover leased work, and perform terminal cleanup. Step 11E must provision persistent storage and explicitly route/deploy `/media/v1`.
 - Risks/Assumptions: A Step 11C commit request intentionally stops in `verifying`; no production client can reach the routes through Caddy yet. The existing untracked `imageserver/test-images/` directory was not modified.
 
+### Update 2026-08-24 22:34
+- Decisions: Exercise the new contract through the local `:local` image before considering a versioned release.
+- Implementation: Built `lrosenth/oldap-mediahelper:local`, recreated only the local Mediahelper service, and verified its proxied health response as version 0.2.4. Caddy and Cantaloupe remained running. Prepared the real Chama HEIC attachment/IIIF verification script outside the repository.
+- Open: Execute the password-gated real attachment, inspect OLDAP and IIIF round trips, then decide the immutable component version for any non-local deployment.
+- Risks/Assumptions: The real binary attachment is still pending user-supplied authentication. The unrelated existing Makefile modification and the independently restarting ingest worker were not changed.
+
+### Update 2026-08-24 22:30
+- Decisions: Add a backward-compatible attachment mode to the existing single-file upload route instead of deleting/recreating catalogue records or weakening create semantics. Permit only the explicit unbound `local`/`custom` placeholder transition to generated IIIF/HTTP delivery metadata.
+- Implementation: Added `existingResourceIri` preflight, authorized MediaObject lookup, exact existing file-identity checks, server-managed-only instance updates, placeholder protocol replacement, and rollback on conflicts or update failure. Extended the OLDAP client with authenticated MediaObject lookup/update operations, documented the contract, and added success, overwrite-prevention, metadata-conflict, and rollback regression coverage. The complete media suite passes: 179 passed, 1 skipped.
+- Open: Build the local mediahelper image, restart only the required local service, attach the real Chama HEIC file, and verify its pyramidal TIFF plus IIIF response before frontend integration.
+- Risks/Assumptions: The running local mediahelper still contains the previous image until rebuilt. Production publication requires a new immutable component version/tag. The unrelated existing Makefile modification remains untouched.
+
 ### Update 2026-08-19 22:52
 - Decisions: Fail closed when libvips omits HEIF image-count evidence and apply the same single-image policy to direct uploads and ZIP imports.
 - Implementation: Added a shared strict HEIF page-count probe, rejected multi-image direct uploads before derivative creation, added missing-metadata and multi-image regression tests, and completed a two-pass final review.

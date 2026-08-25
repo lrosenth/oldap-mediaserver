@@ -188,8 +188,14 @@ def create_app() -> Flask:
         resources={
             r"/upload/*": {"origins": cors_origins},
             r"/delete/*": {"origins": cors_origins},
-            r"/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
-            r"/auth/asset/*": {"origins": cors_origins, "methods": ["GET", "HEAD", "OPTIONS"]},
+            r"/asset/*": {
+                "origins": cors_origins,
+                "methods": ["GET", "HEAD", "OPTIONS"],
+            },
+            r"/auth/asset/*": {
+                "origins": cors_origins,
+                "methods": ["GET", "HEAD", "OPTIONS"],
+            },
             r"/health": {"origins": cors_origins},
             r"/media/v1/*": {
                 "origins": cors_origins,
@@ -322,14 +328,17 @@ def create_app() -> Flask:
     @app.get("/health")
     @app.get("/status")
     def health_status():
-        return jsonify(
-            {
-                "status": "ok",
-                "service": "oldap-mediahelper",
-                "version": app.config.get("APP_VERSION", "unknown"),
-                "versionSource": app.config.get("APP_VERSION_SOURCE", "default"),
-            }
-        ), 200
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "service": "oldap-mediahelper",
+                    "version": app.config.get("APP_VERSION", "unknown"),
+                    "versionSource": app.config.get("APP_VERSION_SOURCE", "default"),
+                }
+            ),
+            200,
+        )
 
     def import_error(status: int, code: str, message: str):
         """Return the closed media-ingest error contract without sensitive data."""
@@ -418,9 +427,7 @@ def create_app() -> Flask:
         try:
             authorize_export_download(request.args.get("token"), export_id)
         except ExportDownloadAuthenticationUnavailable:
-            app.logger.error(
-                "Export download authentication is not safely configured."
-            )
+            app.logger.error("Export download authentication is not safely configured.")
             response = jsonify({"message": "Export download unavailable."})
             response.status_code = 503
             response.headers["Cache-Control"] = "no-store"
@@ -451,10 +458,8 @@ def create_app() -> Flask:
             artifact.archive_path.resolve(strict=True)
         )
         response.headers["X-Oldap-Content-Type"] = "application/zip"
-        response.headers["X-Oldap-Content-Disposition"] = (
-            content_disposition_header(
-                "attachment", f"oldap-export-{export_id}.zip"
-            )
+        response.headers["X-Oldap-Content-Disposition"] = content_disposition_header(
+            "attachment", f"oldap-export-{export_id}.zip"
         )
         response.headers["X-Oldap-Digest"] = export_digest_header(
             artifact.evidence.archive_sha256
@@ -474,21 +479,35 @@ def create_app() -> Flask:
         """Stream one authorized ZIP into atomically finalized quarantine."""
         token = upload_bearer_token()
         if token is None:
-            return import_error(401, "UPLOAD_AUTH_REQUIRED", "Upload authorization required.")
+            return import_error(
+                401, "UPLOAD_AUTH_REQUIRED", "Upload authorization required."
+            )
         try:
             capability = decode_upload_capability(token, import_id)
         except UploadAuthenticationUnavailable:
             app.logger.error("ZIP upload authentication is not safely configured.")
-            return import_error(503, "UPLOAD_AUTH_UNAVAILABLE", "Upload service unavailable.")
+            return import_error(
+                503, "UPLOAD_AUTH_UNAVAILABLE", "Upload service unavailable."
+            )
         except InvalidUploadCapability:
-            return import_error(401, "UPLOAD_AUTH_INVALID", "Invalid or expired upload authorization.")
+            return import_error(
+                401, "UPLOAD_AUTH_INVALID", "Invalid or expired upload authorization."
+            )
         except UploadCapabilityMismatch:
-            return import_error(403, "UPLOAD_AUTH_MISMATCH", "Upload authorization does not match this import.")
+            return import_error(
+                403,
+                "UPLOAD_AUTH_MISMATCH",
+                "Upload authorization does not match this import.",
+            )
         except ValueError:
-            return import_error(400, "IMPORT_ID_INVALID", "importId must be a canonical UUID.")
+            return import_error(
+                400, "IMPORT_ID_INVALID", "importId must be a canonical UUID."
+            )
 
         if request.mimetype != "application/zip":
-            return import_error(415, "ZIP_MEDIA_TYPE_REQUIRED", "Content-Type must be application/zip.")
+            return import_error(
+                415, "ZIP_MEDIA_TYPE_REQUIRED", "Content-Type must be application/zip."
+            )
         raw_length = request.headers.get("Content-Length")
         raw_request_id = request.headers.get("X-Upload-Request-Id")
         try:
@@ -496,9 +515,15 @@ def create_app() -> Flask:
             if str(UUID(str(raw_request_id))) != str(raw_request_id).lower():
                 raise ValueError
         except (TypeError, ValueError):
-            return import_error(400, "UPLOAD_HEADERS_INVALID", "Valid Content-Length and X-Upload-Request-Id headers are required.")
+            return import_error(
+                400,
+                "UPLOAD_HEADERS_INVALID",
+                "Valid Content-Length and X-Upload-Request-Id headers are required.",
+            )
         if not 1 <= declared_size <= capability.max_bytes:
-            return import_error(413, "UPLOAD_SIZE_LIMIT", "Upload exceeds its authorized byte limit.")
+            return import_error(
+                413, "UPLOAD_SIZE_LIMIT", "Upload exceeds its authorized byte limit."
+            )
 
         try:
             validation_bytes = potential_extracted_bytes(
@@ -514,13 +539,23 @@ def create_app() -> Flask:
                 required_capacity_bytes=declared_size + validation_bytes,
             )
         except UploadTooLarge:
-            return import_error(413, "UPLOAD_SIZE_LIMIT", "Upload exceeds its authorized byte limit.")
+            return import_error(
+                413, "UPLOAD_SIZE_LIMIT", "Upload exceeds its authorized byte limit."
+            )
         except InvalidZipContent:
-            return import_error(415, "ZIP_CONTENT_INVALID", "Uploaded content is not a supported ZIP.")
+            return import_error(
+                415, "ZIP_CONTENT_INVALID", "Uploaded content is not a supported ZIP."
+            )
         except UploadLengthMismatch:
-            return import_error(400, "UPLOAD_LENGTH_MISMATCH", "Uploaded bytes differ from Content-Length.")
+            return import_error(
+                400,
+                "UPLOAD_LENGTH_MISMATCH",
+                "Uploaded bytes differ from Content-Length.",
+            )
         except FinalizedUploadConflict:
-            return import_error(409, "UPLOAD_ALREADY_FINALIZED", "Import SIP is already finalized.")
+            return import_error(
+                409, "UPLOAD_ALREADY_FINALIZED", "Import SIP is already finalized."
+            )
         except PhysicalCapacityInsufficient as error:
             facts = error.snapshot
             app.logger.warning(
@@ -542,7 +577,9 @@ def create_app() -> Flask:
                 import_id,
                 type(error).__name__,
             )
-            return import_error(500, "UPLOAD_STORAGE_FAILED", "SIP could not be durably stored.")
+            return import_error(
+                500, "UPLOAD_STORAGE_FAILED", "SIP could not be durably stored."
+            )
 
         if receipt.state_notification == "PENDING":
             try:
@@ -567,7 +604,6 @@ def create_app() -> Flask:
         if not replay:
             response.headers["Location"] = f"/imports/{import_id}/sip"
         return response
-
 
     @app.get("/auth/asset/<asset_id>")
     @app.get("/auth/asset/<asset_id>/<which>")
@@ -605,6 +641,7 @@ def create_app() -> Flask:
         requested_derivative = request.args.get("derivative", "").strip()
 
         if claims:
+
             def _first_claim(v):
                 return v[0] if isinstance(v, list) and v else v
 
@@ -618,12 +655,16 @@ def create_app() -> Flask:
 
         if not claims:
             try:
-                mo_client = OldapClient(oldap_api_url=oldap_api_url, projectId=None, token=None)
+                mo_client = OldapClient(
+                    oldap_api_url=oldap_api_url, projectId=None, token=None
+                )
                 mo = mo_client.get_mediaobject_by_assetid_unknown(asset_id)
             except requests.exceptions.HTTPError as exc:
                 if getattr(exc.response, "status_code", None) == 404:
                     abort(404, description="MediaObject not found")
-                app.logger.error(f"OLDAP lookup HTTP error for asset_id={asset_id}: {exc}")
+                app.logger.error(
+                    f"OLDAP lookup HTTP error for asset_id={asset_id}: {exc}"
+                )
                 abort(502, description="Upstream OLDAP API error")
             except Exception as exc:
                 app.logger.error(f"OLDAP lookup failed for asset_id={asset_id}: {exc}")
@@ -639,8 +680,12 @@ def create_app() -> Flask:
                 return v
 
             resolved_path = _first(mo.get("shared:path") or mo.get("path"))
-            derivative_name = _first(mo.get("shared:derivativeName") or mo.get("derivativeName"))
-            original_name = _first(mo.get("shared:originalName") or mo.get("originalName"))
+            derivative_name = _first(
+                mo.get("shared:derivativeName") or mo.get("derivativeName")
+            )
+            original_name = _first(
+                mo.get("shared:originalName") or mo.get("originalName")
+            )
             protocol = _first(mo.get("shared:protocol") or mo.get("protocol"))
 
         # IIIF media may expose the uploaded original through /asset/.../original
@@ -667,12 +712,16 @@ def create_app() -> Flask:
                 if not derivative_name:
                     abort(404, description="Missing derivativeName")
                 filename = Path(str(derivative_name)).name
-            internal = (IMAGE_ROOT / base_rel / asset_id / "derived" / filename).resolve()
+            internal = (
+                IMAGE_ROOT / base_rel / asset_id / "derived" / filename
+            ).resolve()
         else:
             if not original_name:
                 abort(404, description="Missing originalName")
             filename = Path(str(original_name)).name
-            internal = (IMAGE_ROOT / base_rel / asset_id / "original" / filename).resolve()
+            internal = (
+                IMAGE_ROOT / base_rel / asset_id / "original" / filename
+            ).resolve()
 
         # Ensure the resolved file is within IMAGE_ROOT (no traversal)
         try:
@@ -697,7 +746,9 @@ def create_app() -> Flask:
         resp.headers["X-OLDAP-Internal-Path"] = str(internal)
         resp.headers["X-OLDAP-Content-Type"] = mime
         disposition = "attachment" if request.args.get("download") == "1" else "inline"
-        resp.headers["X-OLDAP-Content-Disposition"] = content_disposition_header(disposition, filename)
+        resp.headers["X-OLDAP-Content-Disposition"] = content_disposition_header(
+            disposition, filename
+        )
         if cors_origin := allowed_cors_origin():
             resp.headers["X-OLDAP-Cors-Allow-Origin"] = cors_origin
         return resp
@@ -707,13 +758,21 @@ def create_app() -> Flask:
     # ------------------------------------------------------------------
     @app.post("/upload")
     def upload():
+        """Store one media asset and create or enrich its OLDAP resource.
+
+        The legacy/default mode creates a new resource and accepts arbitrary
+        ontology metadata from the multipart form. When ``existingResourceIri``
+        is supplied, the handler instead attaches the generated local asset to
+        that existing MediaObject and changes only server-managed media facts.
+        """
         required_form_fields = {
-            'resourceClass',
-            'projectId',
-            'path',
-            'identifier',
-            'targetFormat',
-            'attachedToRole',
+            "resourceClass",
+            "projectId",
+            "path",
+            "identifier",
+            "targetFormat",
+            "attachedToRole",
+            "existingResourceIri",
         }
 
         #
@@ -724,30 +783,114 @@ def create_app() -> Flask:
         resource_class = request.form.get("resourceClass", "shared:MediaObject")
 
         # get the projectID from the query parameters. It's needed for the OldapClient...
-        if (projectId := request.form.get('projectId', None)) is None:
+        if (projectId := request.form.get("projectId", None)) is None:
             return jsonify({"message": "Missing projectId field"}), 400
 
         # create the OldapClient which make the connection to the oldap server and reads the project data
         try:
-            client = OldapClient(oldap_api_url=oldap_api_url, projectId=projectId, token=token)
+            client = OldapClient(
+                oldap_api_url=oldap_api_url, projectId=projectId, token=token
+            )
         except Exception as exc:
             return jsonify({"message": f"Could not connect to oldap: {exc}"}), 400
 
+        existing_resource_iri = (
+            request.form.get("existingResourceIri", "").strip() or None
+        )
+        existing_resource = None
+
+        def existing_scalar(property_iri: str):
+            """Normalize OLDAP's scalar-or-singleton-list media response."""
+            if existing_resource is None:
+                return None
+            value = existing_resource.get(property_iri)
+            if isinstance(value, list):
+                if len(value) > 1:
+                    raise ValueError(
+                        f"Existing MediaObject has multiple {property_iri} values"
+                    )
+                return value[0] if value else None
+            return value
+
+        if existing_resource_iri:
+            try:
+                existing_resource = client.get_mediaobject_by_iri(existing_resource_iri)
+            except Exception as exc:
+                return (
+                    jsonify({"message": f"Could not read existing MediaObject: {exc}"}),
+                    400,
+                )
+            if existing_resource is None:
+                return jsonify({"message": "Existing MediaObject not found"}), 404
+            existing_delivery_fields = {
+                "shared:assetId",
+                "shared:serverUrl",
+                "shared:path",
+                "shared:derivativeName",
+                "shared:mediaUrl",
+            }
+            populated_delivery_fields = sorted(
+                field
+                for field in existing_delivery_fields
+                if existing_resource.get(field)
+            )
+            if populated_delivery_fields:
+                return (
+                    jsonify(
+                        {
+                            "message": (
+                                "Existing MediaObject already has delivery metadata: "
+                                + ", ".join(populated_delivery_fields)
+                            )
+                        }
+                    ),
+                    409,
+                )
+            try:
+                existing_access_mode = existing_scalar("shared:mediaAccessMode")
+                existing_protocol = existing_scalar("shared:protocol")
+            except ValueError as exc:
+                return jsonify({"message": str(exc)}), 409
+            if existing_access_mode not in {None, "local"}:
+                return (
+                    jsonify(
+                        {
+                            "message": "Existing MediaObject is not an unbound local asset"
+                        }
+                    ),
+                    409,
+                )
+            if existing_protocol not in {None, "custom"}:
+                return (
+                    jsonify(
+                        {
+                            "message": (
+                                "Existing MediaObject already declares a non-placeholder "
+                                "delivery protocol"
+                            )
+                        }
+                    ),
+                    409,
+                )
+
         # get the projectIri and projectShortName from the project data
-        if (projectIri := client.project.get('projectIri')) is None:
+        if (projectIri := client.project.get("projectIri")) is None:
             return jsonify({"message": "Could not find project"}), 404
-        if (projectShortName := client.project.get('projectShortName')) is None:
+        if (projectShortName := client.project.get("projectShortName")) is None:
             return jsonify({"message": "Could not find projectShortName"}), 404
 
         # check if the user has the permission to upload images (ADMIN_CREATE permission)
         try:
-            permissions = authorization.inProject.get(
-                Iri(projectIri, validate=True)
-            ) or set()
+            permissions = (
+                authorization.inProject.get(Iri(projectIri, validate=True)) or set()
+            )
         except OldapError:
             return jsonify({"message": f'problem with projectIri "{projectIri}"'}), 404
         if AdminPermission.ADMIN_CREATE not in permissions:
-            return jsonify({"message": "You don't have permission to upload images"}), 403
+            return (
+                jsonify({"message": "You don't have permission to upload images"}),
+                403,
+            )
 
         if "file" not in request.files:
             return jsonify({"message": "Missing file field"}), 400
@@ -757,7 +900,7 @@ def create_app() -> Flask:
         if not upload_file.filename:
             return jsonify({"message": "No file selected for uploading"}), 400
 
-        fpath = request.form.get('path', None)
+        fpath = request.form.get("path", None)
 
         # User-provided subpath (relative)
         try:
@@ -805,9 +948,15 @@ def create_app() -> Flask:
         except StoragePathEscapeError as exc:
             return jsonify({"message": str(exc)}), 403
         except AssetAlreadyExistsError:
-            return jsonify({"message": f'Asset identifier "{identifier}" already exists'}), 409
+            return (
+                jsonify({"message": f'Asset identifier "{identifier}" already exists'}),
+                409,
+            )
         except OSError as exc:
-            return jsonify({"error": f"Could not initialize asset directory: {exc}"}), 500
+            return (
+                jsonify({"error": f"Could not initialize asset directory: {exc}"}),
+                500,
+            )
 
         asset_base_rel = layout.base_relative
         asset_root = layout.root
@@ -818,7 +967,11 @@ def create_app() -> Flask:
         orig_ext = Path(upload_file.filename).suffix or ".dat"
 
         # Store original file (as received), sanitized for filename
-        original_name = Path(upload_file.filename).name if upload_file.filename else f"{identifier}{orig_ext}"
+        original_name = (
+            Path(upload_file.filename).name
+            if upload_file.filename
+            else f"{identifier}{orig_ext}"
+        )
         original_path = original_dir / original_name
 
         try:
@@ -833,27 +986,36 @@ def create_app() -> Flask:
                     upload_file.save(tmp_path)
                     with tmp_path.open("rb") as source_handle:
                         heif_variant = detect_heif_variant(source_handle.read(4096))
-                    heif_claimed = (
-                        Path(upload_file.filename).suffix.casefold()
-                        in HEIF_EXTENSION_MIME_TYPES
-                        or upload_file.mimetype.lower() in {"image/heic", "image/heif"}
-                    )
+                    heif_claimed = Path(
+                        upload_file.filename
+                    ).suffix.casefold() in HEIF_EXTENSION_MIME_TYPES or upload_file.mimetype.lower() in {
+                        "image/heic",
+                        "image/heif",
+                    }
                     if heif_claimed and heif_variant is None:
                         shutil.rmtree(asset_root, ignore_errors=True)
-                        return jsonify(
-                            {
-                                "message": (
-                                    "The uploaded file is not a supported "
-                                    "HEIF/HEIC still image."
-                                )
-                            }
-                        ), 400
+                        return (
+                            jsonify(
+                                {
+                                    "message": (
+                                        "The uploaded file is not a supported "
+                                        "HEIF/HEIC still image."
+                                    )
+                                }
+                            ),
+                            400,
+                        )
                     if heif_variant is not None:
                         if media_type is not MediaType.IMAGE:
                             shutil.rmtree(asset_root, ignore_errors=True)
-                            return jsonify(
-                                {"message": "HEIF/HEIC content must be uploaded as an image."}
-                            ), 400
+                            return (
+                                jsonify(
+                                    {
+                                        "message": "HEIF/HEIC content must be uploaded as an image."
+                                    }
+                                ),
+                                400,
+                            )
                         if (
                             probe_heif_page_count(
                                 tmp_path,
@@ -869,7 +1031,9 @@ def create_app() -> Flask:
                         )
                     if media_type == MediaType.DOCUMENT:
                         probe_pdf_structure(tmp_path)
-                    stored_original = store_original_with_sha256(tmp_path, original_path)
+                    stored_original = store_original_with_sha256(
+                        tmp_path, original_path
+                    )
                 except InvalidPdfError as exc:
                     shutil.rmtree(asset_root, ignore_errors=True)
                     return jsonify({"message": str(exc)}), 400
@@ -878,7 +1042,10 @@ def create_app() -> Flask:
                     return jsonify({"message": str(exc)}), 400
                 except Exception as exc:
                     shutil.rmtree(asset_root, ignore_errors=True)
-                    return jsonify({"error": f"Could not store uploaded file: {exc}"}), 500
+                    return (
+                        jsonify({"error": f"Could not store uploaded file: {exc}"}),
+                        500,
+                    )
 
                 try:
                     DERIVATIVE_PROCESSOR.logger = app.logger
@@ -897,7 +1064,10 @@ def create_app() -> Flask:
                     return jsonify({"error": str(exc)}), 500
         except OSError as exc:
             shutil.rmtree(asset_root, ignore_errors=True)
-            return jsonify({"error": f"Could not initialize upload workspace: {exc}"}), 500
+            return (
+                jsonify({"error": f"Could not initialize upload workspace: {exc}"}),
+                500,
+            )
 
         out_path = derivative_result.primary
         derivative_name = out_path.name
@@ -913,42 +1083,95 @@ def create_app() -> Flask:
         thumb128_url = f"{asset_url}?derivative=thumb128.jpg"
         thumb256_url = f"{asset_url}?derivative=thumb256.jpg"
 
-        resource_data : dict[str, str | list[str]] = {
-            'dcterms:type': classification.dcterms_type,
-            'shared:originalName': upload_file.filename,
-            'shared:originalMimeType': classification.original_mime_type,
+        resource_data: dict[str, str | list[str]] = {
+            "dcterms:type": classification.dcterms_type,
+            "shared:originalName": upload_file.filename,
+            "shared:originalMimeType": classification.original_mime_type,
             # For images, serverUrl is the IIIF base; for other media, it is the Caddy base.
-            'shared:serverUrl': iiif_base_url if media_type == MediaType.IMAGE else media_base_url,
+            "shared:serverUrl": (
+                iiif_base_url if media_type == MediaType.IMAGE else media_base_url
+            ),
             # New canonical key
-            'shared:assetId': identifier,
-            'shared:protocol': classification.protocol,
-            'shared:derivativeName': derivative_name,
+            "shared:assetId": identifier,
+            "shared:protocol": classification.protocol,
+            "shared:derivativeName": derivative_name,
             # Store the logical folder (relative to IMAGE_ROOT) for later retrieval / housekeeping
-            'shared:path': asset_base_rel.as_posix(),
-            'shared:mediaAccessMode': "local",
+            "shared:path": asset_base_rel.as_posix(),
+            "shared:mediaAccessMode": "local",
         }
-        if roles:
-            resource_data['attachedToRole'] = roles
-        for key in request.form.keys():
-            if key not in required_form_fields:
-                resource_data[key] = request.form.getlist(key)
+        if existing_resource is None:
+            if roles:
+                resource_data["attachedToRole"] = roles
+            for key in request.form.keys():
+                if key not in required_form_fields:
+                    resource_data[key] = request.form.getlist(key)
         # Integrity metadata is always server-managed. Assign it after optional
         # client metadata so a multipart field can never spoof the digest.
-        resource_data['shared:checksum'] = stored_original.sha256
+        resource_data["shared:checksum"] = stored_original.sha256
+
+        if existing_resource is not None:
+            try:
+                conflicts = {
+                    property_iri: {
+                        "existing": existing_value,
+                        "uploaded": uploaded_value,
+                    }
+                    for property_iri, uploaded_value in resource_data.items()
+                    if (existing_value := existing_scalar(property_iri)) is not None
+                    and str(existing_value) != str(uploaded_value)
+                    and not (
+                        property_iri == "shared:protocol"
+                        and str(existing_value) == "custom"
+                    )
+                }
+            except ValueError as exc:
+                shutil.rmtree(asset_root, ignore_errors=True)
+                return jsonify({"message": str(exc)}), 409
+            if conflicts:
+                shutil.rmtree(asset_root, ignore_errors=True)
+                return (
+                    jsonify(
+                        {
+                            "message": "Uploaded file conflicts with existing media metadata",
+                            "conflicts": conflicts,
+                        }
+                    ),
+                    409,
+                )
+
+            resource_data = {
+                property_iri: value
+                for property_iri, value in resource_data.items()
+                if existing_scalar(property_iri) is None
+                or (
+                    property_iri == "shared:protocol"
+                    and str(existing_scalar(property_iri)) == "custom"
+                )
+            }
         try:
-            response = client.create_resource(resource=resource_class, resource_data=resource_data)
+            if existing_resource_iri:
+                response = client.update_resource(existing_resource_iri, resource_data)
+            else:
+                response = client.create_resource(
+                    resource=resource_class, resource_data=resource_data
+                )
         except Exception as exc:
             # The directory is exclusively owned by this upload, so failed
             # registration must not leave an unaddressable partial asset.
             shutil.rmtree(asset_root, ignore_errors=True)
-            return jsonify({"error": f"Failed to create OLDAP resource: {exc}"}), 500
+            operation = "update" if existing_resource_iri else "create"
+            return (
+                jsonify({"error": f"Failed to {operation} OLDAP resource: {exc}"}),
+                500,
+            )
 
         return jsonify(
             {
                 "identifier": identifier,
                 "assetId": identifier,
                 "imageId": identifier,  # backwards compatibility
-                "iri": response['iri'],
+                "iri": response["iri"],
+                "attachedToExistingResource": existing_resource_iri is not None,
                 "originalName": upload_file.filename,
                 "originalMimeType": classification.original_mime_type,
                 "checksum": stored_original.sha256,
@@ -959,11 +1182,16 @@ def create_app() -> Flask:
                 "iiifInfoUrl": iiif_info_url,
                 "assetUrl": asset_url,
                 "storedPath": asset_base_rel.as_posix(),
-                "thumb128Name": thumb128_path.name if thumb128_path is not None else None,
-                "thumb256Name": thumb256_path.name if thumb256_path is not None else None,
+                "thumb128Name": (
+                    thumb128_path.name if thumb128_path is not None else None
+                ),
+                "thumb256Name": (
+                    thumb256_path.name if thumb256_path is not None else None
+                ),
                 "thumb128Url": thumb128_url if thumb128_path is not None else None,
                 "thumb256Url": thumb256_url if thumb256_path is not None else None,
-            }        )
+            }
+        )
 
     @app.delete("/upload/<asset_id>")
     def delete(asset_id):
@@ -985,7 +1213,10 @@ def create_app() -> Flask:
         try:
             response = requests.get(url, headers=headers, timeout=10)
         except requests.exceptions.Timeout as exc:
-            return jsonify({"error": f"Timeout: Failed to fetch OLDAP resource: {exc}"}), 500
+            return (
+                jsonify({"error": f"Timeout: Failed to fetch OLDAP resource: {exc}"}),
+                500,
+            )
         except requests.exceptions.RequestException as exc:
             return jsonify({"error": f"Failed to fetch OLDAP resource: {exc}"}), 500
         res = response.json()
@@ -998,7 +1229,9 @@ def create_app() -> Flask:
             graph_qname = Xsd_QName(graph)
         except OldapError:
             return jsonify({"error": f"Invalid graph: {graph}"}), 400
-        project_id = graph_qname.prefix  # The graph QName for data is "<projectid>:data"
+        project_id = (
+            graph_qname.prefix
+        )  # The graph QName for data is "<projectid>:data"
 
         #
         # now let's check if the user has the permission to delete the asset
@@ -1014,11 +1247,17 @@ def create_app() -> Flask:
         try:
             response = requests.delete(url, headers=headers, timeout=10)
         except requests.exceptions.Timeout as exc:
-            return jsonify({"error": f"Timeout: Failed to fetch OLDAP resource: {exc}"}), 500
+            return (
+                jsonify({"error": f"Timeout: Failed to fetch OLDAP resource: {exc}"}),
+                500,
+            )
         except requests.exceptions.RequestException as exc:
             return jsonify({"error": f"Failed to fetch OLDAP resource: {exc}"}), 500
         if response.status_code < 200 or response.status_code >= 300:
-            return jsonify({"error": f"Failed to delete OLDAP resource: {response.text}"}), 500
+            return (
+                jsonify({"error": f"Failed to delete OLDAP resource: {response.text}"}),
+                500,
+            )
 
         raw_asset_basepath = res.get("shared:path", "")
         if isinstance(raw_asset_basepath, list):
@@ -1039,7 +1278,6 @@ def create_app() -> Flask:
             shutil.rmtree(asset_root)
 
         return jsonify({"message": f"Deleted asset {asset_id} at {asset_root}"}), 200
-
 
     try:
         reconcile_seconds = int(
