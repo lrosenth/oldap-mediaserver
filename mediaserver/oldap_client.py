@@ -105,6 +105,42 @@ class OldapClient:
         response.raise_for_status()
         return response.json()
 
+    def authorize_staging_upload(
+        self, staging_area_iri: str, staging_folder_iri: str
+    ) -> dict:
+        """Resolve a writable Staging target through oldap-api.
+
+        Storage paths and default permissions are security-sensitive and must
+        therefore come from OLDAP rather than from multipart form fields.
+
+        Args:
+            staging_area_iri: Selected StagingArea QName or absolute IRI.
+            staging_folder_iri: Selected child StagingFolder QName or IRI.
+
+        Returns:
+            Trusted upload configuration returned by oldap-api.
+
+        Raises:
+            requests.HTTPError: If the target is missing, protected, or not
+                writable for the bearer token.
+            RuntimeError: If oldap-api returns an unexpected response body.
+        """
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        response = requests.post(
+            f"{self.oldap_api_url}/data/{quote(str(self.projectId), safe='')}/staging-upload-target",
+            json={
+                "stagingAreaIri": staging_area_iri,
+                "stagingFolderIri": staging_folder_iri,
+            },
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("oldap-api returned an unexpected Staging target response")
+        return data
+
     def update_resource(self, resource_iri: str, resource_data: dict) -> dict:
         """Update an existing project resource through the normal OLDAP API.
 

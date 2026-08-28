@@ -12,6 +12,12 @@
   properties; it never forwards descriptive fields or changes permissions. An
   unbound `local`/`custom` catalogue placeholder may transition to its generated
   IIIF or HTTP protocol, while any real delivery binding remains immutable.
+- The same `/upload` route has a strict `shared:StagingMediaObject` mode for
+  one-file preparation workflows. The browser supplies only project, selected
+  StagingArea/folder, and file; oldap-api authorizes the target and supplies the
+  media path, quota, default role permission, and area/folder relations. Client
+  path/role overrides are rejected, the initial status is always
+  `shared:StagingStatusNew`, and registration failure removes the new asset.
 - `mediaserver/config.py` parses environment-backed mediahelper settings without
   filesystem or network side effects and freezes the approved ZIP/worker
   security limits. `mediaserver/storage.py` provides the Flask-independent

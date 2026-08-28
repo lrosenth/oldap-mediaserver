@@ -116,6 +116,13 @@ class FakeOldapClient:
     created: list[tuple[str, dict]] = []
     updated: list[tuple[str, dict]] = []
     existing_media: dict | None = None
+    staging_target: dict = {
+        "stagingAreaIri": "test:Area",
+        "stagingFolderIri": "test:Photos",
+        "mediaPath": "trusted-staging",
+        "quotaBytes": 10_000_000,
+        "attachedToRole": {"test:Curator": "DATA_PERMISSIONS"},
+    }
 
     def __init__(
         self, oldap_api_url: str, projectId: str | None = None, token: str | None = None
@@ -128,6 +135,13 @@ class FakeOldapClient:
     def create_resource(self, resource: str, resource_data: dict) -> dict:
         self.created.append((resource, resource_data))
         return {"iri": "test:mediaObject"}
+
+    def authorize_staging_upload(
+        self, staging_area_iri: str, staging_folder_iri: str
+    ) -> dict:
+        assert staging_area_iri == "test:Area"
+        assert staging_folder_iri == "test:Photos"
+        return self.staging_target
 
     def get_mediaobject_by_iri(self, resource_iri: str) -> dict | None:
         return self.existing_media
@@ -203,6 +217,80 @@ def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
         FakeOldapClient.created[0][1]["shared:checksum"]
         == hashlib.sha256(b"image bytes").hexdigest()
     )
+
+
+def test_staging_upload_uses_only_server_derived_target_facts(media_app, monkeypatch):
+    """Folder, path, status, and permissions cannot be selected independently."""
+
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+
+    class FakeVipsImage:
+        def tiffsave(self, destination: str, **options) -> None:
+            Path(destination).write_bytes(b"pyramidal tiff")
+
+    monkeypatch.setattr(
+        module.DERIVATIVE_PROCESSOR,
+        "vips_loader",
+        lambda *args, **kwargs: FakeVipsImage(),
+    )
+
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "resourceClass": "shared:StagingMediaObject",
+            "stagingAreaIri": "test:Area",
+            "stagingFolderIri": "test:Photos",
+            "identifier": "staging-image",
+            "file": (io.BytesIO(b"image bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200, response.get_json()
+    resource_class, metadata = FakeOldapClient.created[0]
+    assert resource_class == "shared:StagingMediaObject"
+    assert metadata["attachedToRole"] == {"test:Curator": "DATA_PERMISSIONS"}
+    assert metadata["shared:inStagingArea"] == "test:Area"
+    assert metadata["shared:inStagingFolder"] == "test:Photos"
+    assert metadata["shared:stagingStatus"] == "shared:StagingStatusNew"
+    assert metadata["shared:path"] == "testproject/image/trusted-staging"
+    assert (
+        media_root
+        / "testproject"
+        / "image"
+        / "trusted-staging"
+        / "staging-image"
+        / "derived"
+        / "master.tif"
+    ).is_file()
+
+
+def test_staging_upload_rejects_client_path_and_role_overrides(media_app, monkeypatch):
+    """Trusted Staging configuration cannot be shadowed by multipart fields."""
+
+    module, client, _ = media_app
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "resourceClass": "shared:StagingMediaObject",
+            "stagingAreaIri": "test:Area",
+            "stagingFolderIri": "test:Photos",
+            "path": "untrusted",
+            "attachedToRole": '{"test:Admin": "DATA_PERMISSIONS"}',
+            "file": (io.BytesIO(b"image bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert "server-owned" in response.get_json()["message"]
 
 
 def test_heic_upload_uses_content_derived_mime_and_pyramidal_tiff(

@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-08-29 01:15
+- Decisions: Extend the proven single-file media pipeline with a strict Staging mode instead of creating a second derivative implementation. Treat storage path, role permission, folder relations, and initial status as server-owned facts.
+- Implementation: Added oldap-api target authorization to `OldapClient`; made `/upload` create a fully linked `shared:StagingMediaObject`, reject client path/role overrides, enforce the per-file quota ceiling, retain rollback, and return target evidence; updated OpenAPI and focused upload regressions.
+- Open: Restart/rebuild the media service and perform one Chama image acceptance upload. Aggregate existing-area quota accounting and ZIP/bulk ingest remain separate increments.
+- Risks/Assumptions: The route currently rejects a single file larger than the area quota but does not yet sum all standalone uploads. Normal and existing-resource uploads retain their previous behavior. All tests were isolated from GraphDB.
+
 ### Update 2026-08-23 19:26
 - Decisions: Resolve the complete Step-11 final-check findings with durable state preceding destructive filesystem effects, bounded ownership checks, and fair worker scheduling. Preserve the legacy `/upload` route and disabled-by-default deployment.
 - Implementation: Made cancellation persist `cancelled` and pending cleanup before returning; retained quota until leased cleanup proves the private directory absent; alternated processing and cleanup; fenced initialization and orphan reconciliation with the same per-upload OS lock; removed only canonical unregistered UUID directories at worker startup and every five minutes; aligned UUID, IRI, filename, and comment canonicalization with oldap-api; and added crash, starvation, orphan, cancellation, and boundary regressions.

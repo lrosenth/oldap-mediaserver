@@ -773,6 +773,8 @@ def create_app() -> Flask:
             "targetFormat",
             "attachedToRole",
             "existingResourceIri",
+            "stagingAreaIri",
+            "stagingFolderIri",
         }
 
         #
@@ -781,6 +783,10 @@ def create_app() -> Flask:
         token, authorization = require_access_token()
 
         resource_class = request.form.get("resourceClass", "shared:MediaObject")
+        is_staging_upload = resource_class in {
+            "shared:StagingMediaObject",
+            "http://oldap.org/shared#StagingMediaObject",
+        }
 
         # get the projectID from the query parameters. It's needed for the OldapClient...
         if (projectId := request.form.get("projectId", None)) is None:
@@ -797,6 +803,8 @@ def create_app() -> Flask:
         existing_resource_iri = (
             request.form.get("existingResourceIri", "").strip() or None
         )
+        if is_staging_upload and existing_resource_iri:
+            return jsonify({"message": "A Staging upload must create a new resource"}), 400
         existing_resource = None
 
         def existing_scalar(property_iri: str):
@@ -900,7 +908,58 @@ def create_app() -> Flask:
         if not upload_file.filename:
             return jsonify({"message": "No file selected for uploading"}), 400
 
-        fpath = request.form.get("path", None)
+        staging_target = None
+        if is_staging_upload:
+            staging_area_iri = request.form.get("stagingAreaIri", "").strip()
+            staging_folder_iri = request.form.get("stagingFolderIri", "").strip()
+            if not staging_area_iri or not staging_folder_iri:
+                return (
+                    jsonify(
+                        {
+                            "message": (
+                                "stagingAreaIri and stagingFolderIri are required "
+                                "for a Staging upload"
+                            )
+                        }
+                    ),
+                    400,
+                )
+            if request.form.get("path") or request.form.get("attachedToRole"):
+                return (
+                    jsonify(
+                        {
+                            "message": (
+                                "path and attachedToRole are server-owned for a "
+                                "Staging upload"
+                            )
+                        }
+                    ),
+                    400,
+                )
+            try:
+                staging_target = client.authorize_staging_upload(
+                    staging_area_iri, staging_folder_iri
+                )
+                fpath = str(staging_target["mediaPath"])
+                roles = staging_target["attachedToRole"]
+                quota_bytes = int(staging_target["quotaBytes"])
+                if not fpath or not isinstance(roles, dict) or not roles or quota_bytes <= 0:
+                    raise ValueError("Incomplete Staging upload configuration")
+            except Exception as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                return (
+                    jsonify({"message": f"Staging target authorization failed: {exc}"}),
+                    status if status in {400, 403, 404, 409} else 502,
+                )
+        else:
+            fpath = request.form.get("path", None)
+            roles = {}
+            roles_json = request.form.get("attachedToRole")
+            if roles_json:
+                try:
+                    roles = json.loads(roles_json)
+                except json.JSONDecodeError:
+                    return jsonify({"message": "attachedToRole must be valid JSON"}), 400
 
         # User-provided subpath (relative)
         try:
@@ -930,11 +989,6 @@ def create_app() -> Flask:
             identifier = validate_asset_identifier(identifier)
         except ValueError as exc:
             return jsonify({"message": str(exc)}), 400
-
-        roles = {}
-        roles_json = request.form.get("attachedToRole")
-        if roles_json:
-            roles = json.loads(roles_json)
 
         # Reserve a create-only asset directory before writing any bitstreams.
         try:
@@ -1034,6 +1088,21 @@ def create_app() -> Flask:
                     stored_original = store_original_with_sha256(
                         tmp_path, original_path
                     )
+                    if (
+                        staging_target is not None
+                        and stored_original.size_bytes > quota_bytes
+                    ):
+                        shutil.rmtree(asset_root, ignore_errors=True)
+                        return (
+                            jsonify(
+                                {
+                                    "message": (
+                                        "The uploaded file exceeds the StagingArea quota."
+                                    )
+                                }
+                            ),
+                            413,
+                        )
                 except InvalidPdfError as exc:
                     shutil.rmtree(asset_root, ignore_errors=True)
                     return jsonify({"message": str(exc)}), 400
@@ -1105,6 +1174,16 @@ def create_app() -> Flask:
             for key in request.form.keys():
                 if key not in required_form_fields:
                     resource_data[key] = request.form.getlist(key)
+            if staging_target is not None:
+                # These relations are authoritative results of the OLDAP target
+                # check and are deliberately assigned after client metadata.
+                resource_data["shared:inStagingArea"] = staging_target[
+                    "stagingAreaIri"
+                ]
+                resource_data["shared:inStagingFolder"] = staging_target[
+                    "stagingFolderIri"
+                ]
+                resource_data["shared:stagingStatus"] = "shared:StagingStatusNew"
         # Integrity metadata is always server-managed. Assign it after optional
         # client metadata so a multipart field can never spoof the digest.
         resource_data["shared:checksum"] = stored_original.sha256
@@ -1190,6 +1269,12 @@ def create_app() -> Flask:
                 ),
                 "thumb128Url": thumb128_url if thumb128_path is not None else None,
                 "thumb256Url": thumb256_url if thumb256_path is not None else None,
+                "stagingAreaIri": (
+                    staging_target["stagingAreaIri"] if staging_target else None
+                ),
+                "stagingFolderIri": (
+                    staging_target["stagingFolderIri"] if staging_target else None
+                ),
             }
         )
 
