@@ -10,7 +10,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
+from time import sleep
 from uuid import UUID, uuid5
 
 import pytest
@@ -24,6 +25,7 @@ from config import MobileUploadLimits  # noqa: E402
 import mobile_upload_registry as registry_module  # noqa: E402
 from mobile_upload_domain import (  # noqa: E402
     CommitUpload,
+    ContentDuplicateResult,
     InitializeUpload,
     MobileAccessIdentity,
     MobileUploadError,
@@ -112,6 +114,105 @@ def registry(tmp_path: Path, clock: Clock) -> MobileUploadRegistry:
     return MobileUploadRegistry(tmp_path / "mobile", limits(), clock=clock)
 
 
+def commit_upload(
+    registry: MobileUploadRegistry,
+    request: InitializeUpload | None = None,
+    *,
+    owner: MobileAccessIdentity = OWNER,
+    target: ResolvedMobileInbox | None = None,
+    init_key: str = INIT_KEY,
+    commit_key: str = COMMIT_KEY,
+) -> str:
+    """Advance one fixture through the durable registry commit boundary."""
+
+    upload_request = request or initialize_request()
+    upload_target = target or destination(upload_request.staging_area_id)
+    status, created = registry.initialize(
+        owner, upload_request, upload_target, init_key
+    )
+    assert created is True and not isinstance(status, ContentDuplicateResult)
+    complete_initialized_upload(
+        registry,
+        status.upload_id,
+        upload_request,
+        owner=owner,
+        target=upload_target,
+        commit_key=commit_key,
+    )
+    return status.upload_id
+
+
+def complete_initialized_upload(
+    registry: MobileUploadRegistry,
+    upload_id: str,
+    request: InitializeUpload,
+    *,
+    owner: MobileAccessIdentity = OWNER,
+    target: ResolvedMobileInbox | None = None,
+    commit_key: str = COMMIT_KEY,
+) -> None:
+    """Complete an already initialized fixture through all durable phases."""
+
+    upload_target = target or destination(request.staging_area_id)
+    registry.append_chunk(
+        upload_id,
+        owner,
+        expected_offset=0,
+        upload_length=request.byte_length,
+        chunk=b"abcd",
+        destination=upload_target,
+    )
+    registry.append_chunk(
+        upload_id,
+        owner,
+        expected_offset=4,
+        upload_length=request.byte_length,
+        chunk=b"efgh",
+        destination=upload_target,
+    )
+    registry.request_commit(
+        upload_id,
+        owner,
+        CommitUpload(
+            request.client_asset_id,
+            request.byte_length,
+            request.checksum,
+        ),
+        upload_target,
+        commit_key,
+    )
+    worker_id = "88888888-8888-4888-8888-888888888888"
+    claim = registry.claim_next_processing(worker_id)
+    assert claim is not None and claim.upload_id == upload_id
+    claim = registry.record_checksum_verified(claim, request.checksum)
+    claim = registry.record_derivatives_ready(claim)
+    claim = registry.record_files_published(
+        claim,
+        {
+            "ownerUploadId": upload_id,
+            "assetId": request.client_asset_id,
+            "byteLength": request.byte_length,
+            "checksum": request.checksum,
+            "derivativeNames": ["master.tif"],
+            "storagePath": upload_target.storage_path,
+        },
+    )
+    claim = registry.record_oldap_committed(
+        claim,
+        {
+            "eventId": claim.event_id,
+            "uploadId": upload_id,
+            "clientAssetId": request.client_asset_id,
+            "stagingAreaId": request.staging_area_id,
+            "assetId": request.client_asset_id,
+            "resourceIri": "urn:uuid:99999999-9999-4999-8999-999999999999",
+            "checksum": request.checksum,
+            "committedAt": "2026-08-22T12:00:00Z",
+        },
+    )
+    registry.complete_commit(claim)
+
+
 def test_request_validation_and_rfc8785_hash_are_closed_and_stable() -> None:
     body = {
         "clientAssetId": ASSET,
@@ -194,6 +295,572 @@ def test_initialization_is_exactly_replayable_and_persistent(
     assert reconciled_created is False
     assert replay == first == reconciled
     assert restarted.get_status(first.upload_id, OWNER) == first
+
+
+def test_committed_content_duplicate_is_distinct_permanent_and_location_independent(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    original_upload = commit_upload(registry)
+    restarted = MobileUploadRegistry(registry.root, limits(), clock=clock)
+    committed, committed_created = restarted.initialize(
+        OWNER,
+        initialize_request(),
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa0",
+    )
+    assert committed_created is False
+    assert not isinstance(committed, ContentDuplicateResult)
+    assert committed.upload_id == original_upload
+    assert committed.state == "committed"
+    assert committed.asset_id == ASSET
+
+    cleanup = registry.claim_next_cleanup("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    assert cleanup is not None and cleanup.upload_id == original_upload
+    registry.remove_claimed_upload_directory(cleanup)
+    registry.complete_cleanup(cleanup)
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE mobile_uploads
+            SET mobile_folder_id = ?, resource_iri = ?
+            WHERE upload_id = ?
+            """,
+            (
+                "urn:uuid:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+                "urn:uuid:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac",
+                original_upload,
+            ),
+        )
+
+    duplicate_request = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaad"
+    )
+    first, created = registry.initialize(
+        OWNER,
+        duplicate_request,
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaae",
+    )
+    replay, replay_created = restarted.initialize(
+        OWNER,
+        duplicate_request,
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaf",
+    )
+
+    assert created is replay_created is False
+    assert (
+        first
+        == replay
+        == ContentDuplicateResult(
+            duplicate_request.client_asset_id, AREA, duplicate_request.checksum
+        )
+    )
+    assert first.to_dict() == {
+        "clientAssetId": duplicate_request.client_asset_id,
+        "stagingAreaId": AREA,
+        "state": "content-duplicate",
+        "checksum": duplicate_request.checksum,
+    }
+    assert original_upload not in str(first.to_dict())
+    assert ASSET not in str(first.to_dict())
+    with sqlite3.connect(registry.database_path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM mobile_uploads").fetchone()[0] == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_receipts"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_duplicates"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_v2_registry_backfills_permanent_content_receipts(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    original_upload = commit_upload(registry)
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.executescript(
+            """
+            DROP TABLE mobile_content_duplicate_idempotency;
+            DROP TABLE mobile_content_duplicates;
+            DROP TABLE mobile_content_reservations;
+            DROP TABLE mobile_content_receipts;
+            PRAGMA user_version = 2;
+            """
+        )
+
+    migrated = MobileUploadRegistry(registry.root, limits(), clock=clock)
+    duplicate_request = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab1"
+    )
+    result, created = migrated.initialize(
+        OWNER,
+        duplicate_request,
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab2",
+    )
+
+    assert created is False
+    assert result == ContentDuplicateResult(
+        duplicate_request.client_asset_id, AREA, duplicate_request.checksum
+    )
+    with sqlite3.connect(registry.database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        receipt = connection.execute(
+            """
+            SELECT committed_upload_id, client_asset_id, staging_area_id, checksum
+            FROM mobile_content_receipts
+            """
+        ).fetchone()
+    assert receipt == (original_upload, ASSET, AREA, duplicate_request.checksum)
+
+
+def test_registry_startup_serializes_schema_migration(
+    registry: MobileUploadRegistry,
+    clock: Clock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status, _ = registry.initialize(
+        OWNER, initialize_request(), destination(), INIT_KEY
+    )
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.executescript(
+            """
+            DROP TABLE mobile_content_duplicate_idempotency;
+            DROP TABLE mobile_content_duplicates;
+            DROP TABLE mobile_content_reservations;
+            DROP TABLE mobile_content_receipts;
+            PRAGMA user_version = 2;
+            """
+        )
+
+    original = MobileUploadRegistry._initialize_database
+    guard = Lock()
+    first_entered = Event()
+    release_first = Event()
+    calls = 0
+    active = 0
+    maximum_active = 0
+
+    def observed_initialize_database(self: MobileUploadRegistry) -> None:
+        nonlocal calls, active, maximum_active
+        with guard:
+            is_first = calls == 0
+            calls += 1
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            if is_first:
+                first_entered.set()
+                assert release_first.wait(timeout=5)
+            original(self)
+        finally:
+            with guard:
+                active -= 1
+
+    monkeypatch.setattr(
+        MobileUploadRegistry, "_initialize_database", observed_initialize_database
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            MobileUploadRegistry, registry.root, limits(), clock=clock
+        )
+        assert first_entered.wait(timeout=5)
+        second = executor.submit(
+            MobileUploadRegistry, registry.root, limits(), clock=clock
+        )
+        sleep(0.1)
+        with guard:
+            assert maximum_active == 1
+        release_first.set()
+        migrated = [first.result(timeout=5), second.result(timeout=5)]
+
+    assert all(
+        candidate.get_status(status.upload_id, OWNER).state == "initialized"
+        for candidate in migrated
+    )
+    with sqlite3.connect(registry.database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_reservations"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_registry_fails_closed_when_active_reservation_is_missing(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    status, _ = registry.initialize(
+        OWNER, initialize_request(), destination(), INIT_KEY
+    )
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            "DELETE FROM mobile_content_reservations WHERE upload_id = ?",
+            (status.upload_id,),
+        )
+
+    with pytest.raises(MobileUploadInvariantError, match="no durable content"):
+        MobileUploadRegistry(registry.root, limits(), clock=clock)
+
+
+def test_registry_fails_closed_when_committed_receipt_is_missing(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    upload_id = commit_upload(registry)
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            "DELETE FROM mobile_content_receipts WHERE committed_upload_id = ?",
+            (upload_id,),
+        )
+
+    with pytest.raises(MobileUploadInvariantError, match="no permanent content"):
+        MobileUploadRegistry(registry.root, limits(), clock=clock)
+
+
+def test_registry_fails_closed_when_committed_result_identity_changes(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    commit_upload(registry)
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE mobile_assets
+            SET committed_resource_iri = 'urn:uuid:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            WHERE client_asset_id = ?
+            """,
+            (ASSET,),
+        )
+
+    with pytest.raises(MobileUploadInvariantError, match="receipt is contradictory"):
+        MobileUploadRegistry(registry.root, limits(), clock=clock)
+
+
+def test_registry_fails_closed_when_active_asset_ownership_changes(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    registry.initialize(OWNER, initialize_request(), destination(), INIT_KEY)
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE mobile_assets SET owner_user_iri = ?
+            WHERE client_asset_id = ?
+            """,
+            (OTHER_OWNER.user_iri, ASSET),
+        )
+
+    with pytest.raises(
+        MobileUploadInvariantError, match="reservation is contradictory"
+    ):
+        MobileUploadRegistry(registry.root, limits(), clock=clock)
+
+
+def test_registry_fails_closed_when_committed_asset_scope_changes(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    commit_upload(registry)
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE mobile_assets SET staging_area_id = ?
+            WHERE client_asset_id = ?
+            """,
+            (OTHER_AREA, ASSET),
+        )
+
+    with pytest.raises(MobileUploadInvariantError, match="ownership is contradictory"):
+        MobileUploadRegistry(registry.root, limits(), clock=clock)
+
+
+def test_registry_fails_closed_when_duplicate_history_owner_changes(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    first, _ = registry.initialize(OWNER, initialize_request(), destination(), INIT_KEY)
+    assert not isinstance(first, ContentDuplicateResult)
+    registry.cancel(first.upload_id, OWNER)
+    commit_upload(
+        registry,
+        initialize_request(client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab3"),
+        init_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab4",
+        commit_key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab5",
+    )
+    registry.initialize(
+        OWNER,
+        initialize_request(),
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab6",
+    )
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE mobile_content_duplicates SET owner_user_iri = ?
+            WHERE client_asset_id = ?
+            """,
+            (OTHER_OWNER.user_iri, ASSET),
+        )
+
+    with pytest.raises(
+        MobileUploadInvariantError, match="contradictory permanent outcomes"
+    ):
+        MobileUploadRegistry(registry.root, limits(), clock=clock)
+
+
+def test_registry_fails_closed_when_idempotency_namespaces_overlap(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    original_upload = commit_upload(registry)
+    duplicate_request = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab7"
+    )
+    duplicate_key = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab8"
+    registry.initialize(OWNER, duplicate_request, destination(), duplicate_key)
+    with sqlite3.connect(registry.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO mobile_idempotency (
+                owner_user_id, owner_user_iri, staging_area_id, idempotency_key,
+                operation, request_hash, upload_id, created_at
+            ) VALUES (?, ?, ?, ?, 'initialize', 'contradictory', ?, ?)
+            """,
+            (
+                OWNER.user_id,
+                OWNER.user_iri,
+                AREA,
+                duplicate_key,
+                original_upload,
+                "2026-08-22T12:00:00Z",
+            ),
+        )
+
+    with pytest.raises(MobileUploadInvariantError, match="namespaces overlap"):
+        MobileUploadRegistry(registry.root, limits(), clock=clock)
+
+
+def test_same_checksum_in_another_staging_area_remains_independent(
+    registry: MobileUploadRegistry,
+) -> None:
+    commit_upload(registry)
+    request = initialize_request(
+        client_asset_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        staging_area_id=OTHER_AREA,
+    )
+
+    result, created = registry.initialize(
+        OTHER_OWNER,
+        request,
+        destination(OTHER_AREA),
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc",
+    )
+
+    assert created is True
+    assert not isinstance(result, ContentDuplicateResult)
+    assert result.staging_area_id == OTHER_AREA
+
+
+def test_concurrent_new_client_assets_reserve_identical_content_once(
+    registry: MobileUploadRegistry,
+) -> None:
+    requests = [
+        initialize_request(client_asset_id="cccccccc-cccc-4ccc-8ccc-ccccccccccc1"),
+        initialize_request(client_asset_id="cccccccc-cccc-4ccc-8ccc-ccccccccccc2"),
+    ]
+    keys = [
+        "cccccccc-cccc-4ccc-8ccc-ccccccccccc3",
+        "cccccccc-cccc-4ccc-8ccc-ccccccccccc4",
+    ]
+
+    def initialize_index(index: int) -> tuple[str, object]:
+        try:
+            result, created = registry.initialize(
+                OWNER, requests[index], destination(), keys[index]
+            )
+            return "created" if created else "existing", result
+        except MobileUploadError as error:
+            return "error", error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(initialize_index, range(2)))
+
+    assert sorted(kind for kind, _ in results) == ["created", "error"]
+    created_result = next(value for kind, value in results if kind == "created")
+    blocked = next(value for kind, value in results if kind == "error")
+    assert not isinstance(created_result, ContentDuplicateResult)
+    assert isinstance(blocked, MobileUploadError)
+    assert blocked.code == "content_upload_in_progress"
+    assert blocked.retryable is True
+    winner = next(
+        request
+        for request in requests
+        if request.client_asset_id == created_result.client_asset_id
+    )
+    loser = next(request for request in requests if request is not winner)
+    complete_initialized_upload(registry, created_result.upload_id, winner)
+
+    duplicate, created = registry.initialize(
+        OWNER,
+        loser,
+        destination(),
+        "cccccccc-cccc-4ccc-8ccc-ccccccccccc5",
+    )
+
+    assert created is False
+    assert isinstance(duplicate, ContentDuplicateResult)
+    assert duplicate.client_asset_id == loser.client_asset_id
+    with sqlite3.connect(registry.database_path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM mobile_uploads").fetchone()[0] == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_receipts"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_cancelled_and_expired_generations_release_content_reservations(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    first, _ = registry.initialize(OWNER, initialize_request(), destination(), INIT_KEY)
+    assert not isinstance(first, ContentDuplicateResult)
+    registry.cancel(first.upload_id, OWNER)
+    second_request = initialize_request(
+        client_asset_id="dddddddd-dddd-4ddd-8ddd-ddddddddddd1"
+    )
+    second, second_created = registry.initialize(
+        OWNER,
+        second_request,
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd2",
+    )
+    assert second_created is True and not isinstance(second, ContentDuplicateResult)
+
+    clock.value += timedelta(seconds=61)
+    assert registry.get_status(second.upload_id, OWNER).state == "expired"
+    third, third_created = registry.initialize(
+        OWNER,
+        initialize_request(client_asset_id="dddddddd-dddd-4ddd-8ddd-ddddddddddd3"),
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd4",
+    )
+
+    assert third_created is True
+    assert not isinstance(third, ContentDuplicateResult)
+
+
+def test_terminal_generation_can_converge_to_a_later_duplicate_after_restart(
+    registry: MobileUploadRegistry, clock: Clock
+) -> None:
+    first, _ = registry.initialize(OWNER, initialize_request(), destination(), INIT_KEY)
+    assert not isinstance(first, ContentDuplicateResult)
+    registry.cancel(first.upload_id, OWNER)
+
+    committed_request = initialize_request(
+        client_asset_id="dddddddd-dddd-4ddd-8ddd-ddddddddddd5"
+    )
+    commit_upload(
+        registry,
+        request=committed_request,
+        init_key="dddddddd-dddd-4ddd-8ddd-ddddddddddd6",
+        commit_key="dddddddd-dddd-4ddd-8ddd-ddddddddddd7",
+    )
+
+    duplicate, created = registry.initialize(
+        OWNER,
+        initialize_request(),
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd8",
+    )
+    restarted = MobileUploadRegistry(registry.root, limits(), clock=clock)
+    replay, replay_created = restarted.initialize(
+        OWNER,
+        initialize_request(),
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd9",
+    )
+
+    assert created is replay_created is False
+    assert (
+        duplicate
+        == replay
+        == ContentDuplicateResult(ASSET, AREA, initialize_request().checksum)
+    )
+    assert restarted.get_status(first.upload_id, OWNER).state == "cancelled"
+
+
+def test_restarted_client_asset_keeps_its_exact_original_bytes(
+    registry: MobileUploadRegistry,
+) -> None:
+    first, _ = registry.initialize(OWNER, initialize_request(), destination(), INIT_KEY)
+    registry.cancel(first.upload_id, OWNER)
+
+    with pytest.raises(MobileUploadError) as changed_content:
+        registry.initialize(
+            OWNER,
+            initialize_request(checksum="sha256:" + "f" * 64),
+            destination(),
+            "dddddddd-dddd-4ddd-8ddd-ddddddddddd5",
+        )
+
+    restarted, created = registry.initialize(
+        OWNER,
+        initialize_request(original_name="renamed.jpg", comment="Neue Notiz"),
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd6",
+    )
+
+    assert changed_content.value.code == "client_asset_conflict"
+    assert created is True
+    assert not isinstance(restarted, ContentDuplicateResult)
+    assert restarted.upload_id != first.upload_id
+
+
+def test_duplicate_identity_and_idempotency_replays_fail_closed(
+    registry: MobileUploadRegistry,
+) -> None:
+    commit_upload(registry)
+    duplicate_request = initialize_request(
+        client_asset_id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1"
+    )
+    duplicate_key = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2"
+    first, _ = registry.initialize(
+        OWNER, duplicate_request, destination(), duplicate_key
+    )
+    replay, _ = registry.initialize(
+        OWNER, duplicate_request, destination(), duplicate_key
+    )
+
+    with pytest.raises(MobileUploadError) as changed_payload:
+        registry.initialize(
+            OWNER,
+            initialize_request(
+                client_asset_id=duplicate_request.client_asset_id,
+                original_name="changed.jpg",
+            ),
+            destination(),
+            duplicate_key,
+        )
+    with pytest.raises(MobileUploadError) as foreign_owner:
+        registry.initialize(
+            OTHER_OWNER,
+            duplicate_request,
+            destination(),
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3",
+        )
+
+    assert first == replay
+    assert changed_payload.value.code == "idempotency_conflict"
+    assert foreign_owner.value.code == "client_asset_conflict"
+    assert ASSET not in str(foreign_owner.value)
 
 
 def test_simultaneous_initialization_creates_one_generation(
@@ -876,9 +1543,12 @@ def test_registry_migrates_step_11c_schema_without_dropping_transport_data(
         columns = {
             row[1] for row in connection.execute("PRAGMA table_info(mobile_uploads)")
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         migrated = connection.execute(
             "SELECT * FROM mobile_uploads WHERE upload_id = ?", (legacy_upload,)
+        ).fetchone()
+        reservation = connection.execute(
+            "SELECT upload_id FROM mobile_content_reservations"
         ).fetchone()
     assert {
         "storage_path",
@@ -893,9 +1563,14 @@ def test_registry_migrates_step_11c_schema_without_dropping_transport_data(
     assert migrated["event_id"] == expected_event
     assert json.loads(migrated["error_json"])["retryable"] is True
     assert migrated["lease_owner"] is None
+    assert reservation["upload_id"] == legacy_upload
 
+    migrated_checksum = "sha256:" + "b" * 64
     current, _ = registry.initialize(
-        OWNER, initialize_request(), destination(), INIT_KEY
+        OWNER,
+        initialize_request(checksum=migrated_checksum),
+        destination(),
+        INIT_KEY,
     )
     registry.append_chunk(
         current.upload_id,
@@ -916,7 +1591,7 @@ def test_registry_migrates_step_11c_schema_without_dropping_transport_data(
     registry.request_commit(
         current.upload_id,
         OWNER,
-        CommitUpload(ASSET, 8, "sha256:" + "a" * 64),
+        CommitUpload(ASSET, 8, migrated_checksum),
         destination(),
         COMMIT_KEY,
     )
@@ -936,7 +1611,10 @@ def test_active_and_reservation_limits_are_transactional(
     with pytest.raises(MobileUploadError) as active:
         constrained.initialize(
             OWNER,
-            initialize_request(client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            initialize_request(
+                client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                checksum="sha256:" + "b" * 64,
+            ),
             destination(),
             "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         )

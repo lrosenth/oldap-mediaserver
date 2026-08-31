@@ -804,7 +804,10 @@ def create_app() -> Flask:
             request.form.get("existingResourceIri", "").strip() or None
         )
         if is_staging_upload and existing_resource_iri:
-            return jsonify({"message": "A Staging upload must create a new resource"}), 400
+            return (
+                jsonify({"message": "A Staging upload must create a new resource"}),
+                400,
+            )
         existing_resource = None
 
         def existing_scalar(property_iri: str):
@@ -943,7 +946,12 @@ def create_app() -> Flask:
                 fpath = str(staging_target["mediaPath"])
                 roles = staging_target["attachedToRole"]
                 quota_bytes = int(staging_target["quotaBytes"])
-                if not fpath or not isinstance(roles, dict) or not roles or quota_bytes <= 0:
+                if (
+                    not fpath
+                    or not isinstance(roles, dict)
+                    or not roles
+                    or quota_bytes <= 0
+                ):
                     raise ValueError("Incomplete Staging upload configuration")
             except Exception as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -959,7 +967,10 @@ def create_app() -> Flask:
                 try:
                     roles = json.loads(roles_json)
                 except json.JSONDecodeError:
-                    return jsonify({"message": "attachedToRole must be valid JSON"}), 400
+                    return (
+                        jsonify({"message": "attachedToRole must be valid JSON"}),
+                        400,
+                    )
 
         # User-provided subpath (relative)
         try:
@@ -1177,9 +1188,7 @@ def create_app() -> Flask:
             if staging_target is not None:
                 # These relations are authoritative results of the OLDAP target
                 # check and are deliberately assigned after client metadata.
-                resource_data["shared:inStagingArea"] = staging_target[
-                    "stagingAreaIri"
-                ]
+                resource_data["shared:inStagingArea"] = staging_target["stagingAreaIri"]
                 resource_data["shared:inStagingFolder"] = staging_target[
                     "stagingFolderIri"
                 ]

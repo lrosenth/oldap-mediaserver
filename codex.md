@@ -83,10 +83,22 @@
   chunk, and commit acceptance. Bytes are flushed before SQLite advances;
   no-follow recovery truncates only an upload-owned unconfirmed suffix, and
   cancellation first persists its terminal state and pending cleanup, and
-  reservations remain held until leased physical cleanup succeeds. Worker
+  temporary-byte quota remains held until leased physical cleanup succeeds.
+  Exact-content reservations are released as soon as cancellation is
+  authoritative and safe. Worker
   startup reconciles only canonical UUID upload directories that have no
   durable registry row while holding the same per-upload lock as initialization;
   the running worker repeats that reconciliation every five minutes.
+  Registry schema v3 atomically reserves `(StagingArea, SHA-256)` for active
+  generations and replaces that claim with a permanent content receipt at
+  commit. A new client identity for identical same-area bytes receives a
+  privacy-preserving `content-duplicate` result, never an alias to the existing
+  asset; another StagingArea remains independent. Receipts survive upload-root
+  cleanup and are independent of later folder movement, OLDAP resource
+  deletion, or archive transformation. Schema-v1/v2 migration backfills
+  receipts and deterministic reservations and quarantines conflicting legacy
+  work. A dedicated process lock serializes registry creation, migration, and
+  startup validation between the Flask service and mobile worker.
   Commit replay is state-aware: the same stable key may restart an unleased
   retryable failure from its last durable phase, but cannot revive cancelled or
   non-retryable work. The separately runnable mobile worker verifies exact bytes
@@ -108,7 +120,7 @@
   remain retryable. Retryable failures before publication expire safely after
   inactivity, while ambiguous published work is retained for reconciliation.
   Committed cleanup removes only the private upload directory. The registry
-  schema is version 2 and migrates queued Step-11C work to an explicit retryable
+  schema is version 3 and migrates queued Step-11C work to an explicit retryable
   context-refresh state without deleting transport records or poisoning the
   worker queue. Fully compensated uncommitted assets may be explicitly
   cancelled and reinitialized, but are never reopened implicitly.
@@ -218,14 +230,17 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   tagged.
 
 ## Roadmap / Next Steps
-- Mobile backend Step 11 is complete in code and deployment templates. The
+- Mobile backend Step 11 and the Step-13A server reconciliation contract are
+  complete in code and deployment templates. Existing idempotent initialization
+  remains the sole public reconciliation operation; no parallel lookup endpoint
+  was added. Fasnacht Capture Step 13B must consume the new typed
+  same-StagingArea content-duplicate result before coordinated rollout. The
   additive route, private persistent state, hardened worker, reviewed limits,
   fail-closed secret checks, and known-host opt-in are configured but have not
   been deployed. A later operator-controlled rollout must provision the same
   distinct mobile-media JWT secret in oldap-mediaserver and oldap-api plus the
   API-owned service identity, then run the documented Ansible and public
-  authentication-boundary checks. Fasnacht Capture Step 12 will add the client
-  queue that consumes this protocol.
+  authentication-boundary checks.
 - Project-neutral ZIP export Phase 1 is implemented and locally accepted; its
   contracts live in `docs/zip-export/v1`.
   oldap-api will own jobs, authorization, projected manifests, leases,

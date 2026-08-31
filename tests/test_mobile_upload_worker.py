@@ -158,8 +158,13 @@ def queued(
     init_key: str = INIT_KEY,
     commit_key: str = COMMIT_KEY,
 ):
+    checksum = (
+        CHECKSUM
+        if asset == ASSET
+        else f"sha256:{hashlib.sha256(asset.encode('ascii')).hexdigest()}"
+    )
     request = InitializeUpload(
-        asset, AREA, "photo.jpg", "image/jpeg", len(CONTENT), CHECKSUM, "Keller"
+        asset, AREA, "photo.jpg", "image/jpeg", len(CONTENT), checksum, "Keller"
     )
     status, _ = registry.initialize(OWNER, request, destination(), init_key)
     registry.append_chunk(
@@ -181,7 +186,7 @@ def queued(
     registry.request_commit(
         status.upload_id,
         OWNER,
-        CommitUpload(asset, len(CONTENT), CHECKSUM),
+        CommitUpload(asset, len(CONTENT), checksum),
         destination(),
         commit_key,
     )
@@ -218,6 +223,15 @@ def test_happy_commit_is_atomic_and_cleanup_never_removes_final_asset(
     committed = registry.get_status(status.upload_id, OWNER)
     assert committed.state == "committed"
     assert committed.asset_id == ASSET
+    with registry._connect() as connection:
+        receipt_count = connection.execute(
+            "SELECT COUNT(*) FROM mobile_content_receipts"
+        ).fetchone()[0]
+        reservation_count = connection.execute(
+            "SELECT COUNT(*) FROM mobile_content_reservations"
+        ).fetchone()[0]
+    assert receipt_count == 1
+    assert reservation_count == 0
     assert (registry.uploads_root / status.upload_id).exists()
     assert runner.run_once() is True
     assert not (registry.uploads_root / status.upload_id).exists()
@@ -455,6 +469,13 @@ def test_lost_oldap_response_retries_same_publication_and_converges(
     failed = registry.get_status(status.upload_id, OWNER)
     assert failed.state == "failed" and failed.error["retryable"] is True  # type: ignore[index]
     assert assets.compensated is False
+    with registry._connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_reservations"
+            ).fetchone()[0]
+            == 1
+        )
 
     registry.request_commit(
         status.upload_id,
@@ -484,6 +505,13 @@ def test_definite_oldap_rejection_compensates_but_ambiguous_failure_does_not(
     failed = registry.get_status(status.upload_id, OWNER)
     assert failed.state == "failed" and failed.error["retryable"] is False  # type: ignore[index]
     assert assets.compensated is True
+    with registry._connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_reservations"
+            ).fetchone()[0]
+            == 0
+        )
     registry.cancel(status.upload_id, OWNER)
     cleanup = registry.claim_next_cleanup(str(uuid4()))
     assert cleanup is not None

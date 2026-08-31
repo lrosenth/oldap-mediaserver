@@ -13,6 +13,7 @@ from werkzeug.exceptions import BadRequest
 
 from mobile_staging import OldapMobileStagingVerifier
 from mobile_upload_domain import (
+    ContentDuplicateResult,
     MobileAccessIdentity,
     MobileUploadError,
     MobileUploadInvariantError,
@@ -74,13 +75,17 @@ def register_mobile_upload_routes(
             value, max_original_bytes=registry.limits.max_original_bytes
         )
         destination = verifier.verify(token, owner.user_id, parsed.staging_area_id)
-        status, created = registry.initialize(
+        result, created = registry.initialize(
             owner, parsed, destination, idempotency_key
         )
-        response = jsonify(status.to_dict())
+        response = jsonify(result.to_dict())
         response.status_code = 201 if created else 200
         if created:
-            response.headers["Location"] = f"/media/v1/uploads/{status.upload_id}"
+            if isinstance(result, ContentDuplicateResult):
+                raise MobileUploadInvariantError(
+                    "A content duplicate cannot create an upload generation."
+                )
+            response.headers["Location"] = f"/media/v1/uploads/{result.upload_id}"
         return _no_store(response)
 
     @blueprint.get("/uploads/<upload_id>")

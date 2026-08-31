@@ -1,10 +1,22 @@
 # CODEX_LOG
 
+### Update 2026-08-31 20:01
+- Decisions: Integrate the independently developed secure staging `/upload` extension and Step-13A mobile reconciliation additively on the current `main` history; preserve both compatibility baselines and use a distinct combined release version.
+- Implementation: Rebased Step 13A onto the two newer staging-upload commits, retained both documentation histories, set the combined mediahelper version to `0.2.8`, and normalized the newly integrated Python files with the repository's current Black version. The staging `/upload` changes and `/media/v1` registry-v3 changes remain in separate modules and routes.
+- Open: Fasnacht Capture Step 13B must consume `content-duplicate` before a coordinated mobile rollout. The staging-upload acceptance check documented below remains operator-owned.
+- Risks/Assumptions: The integration introduces no shared code-path conflict; the complete combined test and compatibility suite must pass before push.
+
 ### Update 2026-08-29 01:15
 - Decisions: Extend the proven single-file media pipeline with a strict Staging mode instead of creating a second derivative implementation. Treat storage path, role permission, folder relations, and initial status as server-owned facts.
 - Implementation: Added oldap-api target authorization to `OldapClient`; made `/upload` create a fully linked `shared:StagingMediaObject`, reject client path/role overrides, enforce the per-file quota ceiling, retain rollback, and return target evidence; updated OpenAPI and focused upload regressions.
 - Open: Restart/rebuild the media service and perform one Chama image acceptance upload. Aggregate existing-area quota accounting and ZIP/bulk ingest remain separate increments.
 - Risks/Assumptions: The route currently rejects a single file larger than the area quota but does not yet sum all standalone uploads. Normal and existing-resource uploads retain their previous behavior. All tests were isolated from GraphDB.
+
+### Update 2026-08-28 18:58
+- Decisions: Reuse authenticated idempotent `POST /media/v1/uploads` as the sole client-asset reconciliation operation; keep exact-content deduplication separate from operation idempotency and scope it strictly to the currently permitted StagingArea.
+- Implementation: Added registry schema v3 with atomic `(StagingArea, SHA-256)` active reservations, permanent committed-content receipts, closed non-alias duplicate outcomes, privacy-preserving active collisions, v1/v2 backfill and contradiction quarantine, serialized cross-process startup migration, complete durable owner/scope and idempotency-namespace validation, and focused restart, reinstall, race, expiry, permission, migration, worker, and compatibility regressions. Terminal uncommitted upload history may safely converge to a later duplicate outcome without discarding evidence; legacy `/upload`, existing normal `/media/v1` results, OLDAP, token/IIIF, and deployment configuration remain unchanged.
+- Open: Fasnacht Capture Step 13B must consume `content-duplicate` before a coordinated rollout; Step 13C owns the real cross-system reinstall, concurrent-device, movement, deletion, and archive-independence acceptance matrix.
+- Risks/Assumptions: Historical pre-v3 duplicate commits are retained as evidence and block another Capture upload. A same-area duplicate response deliberately exposes no existing remote identifiers, and no local or server media is deleted by this change.
 
 ### Update 2026-08-23 19:26
 - Decisions: Resolve the complete Step-11 final-check findings with durable state preceding destructive filesystem effects, bounded ownership checks, and fair worker scheduling. Preserve the legacy `/upload` route and disabled-by-default deployment.

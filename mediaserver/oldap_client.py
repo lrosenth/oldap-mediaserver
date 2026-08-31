@@ -138,7 +138,9 @@ class OldapClient:
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
-            raise RuntimeError("oldap-api returned an unexpected Staging target response")
+            raise RuntimeError(
+                "oldap-api returned an unexpected Staging target response"
+            )
         return data
 
     def update_resource(self, resource_iri: str, resource_data: dict) -> dict:
