@@ -2512,20 +2512,102 @@ class MobileUploadRegistry:
         ).fetchone()
         if row is None:
             return None
-        if (
-            row["operation"] != operation
-            or row["request_hash"] != request_hash
-            or (
-                expected_upload_id is not None
-                and row["upload_id"] != expected_upload_id
-            )
-        ):
+        if row["operation"] != operation or row["request_hash"] != request_hash:
             raise MobileUploadError(
                 409,
                 "idempotency_conflict",
                 "Idempotency key was reused with another request",
             )
+        if expected_upload_id is not None and row["upload_id"] != expected_upload_id:
+            if operation != "commit" or not self._transfer_terminal_commit_identity(
+                connection,
+                owner,
+                staging_area_id,
+                row,
+                expected_upload_id,
+            ):
+                raise MobileUploadError(
+                    409,
+                    "idempotency_conflict",
+                    "Idempotency key was reused with another request",
+                )
+            return expected_upload_id
         return str(row["upload_id"])
+
+    def _transfer_terminal_commit_identity(
+        self,
+        connection: sqlite3.Connection,
+        owner: MobileAccessIdentity,
+        staging_area_id: str,
+        replay: sqlite3.Row,
+        current_upload_id: str,
+    ) -> bool:
+        """Move one permanent commit key onto the current safe generation.
+
+        A commit key is logical client-asset identity, not permission to revive
+        arbitrary work. Transfer is therefore limited to a newer current
+        generation after the previously bound generation became authoritatively
+        cancelled or safely expired without any committed asset receipt.
+        """
+
+        previous = self._row_for_id(connection, replay["upload_id"])
+        current = self._row_for_id(connection, current_upload_id)
+        asset = connection.execute(
+            "SELECT * FROM mobile_assets WHERE client_asset_id = ?",
+            (current["client_asset_id"],),
+        ).fetchone()
+        if (
+            previous["state"] not in REOPENABLE_STATES
+            or current["state"]
+            not in {
+                "initialized",
+                "uploading",
+                "verifying",
+                "processing",
+                "committing",
+                "failed",
+            }
+            or previous["client_asset_id"] != current["client_asset_id"]
+            or previous["owner_user_iri"] != owner.user_iri
+            or current["owner_user_iri"] != owner.user_iri
+            or previous["staging_area_id"] != staging_area_id
+            or current["staging_area_id"] != staging_area_id
+            or int(current["generation"]) <= int(previous["generation"])
+            or int(previous["byte_length"]) != int(current["byte_length"])
+            or previous["checksum"] != current["checksum"]
+            or asset is None
+            or asset["owner_user_iri"] != owner.user_iri
+            or asset["staging_area_id"] != staging_area_id
+            or asset["current_upload_id"] != current_upload_id
+            or asset["committed_upload_id"] is not None
+            or asset["committed_asset_id"] is not None
+            or asset["committed_resource_iri"] is not None
+            or asset["committed_at"] is not None
+        ):
+            return False
+        transferred = connection.execute(
+            """
+            UPDATE mobile_idempotency
+            SET upload_id = ?, owner_user_id = ?
+            WHERE owner_user_iri = ? AND staging_area_id = ?
+              AND idempotency_key = ? AND operation = 'commit'
+              AND request_hash = ? AND upload_id = ?
+            """,
+            (
+                current_upload_id,
+                owner.user_id,
+                owner.user_iri,
+                staging_area_id,
+                replay["idempotency_key"],
+                replay["request_hash"],
+                previous["upload_id"],
+            ),
+        )
+        if transferred.rowcount != 1:
+            raise MobileUploadInvariantError(
+                "Commit idempotency generation transfer lost its transaction race."
+            )
+        return True
 
     @staticmethod
     def _insert_idempotency(

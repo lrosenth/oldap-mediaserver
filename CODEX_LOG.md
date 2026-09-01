@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-09-01 15:04
+- Decisions: Keep the permanent commit idempotency identity stable across a client-authorized upload-generation restart, but permit its registry binding to move only from an authoritatively cancelled or safely expired generation to the newer current generation of the same immutable asset scope.
+- Implementation: Added a transaction-local, exact owner/StagingArea/clientAssetId/size/checksum and no-receipt guard before rebinding a commit key; retained conflicts for every foreign, committed, stale, or otherwise incompatible reuse; added the cancelled-generation regression; bumped mediahelper to 0.2.9; and passed Black, Poetry metadata validation, and the complete 290-test suite with three planned skips.
+- Open: Step 13C owns the live cross-system restart and reinstall acceptance matrix.
+- Risks/Assumptions: No route, payload, deployment setting, legacy `/upload` behavior, or existing normal `/media/v1` replay changes. The transfer is possible only inside the same SQLite transaction and only while the permanent asset row identifies the replacement as its current generation.
+
 ### Update 2026-08-31 20:01
 - Decisions: Integrate the independently developed secure staging `/upload` extension and Step-13A mobile reconciliation additively on the current `main` history; preserve both compatibility baselines and use a distinct combined release version.
 - Implementation: Rebased Step 13A onto the two newer staging-upload commits, retained both documentation histories, set the combined mediahelper version to `0.2.8`, and normalized the newly integrated Python files with the repository's current Black version. The staging `/upload` changes and `/media/v1` registry-v3 changes remain in separate modules and routes.

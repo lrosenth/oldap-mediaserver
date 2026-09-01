@@ -285,6 +285,12 @@ is never aliased to the committed asset. A checksum in another StagingArea is
 independent and undisclosed. Receipts survive private-upload cleanup and do not
 depend on the medium's later folder, resource location, deletion, or archive
 transformation.
+The stable commit idempotency key remains the logical client-asset identity
+across a server-authorized generation restart. Its registry binding can move
+only from a cancelled or safely expired generation to the newer current
+generation for the same immutable owner, StagingArea, byte length, and checksum,
+and only before any committed receipt exists. All other key reuse remains an
+idempotency conflict.
 Registry creation, migration, and startup validation are serialized by a
 dedicated process lock shared by the Flask service and mobile worker, so a
 simultaneous container start cannot quarantine valid legacy work.

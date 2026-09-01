@@ -101,7 +101,12 @@
   startup validation between the Flask service and mobile worker.
   Commit replay is state-aware: the same stable key may restart an unleased
   retryable failure from its last durable phase, but cannot revive cancelled or
-  non-retryable work. The separately runnable mobile worker verifies exact bytes
+  non-retryable work. If a cancelled or safely expired generation is explicitly
+  replaced for the same owner, StagingArea, client asset, byte length, and
+  checksum, the permanent commit key follows only that newer current generation
+  in the same transaction and only while no committed receipt exists. This keeps
+  the client-level commit identity stable without allowing cross-asset or
+  cross-scope replay. The separately runnable mobile worker verifies exact bytes
   and image signatures, reuses the existing HEIF probe and derivative processor,
   prepares and fsyncs upload-owned assets, copies them into an owner-marked
   hidden staging path on the final-media mount, installs ownership evidence

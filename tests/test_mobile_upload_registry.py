@@ -1164,6 +1164,69 @@ def test_same_commit_key_restarts_only_a_retryable_unleased_failure(
     assert committed is False
 
 
+def test_commit_key_follows_only_a_safely_cancelled_asset_generation(
+    registry: MobileUploadRegistry,
+) -> None:
+    first, _ = registry.initialize(OWNER, initialize_request(), destination(), INIT_KEY)
+    registry.append_chunk(
+        first.upload_id,
+        OWNER,
+        expected_offset=0,
+        upload_length=8,
+        chunk=b"abcd",
+        destination=destination(),
+    )
+    registry.append_chunk(
+        first.upload_id,
+        OWNER,
+        expected_offset=4,
+        upload_length=8,
+        chunk=b"efgh",
+        destination=destination(),
+    )
+    commit = CommitUpload(ASSET, 8, "sha256:" + "a" * 64)
+    registry.request_commit(first.upload_id, OWNER, commit, destination(), COMMIT_KEY)
+    registry.cancel(first.upload_id, OWNER)
+
+    second, created = registry.initialize(
+        OWNER,
+        initialize_request(),
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-dddddddddda1",
+    )
+    assert created is True
+    assert not isinstance(second, ContentDuplicateResult)
+    registry.append_chunk(
+        second.upload_id,
+        OWNER,
+        expected_offset=0,
+        upload_length=8,
+        chunk=b"abcd",
+        destination=destination(),
+    )
+    registry.append_chunk(
+        second.upload_id,
+        OWNER,
+        expected_offset=4,
+        upload_length=8,
+        chunk=b"efgh",
+        destination=destination(),
+    )
+
+    accepted, committed = registry.request_commit(
+        second.upload_id, OWNER, commit, destination(), COMMIT_KEY
+    )
+
+    assert accepted.state == "verifying"
+    assert committed is False
+    with sqlite3.connect(registry.database_path) as connection:
+        rebound = connection.execute(
+            "SELECT upload_id FROM mobile_idempotency WHERE idempotency_key = ?",
+            (COMMIT_KEY,),
+        ).fetchone()
+    assert rebound == (second.upload_id,)
+
+
 def test_commit_replay_respects_a_later_cancellation(
     registry: MobileUploadRegistry,
 ) -> None:
