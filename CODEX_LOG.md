@@ -1,5 +1,17 @@
 # CODEX_LOG
 
+### Update 2026-09-01 17:06
+- Decisions: Keep the stable media-server roadmap synchronized with the completed Capture Step-13 integration found during the explicit final merge-readiness review.
+- Implementation: Replaced the stale statement that Capture still needed Step 13B with the completed Step-13B/13C consumer and recovery-matrix status. No runtime module, route, payload, test behavior, deployment setting, or generated artifact changed.
+- Open: Deployment and live acceptance remain operator-controlled.
+- Risks/Assumptions: Documentation-only correction; `/upload`, `/media/v1`, token/IIIF consumers, persistence, and worker behavior are unchanged.
+
+### Update 2026-09-01 16:06
+- Decisions: Close the exact Step-13C concurrent-user matrix gap without changing media-server production behavior or widening duplicate disclosure.
+- Implementation: Added a registry regression for two authorized owners racing identical bytes in one StagingArea; proved one active generation, one privacy-preserving `content-duplicate` result after commit, and durable replay after registry restart. The complete suite passes with 291 tests and three planned skips; the changed test passes Black, all modules compile, and a mediahelper 0.2.9 container build/import/HEIF runtime smoke test passes.
+- Open: Production deployment and any destructive live movement/deletion/archive acceptance remain operator-controlled and must use disposable data.
+- Risks/Assumptions: No runtime module, route, payload, `/upload` behavior, deployment setting, token/IIIF consumer, or secret changed. A repository-wide Black check still reports the two pre-existing untouched files `mediaserver/media.py` and `tests/test_asset_auth.py`; the authorized Step-13C test itself is formatted.
+
 ### Update 2026-09-01 15:04
 - Decisions: Keep the permanent commit idempotency identity stable across a client-authorized upload-generation restart, but permit its registry binding to move only from an authoritatively cancelled or safely expired generation to the newer current generation of the same immutable asset scope.
 - Implementation: Added a transaction-local, exact owner/StagingArea/clientAssetId/size/checksum and no-receipt guard before rebinding a commit key; retained conflicts for every foreign, committed, stale, or otherwise incompatible reuse; added the cancelled-generation regression; bumped mediahelper to 0.2.9; and passed Black, Poetry metadata validation, and the complete 290-test suite with three planned skips.

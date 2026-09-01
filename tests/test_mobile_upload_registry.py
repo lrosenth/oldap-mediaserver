@@ -727,6 +727,75 @@ def test_concurrent_new_client_assets_reserve_identical_content_once(
         )
 
 
+def test_concurrent_authorized_users_share_one_private_content_result(
+    registry: MobileUploadRegistry,
+) -> None:
+    requests = [
+        initialize_request(client_asset_id="dddddddd-dddd-4ddd-8ddd-ddddddddddd1"),
+        initialize_request(client_asset_id="dddddddd-dddd-4ddd-8ddd-ddddddddddd2"),
+    ]
+    owners = [OWNER, OTHER_OWNER]
+    keys = [
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd3",
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd4",
+    ]
+
+    def initialize_index(index: int) -> tuple[int, str, object]:
+        try:
+            result, created = registry.initialize(
+                owners[index], requests[index], destination(), keys[index]
+            )
+            return index, "created" if created else "existing", result
+        except MobileUploadError as error:
+            return index, "error", error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(initialize_index, range(2)))
+
+    assert sorted(kind for _, kind, _ in results) == ["created", "error"]
+    winner_index, _, winner = next(row for row in results if row[1] == "created")
+    loser_index, _, blocked = next(row for row in results if row[1] == "error")
+    assert not isinstance(winner, ContentDuplicateResult)
+    assert isinstance(blocked, MobileUploadError)
+    assert blocked.code == "content_upload_in_progress"
+    assert blocked.retryable is True
+    assert requests[winner_index].client_asset_id not in str(blocked)
+
+    complete_initialized_upload(
+        registry,
+        winner.upload_id,
+        requests[winner_index],
+        owner=owners[winner_index],
+    )
+    duplicate, created = registry.initialize(
+        owners[loser_index],
+        requests[loser_index],
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd5",
+    )
+
+    assert created is False
+    assert isinstance(duplicate, ContentDuplicateResult)
+    assert duplicate.client_asset_id == requests[loser_index].client_asset_id
+    assert duplicate.staging_area_id == AREA
+    assert set(duplicate.to_dict()) == {
+        "clientAssetId",
+        "stagingAreaId",
+        "state",
+        "checksum",
+    }
+
+    restarted = MobileUploadRegistry(registry.root, limits(), clock=Clock())
+    replay, replay_created = restarted.initialize(
+        owners[loser_index],
+        requests[loser_index],
+        destination(),
+        "dddddddd-dddd-4ddd-8ddd-ddddddddddd6",
+    )
+    assert replay_created is False
+    assert replay == duplicate
+
+
 def test_cancelled_and_expired_generations_release_content_reservations(
     registry: MobileUploadRegistry, clock: Clock
 ) -> None:

@@ -99,6 +99,9 @@
   receipts and deterministic reservations and quarantines conflicting legacy
   work. A dedicated process lock serializes registry creation, migration, and
   startup validation between the Flask service and mobile worker.
+  The Step-13C cross-user race regression proves that two authorized owners in
+  one StagingArea still create one upload and one private non-alias duplicate
+  outcome, including after registry restart.
   Commit replay is state-aware: the same stable key may restart an unleased
   retryable failure from its last durable phase, but cannot revive cancelled or
   non-retryable work. If a cancelled or safely expired generation is explicitly
@@ -238,14 +241,14 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
 - Mobile backend Step 11 and the Step-13A server reconciliation contract are
   complete in code and deployment templates. Existing idempotent initialization
   remains the sole public reconciliation operation; no parallel lookup endpoint
-  was added. Fasnacht Capture Step 13B must consume the new typed
-  same-StagingArea content-duplicate result before coordinated rollout. The
-  additive route, private persistent state, hardened worker, reviewed limits,
-  fail-closed secret checks, and known-host opt-in are configured but have not
-  been deployed. A later operator-controlled rollout must provision the same
-  distinct mobile-media JWT secret in oldap-mediaserver and oldap-api plus the
-  API-owned service identity, then run the documented Ansible and public
-  authentication-boundary checks.
+  was added. Fasnacht Capture Steps 13B and 13C now consume the typed
+  same-StagingArea content-duplicate result and close the isolated cross-system
+  recovery matrix. The additive route, private persistent state, hardened
+  worker, reviewed limits, fail-closed secret checks, and known-host opt-in are
+  configured but have not been deployed. A later operator-controlled rollout
+  must provision the same distinct mobile-media JWT secret in oldap-mediaserver
+  and oldap-api plus the API-owned service identity, then run the documented
+  Ansible and public authentication-boundary checks.
 - Project-neutral ZIP export Phase 1 is implemented and locally accepted; its
   contracts live in `docs/zip-export/v1`.
   oldap-api will own jobs, authorization, projected manifests, leases,
