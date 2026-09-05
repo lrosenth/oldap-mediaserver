@@ -5,6 +5,7 @@ import importlib
 import hashlib
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,80 @@ def test_delete_requires_access_token(media_app):
 
     assert missing.status_code == 401
     assert media_capability.status_code == 401
+
+
+def test_legacy_delete_coordinates_exact_mobile_files_with_the_worker_lock(
+    media_app, monkeypatch
+):
+    """Mobile-origin deletion shares owner checks and locking without changing the route."""
+
+    module, client, _ = media_app
+    asset_id = "11111111-1111-4111-8111-111111111111"
+    resource_iri = "urn:uuid:22222222-2222-4222-8222-222222222222"
+    calls: list[str] = []
+
+    class Response:
+        status_code = 200
+        text = "ok"
+
+        def __init__(self, payload=None):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    monkeypatch.setattr(
+        module.requests,
+        "get",
+        lambda *args, **kwargs: Response(
+            {
+                "graph": "test:data",
+                "permval": module.DataPermission.DATA_DELETE.numeric,
+                "iri": resource_iri,
+                "shared:path": "test/image/mobile",
+            }
+        ),
+    )
+    monkeypatch.setattr(module.requests, "delete", lambda *args, **kwargs: Response())
+    mobile_asset = types.SimpleNamespace(
+        upload_id="33333333-3333-4333-8333-333333333333",
+        client_asset_id=asset_id,
+        original_name="photo.jpg",
+        original_mime_type="image/jpeg",
+        byte_length=8,
+        checksum="sha256:" + "a" * 64,
+        storage_path="test/image/mobile",
+        upload_directory=Path("/private/mobile/upload"),
+    )
+
+    class Registry:
+        def committed_asset_for_legacy_delete(self, *facts):
+            assert facts == (asset_id, resource_iri, "test/image/mobile")
+            return mobile_asset
+
+        @contextmanager
+        def upload_operation_lock(self, upload_id):
+            assert upload_id == mobile_asset.upload_id
+            calls.append("lock-enter")
+            yield
+            calls.append("lock-exit")
+
+    class Assets:
+        def delete_committed(self, spec):
+            assert spec.upload_id == mobile_asset.upload_id
+            assert spec.client_asset_id == asset_id
+            calls.append("delete")
+
+    monkeypatch.setattr(module, "MOBILE_UPLOAD_REGISTRY", Registry())
+    monkeypatch.setattr(module, "MOBILE_ASSET_STORE", Assets())
+
+    response = client.delete(
+        f"/upload/{asset_id}",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+    )
+
+    assert response.status_code == 200
+    assert calls == ["lock-enter", "delete", "lock-exit"]
 
 
 @pytest.mark.parametrize("target_format", [None, "tiff", "TIFF"])

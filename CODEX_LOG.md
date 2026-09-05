@@ -1,5 +1,17 @@
 # CODEX_LOG
 
+### Update 2026-09-03 19:39
+- Decisions: Decouple remote lifecycle polling from the worker's frequent local upload loop; use a 20-second empty/error cadence while allowing finite event backlogs to drain promptly and fairly.
+- Implementation: Added an independent monotonic lifecycle schedule; both empty claims and transport failures now wait for the next lifecycle window, while a non-empty lifecycle backlog alternates with ready local commit or cleanup work; added timing, fairness, outage, and configuration regressions.
+- Open: Rebuild/restart the mobile worker before observing the new cadence in local API logs and repeating disposable lifecycle acceptance.
+- Risks/Assumptions: Intentional staging deletion may remain receipt-blocked for up to roughly 20 seconds before the next claim. This is fail-closed and affects neither `/upload`, public `/media/v1`, upload throughput, nor existing token/IIIF consumers.
+
+### Update 2026-09-02 18:08
+- Decisions: Consume OLDAP lifecycle events durably and release a same-StagingArea checksum only after the exact mobile-owned publication is absent. Preserve immutable client/upload/owner/area/checksum tombstones; archived receipts remain permanently blocking and movement is a no-op.
+- Implementation: Added registry schema v4 lifecycle states and idempotent event history, the purpose-authenticated OLDAP claim/ack client, worker-side exact deletion and crash recovery, and shared locking/owner-marker deletion for the compatible legacy delete route. Added migration, move-then-delete, replay, race, lost-response, archive-precedence, permission, legacy-route, and two-device regressions; updated container inputs and documentation; prepared mediahelper 0.2.10.
+- Open: Deploy only with oldaplib 0.7.17 and oldap-api 0.2.22 after the API lock is updated; then run isolated move/delete/archive lifecycle acceptance.
+- Risks/Assumptions: An unavailable API or failed file deletion keeps the receipt active and retries later. /upload, existing /media/v1 requests and responses, storage paths, token/IIIF consumers, and deployment settings remain unchanged.
+
 ### Update 2026-09-01 17:06
 - Decisions: Keep the stable media-server roadmap synchronized with the completed Capture Step-13 integration found during the explicit final merge-readiness review.
 - Implementation: Replaced the stale statement that Capture still needed Step 13B with the completed Step-13B/13C consumer and recovery-matrix status. No runtime module, route, payload, test behavior, deployment setting, or generated artifact changed.

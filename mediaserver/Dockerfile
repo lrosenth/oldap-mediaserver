@@ -89,6 +89,7 @@ COPY mediaserver/media.py /app/media.py
 COPY mediaserver/mobile_staging.py /app/mobile_staging.py
 COPY mediaserver/mobile_media_assets.py /app/mobile_media_assets.py
 COPY mediaserver/mobile_media_commit.py /app/mobile_media_commit.py
+COPY mediaserver/mobile_media_lifecycle.py /app/mobile_media_lifecycle.py
 COPY mediaserver/mobile_upload_domain.py /app/mobile_upload_domain.py
 COPY mediaserver/mobile_upload_registry.py /app/mobile_upload_registry.py
 COPY mediaserver/mobile_upload_routes.py /app/mobile_upload_routes.py

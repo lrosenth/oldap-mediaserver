@@ -34,6 +34,7 @@ from mobile_upload_domain import (  # noqa: E402
     canonical_request_hash,
     parse_initialize_upload,
 )
+from mobile_media_lifecycle import MobileMediaLifecycleEvent  # noqa: E402
 from mobile_upload_registry import MobileUploadRegistry  # noqa: E402
 from storage_capacity import DiskUsage, StorageCapacityGuard  # noqa: E402
 
@@ -46,6 +47,8 @@ ASSET = "33333333-3333-4333-8333-333333333333"
 INIT_KEY = "44444444-4444-4444-8444-444444444444"
 COMMIT_KEY = "55555555-5555-4555-8555-555555555555"
 NOW = datetime(2026, 8, 22, 12, tzinfo=UTC)
+LIFECYCLE_EVENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+LIFECYCLE_CLAIM = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"
 
 
 class Clock:
@@ -211,6 +214,30 @@ def complete_initialized_upload(
         },
     )
     registry.complete_commit(claim)
+
+
+def lifecycle_event(
+    upload_id: str,
+    *,
+    kind: str,
+    event_id: str = LIFECYCLE_EVENT,
+    request: InitializeUpload | None = None,
+) -> MobileMediaLifecycleEvent:
+    upload_request = request or initialize_request()
+    return MobileMediaLifecycleEvent(
+        event_id=event_id,
+        claim_id=LIFECYCLE_CLAIM,
+        worker_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+        kind=kind,
+        upload_id=upload_id,
+        client_asset_id=upload_request.client_asset_id,
+        owner_user_iri=OWNER.user_iri,
+        staging_area_id=upload_request.staging_area_id,
+        resource_iri="urn:uuid:99999999-9999-4999-8999-999999999999",
+        checksum=upload_request.checksum,
+        occurred_at=NOW + timedelta(minutes=1),
+        lease_expires_at=NOW + timedelta(minutes=6),
+    )
 
 
 def test_request_validation_and_rfc8785_hash_are_closed_and_stable() -> None:
@@ -413,7 +440,7 @@ def test_v2_registry_backfills_permanent_content_receipts(
         duplicate_request.client_asset_id, AREA, duplicate_request.checksum
     )
     with sqlite3.connect(registry.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         receipt = connection.execute(
             """
             SELECT committed_upload_id, client_asset_id, staging_area_id, checksum
@@ -488,7 +515,7 @@ def test_registry_startup_serializes_schema_migration(
         for candidate in migrated
     )
     with sqlite3.connect(registry.database_path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM mobile_content_reservations"
@@ -1675,7 +1702,7 @@ def test_registry_migrates_step_11c_schema_without_dropping_transport_data(
         columns = {
             row[1] for row in connection.execute("PRAGMA table_info(mobile_uploads)")
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         migrated = connection.execute(
             "SELECT * FROM mobile_uploads WHERE upload_id = ?", (legacy_upload,)
         ).fetchone()
@@ -1772,3 +1799,242 @@ def test_physical_capacity_rejects_before_registry_or_bytes_are_created(
             connection.execute("SELECT COUNT(*) FROM mobile_uploads").fetchone()[0] == 0
         )
     assert list(registry.uploads_root.iterdir()) == []
+
+
+def test_staging_delete_releases_checksum_but_preserves_original_identity(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    event = lifecycle_event(upload_id, kind="staging_deleted")
+
+    action = registry.begin_lifecycle_event(event)
+    assert action.requires_file_deletion is True
+    registry.complete_staging_deletion(event)
+    assert registry.begin_lifecycle_event(event).requires_file_deletion is False
+
+    replay, created = registry.initialize(
+        OWNER,
+        initialize_request(),
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+    )
+    assert created is False
+    assert replay.state == "committed"
+
+    replacement = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5"
+    )
+    replacement_status, replacement_created = registry.initialize(
+        OWNER,
+        replacement,
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6",
+    )
+    assert replacement_created is True
+    assert replacement_status.client_asset_id == replacement.client_asset_id
+
+
+def test_two_devices_racing_after_release_create_exactly_one_new_generation(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    event = lifecycle_event(upload_id, kind="staging_deleted")
+    registry.begin_lifecycle_event(event)
+    registry.complete_staging_deletion(event)
+    requests = [
+        initialize_request(client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa21"),
+        initialize_request(client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa22"),
+    ]
+    keys = [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa23",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa24",
+    ]
+
+    def initialize_index(index: int) -> tuple[str, object]:
+        try:
+            result, created = registry.initialize(
+                OWNER, requests[index], destination(), keys[index]
+            )
+            return "created" if created else "existing", result
+        except MobileUploadError as error:
+            return "error", error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(initialize_index, range(2)))
+
+    assert sorted(kind for kind, _ in results) == ["created", "error"]
+    winner = next(value for kind, value in results if kind == "created")
+    blocked = next(value for kind, value in results if kind == "error")
+    assert winner.client_asset_id in {request.client_asset_id for request in requests}
+    assert isinstance(blocked, MobileUploadError)
+    assert blocked.code == "content_upload_in_progress"
+
+
+def test_legacy_delete_lookup_requires_exact_committed_mobile_facts(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    exact = registry.committed_asset_for_legacy_delete(
+        ASSET,
+        "urn:uuid:99999999-9999-4999-8999-999999999999",
+        "fasnacht/image/bmg",
+    )
+
+    assert exact is not None
+    assert exact.upload_id == upload_id
+    assert exact.client_asset_id == ASSET
+    assert (
+        registry.committed_asset_for_legacy_delete(
+            ASSET,
+            "urn:uuid:99999999-9999-4999-8999-999999999998",
+            "fasnacht/image/bmg",
+        )
+        is None
+    )
+    assert (
+        registry.committed_asset_for_legacy_delete(
+            "legacy-id",
+            "urn:uuid:99999999-9999-4999-8999-999999999999",
+            "fasnacht/image/bmg",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("kind", ["moved", "archived"])
+def test_move_and_archive_keep_same_area_checksum_blocked(
+    registry: MobileUploadRegistry, kind: str
+) -> None:
+    upload_id = commit_upload(registry)
+    event = lifecycle_event(upload_id, kind=kind)
+
+    assert registry.begin_lifecycle_event(event).requires_file_deletion is False
+    duplicate = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7"
+    )
+    result, created = registry.initialize(
+        OWNER, duplicate, destination(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa8"
+    )
+
+    assert created is False
+    assert result == ContentDuplicateResult(
+        duplicate.client_asset_id, AREA, duplicate.checksum
+    )
+
+
+def test_move_then_confirmed_staging_delete_allows_one_new_identity(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    moved = lifecycle_event(upload_id, kind="moved")
+    deleted = lifecycle_event(
+        upload_id,
+        kind="staging_deleted",
+        event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa25",
+    )
+
+    assert registry.begin_lifecycle_event(moved).requires_file_deletion is False
+    assert registry.begin_lifecycle_event(deleted).requires_file_deletion is True
+    registry.complete_staging_deletion(deleted)
+
+    replacement = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa26"
+    )
+    replacement_status, created = registry.initialize(
+        OWNER,
+        replacement,
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa27",
+    )
+
+    assert created is True
+    assert replacement_status.client_asset_id == replacement.client_asset_id
+
+
+def test_archive_wins_over_a_late_staging_delete_event(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    archived = lifecycle_event(upload_id, kind="archived")
+    deleted = lifecycle_event(
+        upload_id,
+        kind="staging_deleted",
+        event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9",
+    )
+
+    registry.begin_lifecycle_event(archived)
+    assert registry.begin_lifecycle_event(deleted).requires_file_deletion is False
+    with sqlite3.connect(registry.database_path) as connection:
+        state = connection.execute(
+            "SELECT lifecycle_state FROM mobile_content_receipts WHERE committed_upload_id = ?",
+            (upload_id,),
+        ).fetchone()[0]
+    assert state == "archived"
+
+
+def test_archive_evidence_restores_permanent_block_after_delayed_delete_delivery(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    deleted = lifecycle_event(upload_id, kind="staging_deleted")
+    archived = lifecycle_event(
+        upload_id,
+        kind="archived",
+        event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa12",
+    )
+
+    registry.begin_lifecycle_event(deleted)
+    registry.complete_staging_deletion(deleted)
+    registry.begin_lifecycle_event(archived)
+
+    with sqlite3.connect(registry.database_path) as connection:
+        receipt = connection.execute(
+            "SELECT lifecycle_state, released_at, release_reason "
+            "FROM mobile_content_receipts WHERE committed_upload_id = ?",
+            (upload_id,),
+        ).fetchone()
+    assert receipt == ("archived", None, None)
+
+    duplicate = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa13"
+    )
+    result, created = registry.initialize(
+        OWNER, duplicate, destination(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa14"
+    )
+    assert created is False
+    assert isinstance(result, ContentDuplicateResult)
+
+
+def test_released_receipt_does_not_change_existing_duplicate_tombstone(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    duplicate = initialize_request(
+        client_asset_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10"
+    )
+    first, created = registry.initialize(
+        OWNER, duplicate, destination(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11"
+    )
+    assert created is False and isinstance(first, ContentDuplicateResult)
+    event = lifecycle_event(upload_id, kind="staging_deleted")
+    registry.begin_lifecycle_event(event)
+    registry.complete_staging_deletion(event)
+
+    replay, replay_created = registry.initialize(
+        OWNER, duplicate, destination(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa12"
+    )
+    assert replay_created is False
+    assert replay == first
+
+
+def test_lifecycle_event_cannot_be_reused_with_different_facts(
+    registry: MobileUploadRegistry,
+) -> None:
+    upload_id = commit_upload(registry)
+    event = lifecycle_event(upload_id, kind="moved")
+    registry.begin_lifecycle_event(event)
+
+    with pytest.raises(MobileUploadInvariantError):
+        registry.begin_lifecycle_event(
+            lifecycle_event(upload_id, kind="archived", event_id=event.event_id)
+        )

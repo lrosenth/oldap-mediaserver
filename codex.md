@@ -73,7 +73,8 @@
 - `mediaserver/oldap_client.py` wraps the OLDAP API calls used by upload and asset resolution.
 - `mediaserver/mobile_upload_domain.py`, `mobile_upload_registry.py`,
   `mobile_staging.py`, `mobile_upload_routes.py`, `mobile_media_assets.py`,
-  `mobile_media_commit.py`, and `mobile_upload_worker.py` implement the additive,
+  `mobile_media_commit.py`, `mobile_media_lifecycle.py`, and
+  `mobile_upload_worker.py` implement the additive,
   deployment-configured `/media/v1` resumable transport. A private SQLite registry
   and upload root bind each permanent `clientAssetId` to its account's immutable
   user IRI and StagingArea, persist exact offsets and idempotency receipts, and
@@ -89,13 +90,18 @@
   startup reconciles only canonical UUID upload directories that have no
   durable registry row while holding the same per-upload lock as initialization;
   the running worker repeats that reconciliation every five minutes.
-  Registry schema v3 atomically reserves `(StagingArea, SHA-256)` for active
+  Registry schema v4 atomically reserves `(StagingArea, SHA-256)` for active
   generations and replaces that claim with a permanent content receipt at
   commit. A new client identity for identical same-area bytes receives a
   privacy-preserving `content-duplicate` result, never an alias to the existing
   asset; another StagingArea remains independent. Receipts survive upload-root
-  cleanup and are independent of later folder movement, OLDAP resource
-  deletion, or archive transformation. Schema-v1/v2 migration backfills
+  cleanup. A purpose-authenticated worker consumes immutable OLDAP lifecycle
+  events: movement keeps a receipt active, archive makes it permanently
+  archived, and intentional staging deletion releases only the checksum after
+  exact owner-marked file deletion. Client/upload and duplicate tombstones are
+  never removed. The legacy delete route coordinates mobile-owned file removal
+  through the same per-upload lock while retaining its existing contract and
+  unchanged path for non-mobile assets. Schema-v1/v2 migration backfills
   receipts and deterministic reservations and quarantines conflicting legacy
   work. A dedicated process lock serializes registry creation, migration, and
   startup validation between the Flask service and mobile worker.
@@ -238,13 +244,18 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   tagged.
 
 ## Roadmap / Next Steps
-- Mobile backend Step 11 and the Step-13A server reconciliation contract are
+- Mobile backend Step 11 and the Step-13A/13D server reconciliation contracts are
   complete in code and deployment templates. Existing idempotent initialization
   remains the sole public reconciliation operation; no parallel lookup endpoint
   was added. Fasnacht Capture Steps 13B and 13C now consume the typed
   same-StagingArea content-duplicate result and close the isolated cross-system
-  recovery matrix. The additive route, private persistent state, hardened
-  worker, reviewed limits, fail-closed secret checks, and known-host opt-in are
+  recovery matrix. Step 13D adds lifecycle-aware checksum release without a new
+  public route. The worker checks the remote lifecycle outbox at a bounded
+  20-second idle/error cadence while continuing to service local upload and
+  cleanup work on its existing fast loop; a finite event backlog alternates with
+  ready local work and drains without an added timer delay. The additive route,
+  private persistent state, hardened worker, reviewed limits, fail-closed secret
+  checks, and known-host opt-in are
   configured but have not been deployed. A later operator-controlled rollout
   must provision the same distinct mobile-media JWT secret in oldap-mediaserver
   and oldap-api plus the API-owned service identity, then run the documented
