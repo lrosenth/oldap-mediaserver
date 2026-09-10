@@ -259,6 +259,13 @@ but does not deploy it. The shared Ansible default remains disabled; the known
 production and home targets opt in and will expose the route only on their next
 explicit deployment after the required secret has been provisioned.
 
+The standalone worker keeps its short local-work loop for uploads and cleanup,
+but polls the remote OLDAP mobile-lifecycle outbox no more than once every 20
+seconds while it is empty or unavailable. Once an event is returned, the worker
+alternates further lifecycle events with ready local work, so a backlog cannot
+starve upload or cleanup jobs. Subsequent claimable events still drain promptly,
+after which the worker returns to that bounded cadence.
+
 The transport stores private temporary originals and a SQLite registry below
 `OLDAP_MOBILE_UPLOAD_ROOT` (default `/data/mobile-uploads`). The root must be a
 dedicated absolute path and is kept private with fail-closed filesystem modes.
@@ -268,10 +275,44 @@ Every byte-writing operation revalidates the current OLDAP permission and exact
 protected `top/Mobile` destination. Offsets advance only after file data is
 flushed; restart repair truncates any unconfirmed suffix without following
 replacement symlinks. Cancellation is committed before filesystem cleanup and
-releases its reservation only after a separately leased worker has actually
-removed the private temporary directory. Worker startup also reconciles only
-canonical UUID directories that have no durable registry row, and the running
-worker repeats that reconciliation every five minutes.
+releases the exact-content reservation immediately, while temporary-byte quota
+remains held until a separately leased worker has actually removed the private
+temporary directory. Worker startup also reconciles only canonical UUID
+directories that have no durable registry row, and the running worker repeats
+that reconciliation every five minutes.
+
+Registry schema v4 also separates operation idempotency from exact-content
+deduplication. Initialization atomically reserves the canonical SHA-256 within
+the selected StagingArea. Commit replaces that reservation with a permanent
+content receipt. A new `clientAssetId` for identical bytes in the same
+currently permitted StagingArea receives a closed `content-duplicate` result
+without an upload generation or any existing asset, resource, owner, or
+location identifier. The new identity is recorded as a duplicate outcome and
+is never aliased to the committed asset. A checksum in another StagingArea is
+independent and undisclosed. Receipts survive private-upload cleanup. Movement
+keeps a receipt active and archive transformation makes it permanently
+archived. Intentional staging deletion changes it to `released` only after an
+atomic OLDAP outbox event has been leased and the exact owner-marked publication
+has been durably deleted. The original client/upload tombstone and prior
+duplicate outcomes are never erased, so replaying an old identity cannot
+recreate the deleted asset. Missing resources, temporary cleanup, failed file
+deletion, and lost acknowledgements never release a receipt.
+The stable commit idempotency key remains the logical client-asset identity
+across a server-authorized generation restart. Its registry binding can move
+only from a cancelled or safely expired generation to the newer current
+generation for the same immutable owner, StagingArea, byte length, and checksum,
+and only before any committed receipt exists. All other key reuse remains an
+idempotency conflict.
+Registry creation, migration, and startup validation are serialized by a
+dedicated process lock shared by the Flask service and mobile worker, so a
+simultaneous container start cannot quarantine valid legacy work.
+
+The unchanged `DELETE /upload/{assetId}` transport still performs the existing
+OLDAP deletion. If its exact asset/resource/path tuple belongs to the mobile
+registry, only its physical-file phase is coordinated through the same
+per-upload lock and owner-marker deletion primitive as the lifecycle worker.
+Non-mobile legacy assets keep the original filesystem path. This prevents the
+legacy request and worker from partially deleting the same mobile directory.
 
 The standalone `mobile_upload_worker.py` advances accepted commits through
 durable checksum, rendition, publication, OLDAP commit, and completion phases.
@@ -300,12 +341,15 @@ post-publication failures remain recoverable. Expiry and terminal cleanup are
 separately leased and remove only the private upload directory, never a
 committed final asset.
 
-Schema-v1 jobs that were already waiting before the Step-11D worker was added migrate
-to a stable retryable failure instead of entering the worker queue without their
-new server-derived storage context. An identical commit replay revalidates and
-fills that context before processing resumes. A fully compensated definitive
-rejection can be explicitly cancelled and reinitialized with the same
-uncommitted `clientAssetId`; implicit reopening remains forbidden.
+Schema-v1 jobs that were already waiting before the Step-11D worker was added
+migrate to a stable retryable failure instead of entering the worker queue
+without their new server-derived storage context. Schema-v1 and schema-v2
+registries backfill committed content receipts and deterministic active
+reservations without deleting existing transport history; contradictory active
+legacy claims are quarantined. An identical commit replay revalidates and fills
+missing server context before processing resumes. A fully compensated
+definitive rejection can be explicitly cancelled and reinitialized with the
+same uncommitted `clientAssetId`; implicit reopening remains forbidden.
 
 Processing and cleanup are alternated when both queues contain work, preventing
 terminal temporary files from retaining logical quota indefinitely during a
@@ -315,7 +359,8 @@ The deployment starts one hardened `mobile-media-worker` through the
 `mobile-media` Compose profile and mounts `/data/oldap-mobile-uploads` only into
 that worker and the Flask service. Caddy and Cantaloupe cannot read the private
 registry or accepted bytes. The worker receives only its distinct
-`OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET`; it does not receive access, media/IIIF,
+`OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET`; it uses separate commit and lifecycle
+JWT purposes/audiences derived from that key and does not receive access, media/IIIF,
 ZIP-import, or ZIP-export signing keys. No Step-11 deployment was performed.
 
 The reviewed v1 ceilings are 100 MiB per original, 20 active uploads and 2 GiB

@@ -8,7 +8,7 @@ import threading
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from time import monotonic, sleep
-from typing import Iterator, Protocol
+from typing import Callable, Iterator, Protocol
 from uuid import uuid4
 
 from config import MediahelperSettings
@@ -20,6 +20,11 @@ from mobile_media_assets import (
 from mobile_media_commit import (
     MobileMediaCommitFailure,
     OldapMobileMediaCommitClient,
+)
+from mobile_media_lifecycle import (
+    MobileMediaLifecycleEvent,
+    MobileMediaLifecycleTransportError,
+    OldapMobileMediaLifecycleClient,
 )
 from mobile_upload_domain import MobileUploadInvariantError
 from mobile_upload_registry import (
@@ -33,6 +38,7 @@ from storage_capacity import PhysicalCapacityInsufficient, StorageCapacityGuard
 LOGGER = logging.getLogger(__name__)
 MOBILE_PROCESSING_PEAK_FACTOR = 8
 ORPHAN_RECONCILIATION_SECONDS = 300
+LIFECYCLE_POLL_SECONDS = 20.0
 
 
 class CommitClient(Protocol):
@@ -41,6 +47,14 @@ class CommitClient(Protocol):
     def commit(
         self, upload_id: str, request_id: str, payload: dict[str, object]
     ) -> dict[str, object]: ...
+
+
+class LifecycleClient(Protocol):
+    """OLDAP outbox transport injected into the worker."""
+
+    def claim(self, worker_id: str) -> MobileMediaLifecycleEvent | None: ...
+
+    def complete(self, event: MobileMediaLifecycleEvent) -> None: ...
 
 
 class ProcessingLeaseHeartbeat(AbstractContextManager["ProcessingLeaseHeartbeat"]):
@@ -145,18 +159,30 @@ class MobileUploadWorker:
         oldap: CommitClient,
         capacity: StorageCapacityGuard,
         *,
+        lifecycle: LifecycleClient | None = None,
         worker_id: str | None = None,
         logger: logging.Logger = LOGGER,
+        lifecycle_poll_seconds: float = LIFECYCLE_POLL_SECONDS,
+        monotonic_clock: Callable[[], float] = monotonic,
     ) -> None:
+        if lifecycle_poll_seconds <= 0:
+            raise ValueError("Lifecycle polling interval must be positive.")
         self.registry = registry
         self.assets = assets
         self.oldap = oldap
         self.capacity = capacity
+        self.lifecycle = lifecycle
         self.worker_id = worker_id or str(uuid4())
         self.logger = logger
+        self._lifecycle_poll_seconds = lifecycle_poll_seconds
+        self._monotonic = monotonic_clock
+        self._next_lifecycle_poll = 0.0
+        self._prefer_local_work = False
         self._prefer_cleanup = False
         self.registry.reconcile_orphan_upload_directories()
-        self._next_orphan_reconciliation = monotonic() + ORPHAN_RECONCILIATION_SECONDS
+        self._next_orphan_reconciliation = (
+            self._monotonic() + ORPHAN_RECONCILIATION_SECONDS
+        )
 
     @classmethod
     def from_environment(cls) -> "MobileUploadWorker":
@@ -174,39 +200,92 @@ class MobileUploadWorker:
             MobileMediaAssetStore(settings.media_root),
             OldapMobileMediaCommitClient.from_environment(),
             capacity,
+            lifecycle=OldapMobileMediaLifecycleClient.from_environment(),
         )
 
     def run_once(self) -> bool:
         """Advance one processing task, otherwise one cleanup task."""
 
-        if monotonic() >= self._next_orphan_reconciliation:
+        if self._monotonic() >= self._next_orphan_reconciliation:
             self._next_orphan_reconciliation = (
-                monotonic() + ORPHAN_RECONCILIATION_SECONDS
+                self._monotonic() + ORPHAN_RECONCILIATION_SECONDS
             )
             self.registry.reconcile_orphan_upload_directories()
+
+        if not self._prefer_local_work and self._process_due_lifecycle_once():
+            self._prefer_local_work = True
+            return True
 
         if self._prefer_cleanup:
             cleanup = self.registry.claim_next_cleanup(self.worker_id)
             if cleanup is not None:
                 self._cleanup(cleanup)
+                self._prefer_local_work = False
                 self._prefer_cleanup = False
                 return True
 
         claim = self.registry.claim_next_processing(self.worker_id)
         if claim is not None:
             self._process(claim)
+            self._prefer_local_work = False
             self._prefer_cleanup = True
             return True
 
         cleanup = self.registry.claim_next_cleanup(self.worker_id)
         if cleanup is None:
-            return False
+            self._prefer_local_work = False
+            return self._process_due_lifecycle_once()
         self._cleanup(cleanup)
+        self._prefer_local_work = False
         self._prefer_cleanup = False
         return True
 
+    def _process_due_lifecycle_once(self) -> bool:
+        """Poll the remote outbox at a bounded cadence without delaying jobs."""
+
+        now = self._monotonic()
+        if self.lifecycle is None or now < self._next_lifecycle_poll:
+            return False
+        self._next_lifecycle_poll = now + self._lifecycle_poll_seconds
+        worked = self._process_lifecycle_once()
+        if worked:
+            # Drain a finite backlog promptly; an empty or failed claim then
+            # restores the normal interval on the following iteration.
+            self._next_lifecycle_poll = 0.0
+        return worked
+
+    def _process_lifecycle_once(self) -> bool:
+        """Apply and acknowledge at most one authoritative OLDAP lifecycle event."""
+
+        if self.lifecycle is None:
+            return False
+        try:
+            event = self.lifecycle.claim(self.worker_id)
+        except MobileMediaLifecycleTransportError:
+            self.logger.warning("mobile_media_lifecycle_claim_unavailable")
+            return False
+        if event is None:
+            return False
+        action = self.registry.begin_lifecycle_event(event)
+        if action.requires_file_deletion:
+            spec = MobileAssetSpec(
+                upload_id=action.upload_id,
+                client_asset_id=action.client_asset_id,
+                original_name=action.original_name,
+                original_mime_type=action.original_mime_type,
+                byte_length=action.byte_length,
+                checksum=action.checksum,
+                storage_path=action.storage_path,
+                upload_directory=action.upload_directory,
+            )
+            with self.registry.upload_operation_lock(action.upload_id):
+                self.assets.delete_committed(spec)
+            self.registry.complete_staging_deletion(event)
+        self.lifecycle.complete(event)
+        return True
+
     def run_forever(self, *, idle_seconds: float = 2.0) -> None:
-        """Poll durable work indefinitely without coupling to Flask workers."""
+        """Check local work frequently while throttling the remote outbox."""
 
         while True:
             try:

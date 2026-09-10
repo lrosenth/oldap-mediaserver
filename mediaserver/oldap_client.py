@@ -19,9 +19,7 @@ class OldapApiError(RuntimeError):
         else:
             detail = None
         if not isinstance(detail, str) or not detail.strip():
-            detail = (
-                response.text.strip() or response.reason or "OLDAP request failed"
-            )
+            detail = response.text.strip() or response.reason or "OLDAP request failed"
         self.detail = detail
         super().__init__(f"{operation}: {detail}")
 
@@ -165,7 +163,9 @@ class OldapClient:
         _require_success("OLDAP Staging target authorization failed", response)
         data = response.json()
         if not isinstance(data, dict):
-            raise RuntimeError("oldap-api returned an unexpected Staging target response")
+            raise RuntimeError(
+                "oldap-api returned an unexpected Staging target response"
+            )
         return data
 
     def update_resource(self, resource_iri: str, resource_data: dict) -> dict:

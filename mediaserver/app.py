@@ -94,6 +94,11 @@ from storage import (
     validate_asset_path_segment,
 )
 from mobile_staging import OldapMobileStagingVerifier
+from mobile_media_assets import (
+    MobileAssetSpec,
+    MobileMediaAssetStore,
+    MobileMediaAssetError,
+)
 from mobile_upload_domain import MobileAccessIdentity, MobileUploadError
 from mobile_upload_registry import MobileUploadRegistry
 from mobile_upload_routes import register_mobile_upload_routes
@@ -119,6 +124,7 @@ MOBILE_UPLOAD_REGISTRY = MobileUploadRegistry(
     SETTINGS.mobile_upload_limits,
     capacity_guard=CAPACITY_GUARD,
 )
+MOBILE_ASSET_STORE = MobileMediaAssetStore(IMAGE_ROOT)
 
 DERIVATIVE_PROCESSOR = DerivativeProcessor()
 
@@ -1448,9 +1454,29 @@ def create_app() -> Flask:
         withdrawn_root = asset_root.with_name(f".discard-{asset_id}-{uuid4().hex}")
         cleanup_pending = False
         try:
-            asset_root.rename(withdrawn_root)
-            shutil.rmtree(withdrawn_root)
-        except OSError:
+            # Mobile cleanup must use the same ownership checks and lock as its worker.
+            mobile_asset = MOBILE_UPLOAD_REGISTRY.committed_asset_for_legacy_delete(
+                asset_id, str(iri), str(safe_basepath)
+            )
+            if mobile_asset is None:
+                asset_root.rename(withdrawn_root)
+                shutil.rmtree(withdrawn_root)
+            else:
+                mobile_spec = MobileAssetSpec(
+                    upload_id=mobile_asset.upload_id,
+                    client_asset_id=mobile_asset.client_asset_id,
+                    original_name=mobile_asset.original_name,
+                    original_mime_type=mobile_asset.original_mime_type,
+                    byte_length=mobile_asset.byte_length,
+                    checksum=mobile_asset.checksum,
+                    storage_path=mobile_asset.storage_path,
+                    upload_directory=mobile_asset.upload_directory,
+                )
+                with MOBILE_UPLOAD_REGISTRY.upload_operation_lock(
+                    mobile_asset.upload_id
+                ):
+                    MOBILE_ASSET_STORE.delete_committed(mobile_spec)
+        except (OSError, MobileMediaAssetError):
             cleanup_pending = True
             app.logger.exception(
                 "Discarded asset cleanup remains pending for %s", asset_id

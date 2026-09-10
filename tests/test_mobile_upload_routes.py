@@ -18,6 +18,7 @@ if str(MEDIAHELPER_SOURCE) not in sys.path:
 
 from config import MobileUploadLimits  # noqa: E402
 from mobile_upload_domain import (  # noqa: E402
+    ContentDuplicateResult,
     MobileAccessIdentity,
     MobileUploadError,
     ResolvedMobileInbox,
@@ -182,6 +183,68 @@ def test_initialize_status_chunks_and_commit_follow_v1_transport(mobile_http) ->
         "alice",
         "alice",
     ]
+
+
+def test_initialize_serializes_duplicate_without_alias_and_rechecks_permission(
+    mobile_http, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, registry, verifier = mobile_http
+    calls = 0
+
+    def duplicate(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return ContentDuplicateResult(ASSET, AREA, CHECKSUM), False
+
+    monkeypatch.setattr(registry, "initialize", duplicate)
+    accepted = initialize(client)
+    verifier.allowed = False
+    denied = client.post(
+        "/media/v1/uploads",
+        json=initialize_body(),
+        headers=headers(**{"Idempotency-Key": INIT_KEY}),
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.headers["Cache-Control"] == "no-store"
+    assert "Location" not in accepted.headers
+    assert accepted.json == {
+        "clientAssetId": ASSET,
+        "stagingAreaId": AREA,
+        "state": "content-duplicate",
+        "checksum": CHECKSUM,
+    }
+    assert "assetId" not in accepted.json
+    assert "resourceIri" not in accepted.json
+    assert "uploadId" not in accepted.json
+    assert denied.status_code == 403
+    assert denied.json["code"] == "mobile_destination_unavailable"
+    assert calls == 1
+
+
+def test_active_content_collision_is_retryable_and_privacy_preserving(
+    mobile_http,
+) -> None:
+    client, registry, verifier = mobile_http
+    created = initialize(client)
+    competing_asset = "88888888-8888-4888-8888-888888888888"
+
+    blocked = client.post(
+        "/media/v1/uploads",
+        json=initialize_body(clientAssetId=competing_asset),
+        headers=headers(**{"Idempotency-Key": "99999999-9999-4999-8999-999999999999"}),
+    )
+
+    assert created.status_code == 201
+    assert blocked.status_code == 409
+    assert blocked.headers["Retry-After"] == "2"
+    assert blocked.json["code"] == "content_upload_in_progress"
+    assert blocked.json["retryable"] is True
+    assert "uploadId" not in blocked.json
+    assert "assetId" not in blocked.json
+    assert "resourceIri" not in blocked.json
+    assert registry.get_status(created.json["uploadId"], ALICE).state == "initialized"
+    assert len(verifier.calls) == 2
 
 
 def test_authentication_is_checked_before_json_or_chunk_bytes(mobile_http) -> None:

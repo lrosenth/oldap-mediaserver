@@ -3,6 +3,14 @@
 ## Purpose
 `oldap-mediaserver` provides the media infrastructure around OLDAP. It combines a Flask upload/auth helper, Caddy for public asset delivery, and Cantaloupe for IIIF delivery of pyramidal TIFF images.
 
+## Merge integration (2026-09-11)
+- Combined mobile lifecycle/reconciliation with archive-safe legacy deletion. Files
+  remain available until OLDAP confirms deletion. Mobile assets then use the
+  lifecycle worker's exact-owner cleanup and upload lock; cleanup failure is
+  reported separately from the committed database deletion. Both regression
+  histories are retained. Runtime version remains upstream 0.2.10; deployment
+  and coordinated dependency/version selection are separate operator steps.
+
 ## Current Architecture
 - `mediaserver/app.py` contains the Flask app. It validates uploads, stores originals and derivatives, registers `shared:MediaObject` resources through `oldap-api`, and resolves `/asset/...` requests for Caddy.
 - The single-file `/upload` route remains create-oriented by default and also
@@ -84,7 +92,8 @@
 - `mediaserver/oldap_client.py` wraps the OLDAP API calls used by upload and asset resolution.
 - `mediaserver/mobile_upload_domain.py`, `mobile_upload_registry.py`,
   `mobile_staging.py`, `mobile_upload_routes.py`, `mobile_media_assets.py`,
-  `mobile_media_commit.py`, and `mobile_upload_worker.py` implement the additive,
+  `mobile_media_commit.py`, `mobile_media_lifecycle.py`, and
+  `mobile_upload_worker.py` implement the additive,
   deployment-configured `/media/v1` resumable transport. A private SQLite registry
   and upload root bind each permanent `clientAssetId` to its account's immutable
   user IRI and StagingArea, persist exact offsets and idempotency receipts, and
@@ -94,13 +103,38 @@
   chunk, and commit acceptance. Bytes are flushed before SQLite advances;
   no-follow recovery truncates only an upload-owned unconfirmed suffix, and
   cancellation first persists its terminal state and pending cleanup, and
-  reservations remain held until leased physical cleanup succeeds. Worker
+  temporary-byte quota remains held until leased physical cleanup succeeds.
+  Exact-content reservations are released as soon as cancellation is
+  authoritative and safe. Worker
   startup reconciles only canonical UUID upload directories that have no
   durable registry row while holding the same per-upload lock as initialization;
   the running worker repeats that reconciliation every five minutes.
+  Registry schema v4 atomically reserves `(StagingArea, SHA-256)` for active
+  generations and replaces that claim with a permanent content receipt at
+  commit. A new client identity for identical same-area bytes receives a
+  privacy-preserving `content-duplicate` result, never an alias to the existing
+  asset; another StagingArea remains independent. Receipts survive upload-root
+  cleanup. A purpose-authenticated worker consumes immutable OLDAP lifecycle
+  events: movement keeps a receipt active, archive makes it permanently
+  archived, and intentional staging deletion releases only the checksum after
+  exact owner-marked file deletion. Client/upload and duplicate tombstones are
+  never removed. The legacy delete route coordinates mobile-owned file removal
+  through the same per-upload lock while retaining its existing contract and
+  unchanged path for non-mobile assets. Schema-v1/v2 migration backfills
+  receipts and deterministic reservations and quarantines conflicting legacy
+  work. A dedicated process lock serializes registry creation, migration, and
+  startup validation between the Flask service and mobile worker.
+  The Step-13C cross-user race regression proves that two authorized owners in
+  one StagingArea still create one upload and one private non-alias duplicate
+  outcome, including after registry restart.
   Commit replay is state-aware: the same stable key may restart an unleased
   retryable failure from its last durable phase, but cannot revive cancelled or
-  non-retryable work. The separately runnable mobile worker verifies exact bytes
+  non-retryable work. If a cancelled or safely expired generation is explicitly
+  replaced for the same owner, StagingArea, client asset, byte length, and
+  checksum, the permanent commit key follows only that newer current generation
+  in the same transaction and only while no committed receipt exists. This keeps
+  the client-level commit identity stable without allowing cross-asset or
+  cross-scope replay. The separately runnable mobile worker verifies exact bytes
   and image signatures, reuses the existing HEIF probe and derivative processor,
   prepares and fsyncs upload-owned assets, copies them into an owner-marked
   hidden staging path on the final-media mount, installs ownership evidence
@@ -119,7 +153,7 @@
   remain retryable. Retryable failures before publication expire safely after
   inactivity, while ambiguous published work is retained for reconciliation.
   Committed cleanup removes only the private upload directory. The registry
-  schema is version 2 and migrates queued Step-11C work to an explicit retryable
+  schema is version 3 and migrates queued Step-11C work to an explicit retryable
   context-refresh state without deleting transport records or poisoning the
   worker queue. Fully compensated uncommitted assets may be explicitly
   cancelled and reinitialized, but are never reopened implicitly.
@@ -234,14 +268,22 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
   tagged.
 
 ## Roadmap / Next Steps
-- Mobile backend Step 11 is complete in code and deployment templates. The
-  additive route, private persistent state, hardened worker, reviewed limits,
-  fail-closed secret checks, and known-host opt-in are configured but have not
-  been deployed. A later operator-controlled rollout must provision the same
-  distinct mobile-media JWT secret in oldap-mediaserver and oldap-api plus the
-  API-owned service identity, then run the documented Ansible and public
-  authentication-boundary checks. Fasnacht Capture Step 12 will add the client
-  queue that consumes this protocol.
+- Mobile backend Step 11 and the Step-13A/13D server reconciliation contracts are
+  complete in code and deployment templates. Existing idempotent initialization
+  remains the sole public reconciliation operation; no parallel lookup endpoint
+  was added. Fasnacht Capture Steps 13B and 13C now consume the typed
+  same-StagingArea content-duplicate result and close the isolated cross-system
+  recovery matrix. Step 13D adds lifecycle-aware checksum release without a new
+  public route. The worker checks the remote lifecycle outbox at a bounded
+  20-second idle/error cadence while continuing to service local upload and
+  cleanup work on its existing fast loop; a finite event backlog alternates with
+  ready local work and drains without an added timer delay. The additive route,
+  private persistent state, hardened worker, reviewed limits, fail-closed secret
+  checks, and known-host opt-in are
+  configured but have not been deployed. A later operator-controlled rollout
+  must provision the same distinct mobile-media JWT secret in oldap-mediaserver
+  and oldap-api plus the API-owned service identity, then run the documented
+  Ansible and public authentication-boundary checks.
 - Project-neutral ZIP export Phase 1 is implemented and locally accepted; its
   contracts live in `docs/zip-export/v1`.
   oldap-api will own jobs, authorization, projected manifests, leases,

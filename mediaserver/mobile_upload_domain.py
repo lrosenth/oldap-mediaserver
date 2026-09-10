@@ -197,6 +197,30 @@ class UploadStatus:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ContentDuplicateResult:
+    """Terminal evidence that identical mobile content already exists.
+
+    The requested client asset identity is deliberately not mapped to the
+    existing committed asset. The response therefore contains no existing
+    asset ID, resource IRI, owner, upload ID, or current storage location.
+    """
+
+    client_asset_id: str
+    staging_area_id: str
+    checksum: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize the closed privacy-preserving duplicate result."""
+
+        return {
+            "clientAssetId": self.client_asset_id,
+            "stagingAreaId": self.staging_area_id,
+            "state": "content-duplicate",
+            "checksum": self.checksum,
+        }
+
+
 def parse_initialize_upload(value: Any, *, max_original_bytes: int) -> InitializeUpload:
     """Validate one closed initialization body without accepting server fields."""
 

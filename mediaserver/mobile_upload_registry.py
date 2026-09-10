@@ -18,6 +18,7 @@ from uuid import UUID, uuid4, uuid5
 from config import MobileUploadLimits
 from mobile_upload_domain import (
     CommitUpload,
+    ContentDuplicateResult,
     InitializeUpload,
     MobileAccessIdentity,
     MobileUploadError,
@@ -30,12 +31,13 @@ from mobile_upload_domain import (
     format_timestamp,
     parse_timestamp,
 )
+from mobile_media_lifecycle import MobileMediaLifecycleEvent
 from storage_capacity import PhysicalCapacityInsufficient, StorageCapacityGuard
 
 
 ACTIVE_STATES = ("initialized", "uploading", "verifying", "processing", "committing")
 REOPENABLE_STATES = ("cancelled", "expired")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 PREPUBLICATION_PHASES = ("requested", "checksum_verified", "derivatives_ready")
 
 
@@ -71,6 +73,36 @@ class MobileCleanupClaim:
     upload_directory: Path
 
 
+@dataclass(frozen=True, slots=True)
+class MobileLifecycleAction:
+    """Exact committed asset that an authoritative delete event may remove."""
+
+    event: MobileMediaLifecycleEvent
+    requires_file_deletion: bool
+    upload_id: str
+    client_asset_id: str
+    original_name: str
+    original_mime_type: str
+    byte_length: int
+    checksum: str
+    storage_path: str
+    upload_directory: Path
+
+
+@dataclass(frozen=True, slots=True)
+class MobileCommittedAsset:
+    """Exact registry facts needed to coordinate the legacy delete route."""
+
+    upload_id: str
+    client_asset_id: str
+    original_name: str
+    original_mime_type: str
+    byte_length: int
+    checksum: str
+    storage_path: str
+    upload_directory: Path
+
+
 class MobileUploadRegistry:
     """Coordinate durable upload metadata and append-only private originals.
 
@@ -103,13 +135,224 @@ class MobileUploadRegistry:
         self.locks_root = self.root / "locks"
         self._initialize_storage()
 
+    def begin_lifecycle_event(
+        self, event: MobileMediaLifecycleEvent
+    ) -> MobileLifecycleAction:
+        """Persist and classify one authoritative OLDAP lifecycle event.
+
+        Movement and archive events are completed entirely in SQLite. A staging
+        deletion returns exact immutable publication facts so the worker can
+        remove only the matching mobile-owned files before releasing the
+        checksum receipt.
+        """
+
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM mobile_lifecycle_events WHERE event_id = ?",
+                (event.event_id,),
+            ).fetchone()
+            if existing is not None:
+                self._assert_same_lifecycle_event(existing, event)
+
+            receipt = connection.execute(
+                """
+                SELECT receipt.*, upload.owner_user_iri, upload.resource_iri,
+                       upload.original_name, upload.original_mime_type,
+                       upload.byte_length, upload.storage_path
+                FROM mobile_content_receipts AS receipt
+                JOIN mobile_uploads AS upload
+                  ON upload.upload_id = receipt.committed_upload_id
+                WHERE receipt.committed_upload_id = ?
+                  AND receipt.client_asset_id = ?
+                  AND receipt.staging_area_id = ?
+                  AND receipt.checksum = ?
+                  AND upload.owner_user_iri = ?
+                  AND upload.resource_iri = ?
+                """,
+                (
+                    event.upload_id,
+                    event.client_asset_id,
+                    event.staging_area_id,
+                    event.checksum,
+                    event.owner_user_iri,
+                    event.resource_iri,
+                ),
+            ).fetchone()
+            if receipt is None:
+                raise MobileUploadInvariantError(
+                    "Lifecycle event does not match a committed mobile receipt."
+                )
+
+            now = format_timestamp(self._now())
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO mobile_lifecycle_events (
+                        event_id, kind, upload_id, client_asset_id, owner_user_iri,
+                        staging_area_id, resource_iri, checksum, occurred_at,
+                        state, completed_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', NULL, ?, ?)
+                    """,
+                    (
+                        event.event_id,
+                        event.kind,
+                        event.upload_id,
+                        event.client_asset_id,
+                        event.owner_user_iri,
+                        event.staging_area_id,
+                        event.resource_iri,
+                        event.checksum,
+                        format_timestamp(event.occurred_at),
+                        now,
+                        now,
+                    ),
+                )
+            elif existing["state"] == "completed":
+                return self._lifecycle_action(event, receipt, False)
+
+            lifecycle_state = receipt["lifecycle_state"]
+            if event.kind == "moved":
+                self._complete_lifecycle_row(connection, event.event_id, now)
+                return self._lifecycle_action(event, receipt, False)
+            if event.kind == "archived":
+                if lifecycle_state in {"active", "released"}:
+                    connection.execute(
+                        """
+                        UPDATE mobile_content_receipts
+                        SET lifecycle_state = 'archived', released_at = NULL,
+                            release_reason = NULL
+                        WHERE committed_upload_id = ?
+                          AND lifecycle_state IN ('active', 'released')
+                        """,
+                        (event.upload_id,),
+                    )
+                self._complete_lifecycle_row(connection, event.event_id, now)
+                return self._lifecycle_action(event, receipt, False)
+            if lifecycle_state in {"archived", "released"}:
+                self._complete_lifecycle_row(connection, event.event_id, now)
+                return self._lifecycle_action(event, receipt, False)
+            return self._lifecycle_action(event, receipt, True)
+
+    def complete_staging_deletion(self, event: MobileMediaLifecycleEvent) -> None:
+        """Release an active receipt after exact-owned files are absent."""
+
+        now = format_timestamp(self._now())
+        with self._transaction() as connection:
+            lifecycle = connection.execute(
+                "SELECT * FROM mobile_lifecycle_events WHERE event_id = ?",
+                (event.event_id,),
+            ).fetchone()
+            if lifecycle is None:
+                raise MobileUploadInvariantError("Lifecycle event is not durable.")
+            self._assert_same_lifecycle_event(lifecycle, event)
+            if lifecycle["kind"] != "staging_deleted":
+                raise MobileUploadInvariantError(
+                    "Only a staging deletion may release a content receipt."
+                )
+            if lifecycle["state"] == "completed":
+                return
+            receipt = connection.execute(
+                """
+                SELECT * FROM mobile_content_receipts
+                WHERE committed_upload_id = ? AND client_asset_id = ?
+                  AND staging_area_id = ? AND checksum = ?
+                """,
+                (
+                    event.upload_id,
+                    event.client_asset_id,
+                    event.staging_area_id,
+                    event.checksum,
+                ),
+            ).fetchone()
+            if receipt is None:
+                raise MobileUploadInvariantError("Lifecycle receipt disappeared.")
+            if receipt["lifecycle_state"] == "archived":
+                self._complete_lifecycle_row(connection, event.event_id, now)
+                return
+            if receipt["lifecycle_state"] == "active":
+                connection.execute(
+                    """
+                    UPDATE mobile_content_receipts
+                    SET lifecycle_state = 'released', released_at = ?,
+                        release_reason = 'staging_deleted'
+                    WHERE committed_upload_id = ? AND lifecycle_state = 'active'
+                    """,
+                    (now, event.upload_id),
+                )
+            self._complete_lifecycle_row(connection, event.event_id, now)
+
+    def _lifecycle_action(
+        self,
+        event: MobileMediaLifecycleEvent,
+        receipt: sqlite3.Row,
+        requires_file_deletion: bool,
+    ) -> MobileLifecycleAction:
+        return MobileLifecycleAction(
+            event=event,
+            requires_file_deletion=requires_file_deletion,
+            upload_id=event.upload_id,
+            client_asset_id=event.client_asset_id,
+            original_name=receipt["original_name"],
+            original_mime_type=receipt["original_mime_type"],
+            byte_length=int(receipt["byte_length"]),
+            checksum=event.checksum,
+            storage_path=receipt["storage_path"],
+            upload_directory=self.uploads_root / event.upload_id,
+        )
+
+    @staticmethod
+    def _complete_lifecycle_row(
+        connection: sqlite3.Connection, event_id: str, timestamp: str
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE mobile_lifecycle_events
+            SET state = 'completed', completed_at = COALESCE(completed_at, ?),
+                updated_at = ?
+            WHERE event_id = ?
+            """,
+            (timestamp, timestamp, event_id),
+        )
+
+    @staticmethod
+    def _assert_same_lifecycle_event(
+        row: sqlite3.Row, event: MobileMediaLifecycleEvent
+    ) -> None:
+        expected = (
+            event.kind,
+            event.upload_id,
+            event.client_asset_id,
+            event.owner_user_iri,
+            event.staging_area_id,
+            event.resource_iri,
+            event.checksum,
+            format_timestamp(event.occurred_at),
+        )
+        actual = tuple(
+            row[name]
+            for name in (
+                "kind",
+                "upload_id",
+                "client_asset_id",
+                "owner_user_iri",
+                "staging_area_id",
+                "resource_iri",
+                "checksum",
+                "occurred_at",
+            )
+        )
+        if actual != expected:
+            raise MobileUploadInvariantError(
+                "Lifecycle event identity was reused with different facts."
+            )
+
     def initialize(
         self,
         owner: MobileAccessIdentity,
         request: InitializeUpload,
         destination: ResolvedMobileInbox,
         idempotency_key: str,
-    ) -> tuple[UploadStatus, bool]:
+    ) -> tuple[UploadStatus | ContentDuplicateResult, bool]:
         """Create or exactly replay one upload generation.
 
         Returns:
@@ -125,6 +368,15 @@ class MobileUploadRegistry:
         try:
             with self._transaction() as connection:
                 self._expire_inactive(connection, now)
+                duplicate_replay = self._duplicate_idempotency_replay(
+                    connection,
+                    owner,
+                    request.staging_area_id,
+                    idempotency_key,
+                    request_hash,
+                )
+                if duplicate_replay is not None:
+                    return duplicate_replay, False
                 replay = self._idempotency_replay(
                     connection,
                     owner,
@@ -138,6 +390,31 @@ class MobileUploadRegistry:
                     self._assert_destination(replay_row, destination)
                     return self._status(replay_row), False
 
+                duplicate_identity = connection.execute(
+                    "SELECT * FROM mobile_content_duplicates WHERE client_asset_id = ?",
+                    (request.client_asset_id,),
+                ).fetchone()
+                if duplicate_identity is not None:
+                    self._assert_duplicate_asset_history(connection, duplicate_identity)
+                    if (
+                        duplicate_identity["owner_user_iri"] != owner.user_iri
+                        or duplicate_identity["staging_area_id"]
+                        != request.staging_area_id
+                        or duplicate_identity["request_hash"] != request_hash
+                    ):
+                        raise self._asset_conflict()
+                    result = self._content_duplicate_result(duplicate_identity)
+                    self._insert_duplicate_idempotency(
+                        connection,
+                        owner,
+                        request.staging_area_id,
+                        idempotency_key,
+                        request_hash,
+                        request.client_asset_id,
+                        now,
+                    )
+                    return result, False
+
                 asset = connection.execute(
                     "SELECT * FROM mobile_assets WHERE client_asset_id = ?",
                     (request.client_asset_id,),
@@ -150,6 +427,7 @@ class MobileUploadRegistry:
 
                 if asset is not None and asset["current_upload_id"]:
                     current = self._row_for_id(connection, asset["current_upload_id"])
+                    self._assert_same_asset_content(current, request)
                     if current["state"] not in REOPENABLE_STATES:
                         self._assert_same_asset_request(current, request)
                         self._assert_destination(current, destination)
@@ -164,6 +442,67 @@ class MobileUploadRegistry:
                             now,
                         )
                         return self._status(current), False
+
+                committed_content = connection.execute(
+                    """
+                    SELECT staging_area_id, checksum
+                    FROM mobile_content_receipts
+                    WHERE staging_area_id = ? AND checksum = ?
+                      AND lifecycle_state != 'released'
+                    ORDER BY committed_at, committed_upload_id
+                    LIMIT 1
+                    """,
+                    (request.staging_area_id, request.checksum),
+                ).fetchone()
+                if committed_content is not None:
+                    result = ContentDuplicateResult(
+                        client_asset_id=request.client_asset_id,
+                        staging_area_id=request.staging_area_id,
+                        checksum=request.checksum,
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO mobile_content_duplicates (
+                            client_asset_id, owner_user_id, owner_user_iri,
+                            staging_area_id, checksum, request_hash, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            request.client_asset_id,
+                            owner.user_id,
+                            owner.user_iri,
+                            request.staging_area_id,
+                            request.checksum,
+                            request_hash,
+                            format_timestamp(now),
+                        ),
+                    )
+                    self._insert_duplicate_idempotency(
+                        connection,
+                        owner,
+                        request.staging_area_id,
+                        idempotency_key,
+                        request_hash,
+                        request.client_asset_id,
+                        now,
+                    )
+                    return result, False
+
+                reservation = connection.execute(
+                    """
+                    SELECT upload_id FROM mobile_content_reservations
+                    WHERE staging_area_id = ? AND checksum = ?
+                    """,
+                    (request.staging_area_id, request.checksum),
+                ).fetchone()
+                if reservation is not None:
+                    raise MobileUploadError(
+                        409,
+                        "content_upload_in_progress",
+                        "Identical content is currently being processed",
+                        retryable=True,
+                        retry_after_seconds=2,
+                    )
 
                 self._require_logical_capacity(
                     connection,
@@ -247,6 +586,20 @@ class MobileUploadRegistry:
                     WHERE client_asset_id = ?
                     """,
                     (generation, upload_id, request.client_asset_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO mobile_content_reservations (
+                        staging_area_id, checksum, upload_id, client_asset_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request.staging_area_id,
+                        request.checksum,
+                        upload_id,
+                        request.client_asset_id,
+                        format_timestamp(now),
+                    ),
                 )
                 self._insert_idempotency(
                     connection,
@@ -431,6 +784,12 @@ class MobileUploadRegistry:
                         (self._event_id(upload_id), upload_id),
                     )
                     row = self._row_for_id(connection, upload_id)
+                self._assert_no_duplicate_idempotency_key(
+                    connection,
+                    owner,
+                    row["staging_area_id"],
+                    idempotency_key,
+                )
                 replay = self._idempotency_replay(
                     connection,
                     owner,
@@ -622,6 +981,7 @@ class MobileUploadRegistry:
                     """,
                     (upload_id,),
                 )
+                self._release_content_reservation(connection, row)
 
     def reconcile_orphan_upload_directories(self) -> int:
         """Remove canonical private directories that have no durable registry row.
@@ -659,6 +1019,58 @@ class MobileUploadRegistry:
         canonical_uuid(upload_id, "uploadId")
         with self._upload_lock(upload_id):
             yield
+
+    def committed_asset_for_legacy_delete(
+        self, client_asset_id: str, resource_iri: str, storage_path: str
+    ) -> MobileCommittedAsset | None:
+        """Resolve an exact mobile publication without claiming deletion authority.
+
+        The legacy endpoint has already authorized and deleted the OLDAP resource
+        before calling this lookup. Matching all immutable location facts lets it
+        share the upload lock and owner-aware file primitive with the lifecycle
+        worker; unrelated legacy assets continue through their original path.
+        """
+
+        try:
+            canonical_uuid(client_asset_id, "clientAssetId")
+        except MobileUploadError:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT upload.upload_id, upload.client_asset_id,
+                       upload.original_name, upload.original_mime_type,
+                       upload.byte_length, upload.verified_checksum,
+                       upload.storage_path
+                FROM mobile_uploads AS upload
+                JOIN mobile_content_receipts AS receipt
+                  ON receipt.committed_upload_id = upload.upload_id
+                WHERE upload.client_asset_id = ?
+                  AND upload.resource_iri = ?
+                  AND upload.storage_path = ?
+                  AND upload.state = 'committed'
+                  AND upload.verified_checksum = receipt.checksum
+                LIMIT 2
+                """,
+                (client_asset_id, resource_iri, storage_path),
+            ).fetchall()
+        if not row:
+            return None
+        if len(row) != 1:
+            raise MobileUploadInvariantError(
+                "Committed mobile asset identity is contradictory."
+            )
+        asset = row[0]
+        return MobileCommittedAsset(
+            upload_id=asset["upload_id"],
+            client_asset_id=asset["client_asset_id"],
+            original_name=asset["original_name"],
+            original_mime_type=asset["original_mime_type"],
+            byte_length=int(asset["byte_length"]),
+            checksum=asset["verified_checksum"],
+            storage_path=asset["storage_path"],
+            upload_directory=self.uploads_root / asset["upload_id"],
+        )
 
     def claim_next_processing(self, worker_id: str) -> MobileProcessingClaim | None:
         """Atomically lease one recoverable commit while enforcing the global cap."""
@@ -854,6 +1266,7 @@ class MobileUploadRegistry:
                 raise MobileUploadInvariantError(
                     "Mobile compensation was not finalized."
                 )
+            self._release_content_reservation(connection, row)
 
     def complete_commit(self, claim: MobileProcessingClaim) -> None:
         """Atomically publish the permanent receipt to upload and asset records."""
@@ -873,6 +1286,39 @@ class MobileUploadRegistry:
                     "OLDAP result differs from the upload."
                 )
             committed_at = format_timestamp(parse_timestamp(result["committedAt"]))
+            reservation = connection.execute(
+                """
+                SELECT * FROM mobile_content_reservations
+                WHERE staging_area_id = ? AND checksum = ?
+                """,
+                (row["staging_area_id"], row["verified_checksum"]),
+            ).fetchone()
+            if (
+                reservation is None
+                or reservation["upload_id"] != row["upload_id"]
+                or reservation["client_asset_id"] != row["client_asset_id"]
+            ):
+                raise MobileUploadInvariantError(
+                    "Committed content reservation differs from the upload."
+                )
+            existing_content = connection.execute(
+                """
+                SELECT 1 FROM mobile_content_receipts
+                WHERE staging_area_id = ? AND checksum = ?
+                  AND committed_upload_id != ?
+                  AND lifecycle_state != 'released'
+                LIMIT 1
+                """,
+                (
+                    row["staging_area_id"],
+                    row["verified_checksum"],
+                    row["upload_id"],
+                ),
+            ).fetchone()
+            if existing_content is not None:
+                raise MobileUploadInvariantError(
+                    "Committed content conflicts with a permanent receipt."
+                )
             connection.execute(
                 """
                 UPDATE mobile_uploads
@@ -910,6 +1356,22 @@ class MobileUploadRegistry:
                 raise MobileUploadInvariantError(
                     "Permanent client asset receipt conflicted."
                 )
+            connection.execute(
+                """
+                INSERT INTO mobile_content_receipts (
+                    committed_upload_id, client_asset_id, staging_area_id,
+                    checksum, committed_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    claim.upload_id,
+                    claim.client_asset_id,
+                    claim.staging_area_id,
+                    claim.checksum,
+                    committed_at,
+                ),
+            )
+            self._release_content_reservation(connection, row)
 
     def fail_processing(
         self,
@@ -945,6 +1407,8 @@ class MobileUploadRegistry:
                     claim.lease_owner,
                 ),
             )
+            if not retryable and row["commit_phase"] in PREPUBLICATION_PHASES:
+                self._release_content_reservation(connection, row)
 
     def claim_next_cleanup(self, worker_id: str) -> MobileCleanupClaim | None:
         """Expire safe transfers and atomically lease one owned-directory cleanup."""
@@ -1021,13 +1485,19 @@ class MobileUploadRegistry:
         self._ensure_private_directory(self.root, parents=True)
         self._ensure_private_directory(self.uploads_root)
         self._ensure_private_directory(self.locks_root)
+        with self._exclusive_file_lock(self.locks_root / "registry-init.lock"):
+            self._initialize_database()
+
+    def _initialize_database(self) -> None:
+        """Create, migrate, and validate the registry under the startup lock."""
+
         if self.database_path.is_symlink():
             raise MobileUploadInvariantError(
                 "Mobile upload registry must not be a symbolic link."
             )
         with self._connect() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, SCHEMA_VERSION):
+            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
                 raise MobileUploadInvariantError(
                     f"Unsupported mobile upload registry schema version {version}."
                 )
@@ -1101,12 +1571,81 @@ class MobileUploadRegistry:
                     PRIMARY KEY (owner_user_iri, staging_area_id, idempotency_key)
                 );
 
+                CREATE TABLE IF NOT EXISTS mobile_content_reservations (
+                    staging_area_id TEXT NOT NULL,
+                    checksum TEXT NOT NULL,
+                    upload_id TEXT NOT NULL UNIQUE REFERENCES mobile_uploads(upload_id),
+                    client_asset_id TEXT NOT NULL UNIQUE
+                        REFERENCES mobile_assets(client_asset_id),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (staging_area_id, checksum)
+                );
+
+                CREATE TABLE IF NOT EXISTS mobile_content_receipts (
+                    committed_upload_id TEXT PRIMARY KEY
+                        REFERENCES mobile_uploads(upload_id),
+                    client_asset_id TEXT NOT NULL UNIQUE
+                        REFERENCES mobile_assets(client_asset_id),
+                    staging_area_id TEXT NOT NULL,
+                    checksum TEXT NOT NULL,
+                    committed_at TEXT NOT NULL,
+                    lifecycle_state TEXT NOT NULL DEFAULT 'active'
+                        CHECK (lifecycle_state IN ('active', 'archived', 'released')),
+                    released_at TEXT,
+                    release_reason TEXT CHECK (
+                        release_reason IS NULL OR release_reason = 'staging_deleted'
+                    ),
+                    CHECK ((lifecycle_state = 'released') =
+                        (released_at IS NOT NULL AND release_reason IS NOT NULL))
+                );
+
+                CREATE TABLE IF NOT EXISTS mobile_lifecycle_events (
+                    event_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK (kind IN ('moved', 'staging_deleted', 'archived')),
+                    upload_id TEXT NOT NULL,
+                    client_asset_id TEXT NOT NULL,
+                    owner_user_iri TEXT NOT NULL,
+                    staging_area_id TEXT NOT NULL,
+                    resource_iri TEXT NOT NULL,
+                    checksum TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('received', 'completed')),
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK ((state = 'completed') = (completed_at IS NOT NULL))
+                );
+
+                CREATE TABLE IF NOT EXISTS mobile_content_duplicates (
+                    client_asset_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    owner_user_iri TEXT NOT NULL,
+                    staging_area_id TEXT NOT NULL,
+                    checksum TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mobile_content_duplicate_idempotency (
+                    owner_user_id TEXT NOT NULL,
+                    owner_user_iri TEXT NOT NULL,
+                    staging_area_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    request_hash TEXT NOT NULL,
+                    client_asset_id TEXT NOT NULL
+                        REFERENCES mobile_content_duplicates(client_asset_id),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (owner_user_iri, staging_area_id, idempotency_key)
+                );
+
                 CREATE INDEX IF NOT EXISTS mobile_upload_owner_state
                     ON mobile_uploads(owner_user_iri, state);
                 CREATE INDEX IF NOT EXISTS mobile_upload_area_state
                     ON mobile_uploads(staging_area_id, state);
                 CREATE INDEX IF NOT EXISTS mobile_upload_expiry
                     ON mobile_uploads(state, expires_at);
+                CREATE INDEX IF NOT EXISTS mobile_content_receipt_scope
+                    ON mobile_content_receipts(staging_area_id, checksum, committed_at);
                 """
             )
             if version == 1:
@@ -1166,6 +1705,28 @@ class MobileUploadRegistry:
                             """,
                             (self._closed_json(problem), row["upload_id"]),
                         )
+            if version in (1, 2, 3):
+                receipt_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(mobile_content_receipts)"
+                    ).fetchall()
+                }
+                if "lifecycle_state" not in receipt_columns:
+                    connection.execute(
+                        "ALTER TABLE mobile_content_receipts ADD COLUMN "
+                        "lifecycle_state TEXT NOT NULL DEFAULT 'active' "
+                        "CHECK (lifecycle_state IN ('active', 'archived', 'released'))"
+                    )
+                if "released_at" not in receipt_columns:
+                    connection.execute(
+                        "ALTER TABLE mobile_content_receipts ADD COLUMN released_at TEXT"
+                    )
+                if "release_reason" not in receipt_columns:
+                    connection.execute(
+                        "ALTER TABLE mobile_content_receipts ADD COLUMN release_reason TEXT "
+                        "CHECK (release_reason IS NULL OR release_reason = 'staging_deleted')"
+                    )
             connection.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS mobile_upload_worker_queue
@@ -1174,6 +1735,9 @@ class MobileUploadRegistry:
                     ON mobile_uploads(cleanup_pending, lease_expires_at);
                 """
             )
+            if version in (1, 2):
+                self._backfill_content_tracking(connection)
+            self._validate_content_tracking(connection)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
         if not stat.S_ISREG(self.database_path.lstat().st_mode):
@@ -1181,6 +1745,399 @@ class MobileUploadRegistry:
                 "Mobile upload registry must be a regular file."
             )
         os.chmod(self.database_path, 0o600)
+
+    def _backfill_content_tracking(self, connection: sqlite3.Connection) -> None:
+        """Migrate existing v1/v2 uploads without discarding prior receipts.
+
+        Historical same-area checksum duplicates are retained as independent
+        client-asset receipts, but any of them is sufficient to block another
+        mobile upload. If pre-migration active work already conflicts, only the
+        first deterministic generation keeps the reservation and later work is
+        quarantined instead of being allowed to create another asset.
+        """
+
+        committed = connection.execute(
+            """
+            SELECT upload.*
+            FROM mobile_uploads AS upload
+            JOIN mobile_assets AS asset
+              ON asset.committed_upload_id = upload.upload_id
+            WHERE upload.state = 'committed'
+            ORDER BY upload.committed_at, upload.upload_id
+            """
+        ).fetchall()
+        for row in committed:
+            if (
+                not row["committed_at"]
+                or not row["verified_checksum"]
+                or row["verified_checksum"] != row["checksum"]
+                or row["asset_id"] != row["client_asset_id"]
+            ):
+                raise MobileUploadInvariantError(
+                    "Existing committed mobile content receipt is incomplete."
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO mobile_content_receipts (
+                    committed_upload_id, client_asset_id, staging_area_id,
+                    checksum, committed_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    row["upload_id"],
+                    row["client_asset_id"],
+                    row["staging_area_id"],
+                    row["verified_checksum"],
+                    row["committed_at"],
+                ),
+            )
+
+        candidates = connection.execute(
+            """
+            SELECT upload.*
+            FROM mobile_uploads AS upload
+            JOIN mobile_assets AS asset
+              ON asset.current_upload_id = upload.upload_id
+            WHERE upload.state IN (
+                'initialized', 'uploading', 'verifying', 'processing',
+                'committing', 'failed'
+            )
+            ORDER BY upload.created_at, upload.upload_id
+            """
+        ).fetchall()
+        for row in candidates:
+            if row["state"] == "failed":
+                error = self._stored_error(row)
+                if not error or error.get("retryable") is not True:
+                    continue
+            receipt = connection.execute(
+                """
+                SELECT 1 FROM mobile_content_receipts
+                WHERE staging_area_id = ? AND checksum = ? LIMIT 1
+                """,
+                (row["staging_area_id"], row["checksum"]),
+            ).fetchone()
+            if receipt is not None:
+                self._quarantine_migrated_content_conflict(connection, row)
+                continue
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO mobile_content_reservations (
+                        staging_area_id, checksum, upload_id, client_asset_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["staging_area_id"],
+                        row["checksum"],
+                        row["upload_id"],
+                        row["client_asset_id"],
+                        row["created_at"],
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                self._quarantine_migrated_content_conflict(connection, row)
+
+    def _quarantine_migrated_content_conflict(
+        self, connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> None:
+        """Stop contradictory pre-v3 work without deleting ambiguous evidence."""
+
+        safe_to_cleanup = row["commit_phase"] in {"none", *PREPUBLICATION_PHASES}
+        problem = {
+            "type": "https://oldap.org/problems/mobile/content-reservation-conflict",
+            "title": "Mobile content requires operator review",
+            "status": 409,
+            "code": "content_reservation_conflict",
+            "traceId": row["upload_id"],
+            "retryable": False,
+        }
+        connection.execute(
+            """
+            UPDATE mobile_uploads
+            SET state = 'failed', error_json = ?, cleanup_pending = ?,
+                lease_owner = NULL, lease_expires_at = NULL
+            WHERE upload_id = ?
+            """,
+            (
+                self._closed_json(problem),
+                int(safe_to_cleanup),
+                row["upload_id"],
+            ),
+        )
+
+    def _validate_content_tracking(self, connection: sqlite3.Connection) -> None:
+        """Reject contradictory durable claims before serving mobile requests."""
+
+        reservations = connection.execute(
+            """
+            SELECT reservation.*, upload.state,
+                   upload.owner_user_iri AS upload_owner,
+                   upload.staging_area_id AS upload_area,
+                   upload.checksum AS upload_checksum,
+                   upload.client_asset_id AS upload_client_asset_id,
+                   upload.error_json, asset.current_upload_id,
+                   asset.owner_user_iri AS asset_owner,
+                   asset.staging_area_id AS asset_area,
+                   asset.client_asset_id AS asset_client_asset_id
+            FROM mobile_content_reservations AS reservation
+            LEFT JOIN mobile_uploads AS upload
+              ON upload.upload_id = reservation.upload_id
+            LEFT JOIN mobile_assets AS asset
+              ON asset.client_asset_id = reservation.client_asset_id
+            """
+        ).fetchall()
+        for row in reservations:
+            if (
+                not row["state"]
+                or row["upload_area"] != row["staging_area_id"]
+                or row["upload_checksum"] != row["checksum"]
+                or row["upload_client_asset_id"] != row["client_asset_id"]
+                or row["asset_client_asset_id"] != row["client_asset_id"]
+                or row["upload_owner"] != row["asset_owner"]
+                or row["asset_area"] != row["staging_area_id"]
+                or row["current_upload_id"] != row["upload_id"]
+                or not self._requires_content_reservation(row)
+            ):
+                raise MobileUploadInvariantError(
+                    "Durable mobile content reservation is contradictory."
+                )
+
+        current = connection.execute(
+            """
+            SELECT upload.*,
+                   asset.client_asset_id AS asset_client_asset_id,
+                   asset.owner_user_iri AS asset_owner,
+                   asset.staging_area_id AS asset_area
+            FROM mobile_uploads AS upload
+            JOIN mobile_assets AS asset
+              ON asset.current_upload_id = upload.upload_id
+            """
+        ).fetchall()
+        for row in current:
+            if (
+                row["client_asset_id"] != row["asset_client_asset_id"]
+                or row["owner_user_iri"] != row["asset_owner"]
+                or row["staging_area_id"] != row["asset_area"]
+            ):
+                raise MobileUploadInvariantError(
+                    "Current mobile upload ownership is contradictory."
+                )
+            reservation = connection.execute(
+                """
+                SELECT * FROM mobile_content_reservations
+                WHERE upload_id = ?
+                """,
+                (row["upload_id"],),
+            ).fetchone()
+            if self._requires_content_reservation(row):
+                if reservation is None:
+                    raise MobileUploadInvariantError(
+                        "Active mobile upload has no durable content reservation."
+                    )
+            elif reservation is not None:
+                raise MobileUploadInvariantError(
+                    "Terminal mobile upload retained an invalid content reservation."
+                )
+
+        dangling_current = connection.execute(
+            """
+            SELECT 1
+            FROM mobile_assets AS asset
+            LEFT JOIN mobile_uploads AS upload
+              ON upload.upload_id = asset.current_upload_id
+            WHERE asset.current_upload_id IS NOT NULL AND upload.upload_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if dangling_current is not None:
+            raise MobileUploadInvariantError(
+                "Permanent client asset references a missing current generation."
+            )
+
+        receipts = connection.execute(
+            """
+            SELECT receipt.committed_upload_id AS receipt_upload_id,
+                   receipt.client_asset_id AS receipt_asset,
+                   receipt.staging_area_id AS receipt_area,
+                   receipt.checksum AS receipt_checksum,
+                   receipt.committed_at AS receipt_committed_at,
+                   receipt.lifecycle_state, receipt.released_at,
+                   receipt.release_reason,
+                   upload.state, upload.client_asset_id AS upload_asset,
+                   upload.owner_user_iri AS upload_owner,
+                   upload.staging_area_id AS upload_area,
+                   upload.verified_checksum, upload.committed_at AS upload_committed_at,
+                   upload.asset_id AS upload_result_asset,
+                   upload.resource_iri AS upload_resource_iri,
+                   asset.committed_upload_id AS asset_upload_id,
+                   asset.owner_user_iri AS asset_owner,
+                   asset.staging_area_id AS asset_area,
+                   asset.committed_asset_id AS asset_result_id,
+                   asset.committed_resource_iri AS asset_resource_iri,
+                   asset.committed_at AS asset_committed_at
+            FROM mobile_content_receipts AS receipt
+            LEFT JOIN mobile_uploads AS upload
+              ON upload.upload_id = receipt.committed_upload_id
+            LEFT JOIN mobile_assets AS asset
+              ON asset.client_asset_id = receipt.client_asset_id
+            """
+        ).fetchall()
+        for row in receipts:
+            if (
+                row["state"] != "committed"
+                or row["upload_asset"] != row["receipt_asset"]
+                or row["upload_owner"] != row["asset_owner"]
+                or row["upload_area"] != row["receipt_area"]
+                or row["asset_area"] != row["receipt_area"]
+                or row["verified_checksum"] != row["receipt_checksum"]
+                or row["upload_committed_at"] != row["receipt_committed_at"]
+                or row["asset_upload_id"] != row["receipt_upload_id"]
+                or row["upload_result_asset"] != row["receipt_asset"]
+                or row["asset_result_id"] != row["upload_result_asset"]
+                or not row["upload_resource_iri"]
+                or row["asset_resource_iri"] != row["upload_resource_iri"]
+                or row["asset_committed_at"] != row["receipt_committed_at"]
+                or row["lifecycle_state"] not in {"active", "archived", "released"}
+                or (
+                    row["lifecycle_state"] == "released"
+                    and (
+                        not row["released_at"]
+                        or row["release_reason"] != "staging_deleted"
+                    )
+                )
+                or (
+                    row["lifecycle_state"] != "released"
+                    and (
+                        row["released_at"] is not None
+                        or row["release_reason"] is not None
+                    )
+                )
+            ):
+                raise MobileUploadInvariantError(
+                    "Permanent mobile content receipt is contradictory."
+                )
+
+        committed_upload_without_receipt = connection.execute(
+            """
+            SELECT 1
+            FROM mobile_uploads AS upload
+            LEFT JOIN mobile_content_receipts AS receipt
+              ON receipt.committed_upload_id = upload.upload_id
+            WHERE upload.state = 'committed'
+              AND receipt.committed_upload_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if committed_upload_without_receipt is not None:
+            raise MobileUploadInvariantError(
+                "Committed mobile upload has no permanent content receipt."
+            )
+
+        committed_asset_without_receipt = connection.execute(
+            """
+            SELECT 1
+            FROM mobile_assets AS asset
+            LEFT JOIN mobile_uploads AS upload
+              ON upload.upload_id = asset.committed_upload_id
+            LEFT JOIN mobile_content_receipts AS receipt
+              ON receipt.committed_upload_id = asset.committed_upload_id
+            WHERE asset.committed_upload_id IS NOT NULL
+              AND (upload.upload_id IS NULL OR upload.state != 'committed'
+                   OR receipt.committed_upload_id IS NULL)
+            LIMIT 1
+            """
+        ).fetchone()
+        if committed_asset_without_receipt is not None:
+            raise MobileUploadInvariantError(
+                "Permanent client asset has no valid committed upload receipt."
+            )
+
+        duplicates = connection.execute(
+            "SELECT * FROM mobile_content_duplicates"
+        ).fetchall()
+        for duplicate in duplicates:
+            receipt = connection.execute(
+                """
+                SELECT 1 FROM mobile_content_receipts
+                WHERE staging_area_id = ? AND checksum = ? LIMIT 1
+                """,
+                (duplicate["staging_area_id"], duplicate["checksum"]),
+            ).fetchone()
+            if receipt is None:
+                raise MobileUploadInvariantError(
+                    "Mobile content duplicate result is contradictory."
+                )
+            self._assert_duplicate_asset_history(connection, duplicate)
+
+        duplicate_replay_conflict = connection.execute(
+            """
+            SELECT 1
+            FROM mobile_content_duplicate_idempotency AS replay
+            LEFT JOIN mobile_content_duplicates AS duplicate
+              ON duplicate.client_asset_id = replay.client_asset_id
+            WHERE duplicate.client_asset_id IS NULL
+               OR duplicate.owner_user_iri != replay.owner_user_iri
+               OR duplicate.staging_area_id != replay.staging_area_id
+               OR duplicate.request_hash != replay.request_hash
+            LIMIT 1
+            """
+        ).fetchone()
+        if duplicate_replay_conflict is not None:
+            raise MobileUploadInvariantError(
+                "Mobile content duplicate idempotency is contradictory."
+            )
+
+        overlapping_idempotency = connection.execute(
+            """
+            SELECT 1
+            FROM mobile_idempotency AS regular
+            JOIN mobile_content_duplicate_idempotency AS duplicate
+              ON duplicate.owner_user_iri = regular.owner_user_iri
+             AND duplicate.staging_area_id = regular.staging_area_id
+             AND duplicate.idempotency_key = regular.idempotency_key
+            LIMIT 1
+            """
+        ).fetchone()
+        if overlapping_idempotency is not None:
+            raise MobileUploadInvariantError("Mobile idempotency namespaces overlap.")
+
+        lifecycle_events = connection.execute(
+            """
+            SELECT event.*, receipt.committed_upload_id AS receipt_upload_id,
+                   receipt.client_asset_id AS receipt_asset_id,
+                   receipt.staging_area_id AS receipt_area,
+                   receipt.checksum AS receipt_checksum,
+                   upload.owner_user_iri AS receipt_owner,
+                   upload.resource_iri AS receipt_resource
+            FROM mobile_lifecycle_events AS event
+            LEFT JOIN mobile_content_receipts AS receipt
+              ON receipt.committed_upload_id = event.upload_id
+            LEFT JOIN mobile_uploads AS upload
+              ON upload.upload_id = receipt.committed_upload_id
+            """
+        ).fetchall()
+        for event in lifecycle_events:
+            if (
+                event["receipt_upload_id"] != event["upload_id"]
+                or event["receipt_asset_id"] != event["client_asset_id"]
+                or event["receipt_area"] != event["staging_area_id"]
+                or event["receipt_checksum"] != event["checksum"]
+                or event["receipt_owner"] != event["owner_user_iri"]
+                or event["receipt_resource"] != event["resource_iri"]
+                or ((event["state"] == "completed") != bool(event["completed_at"]))
+            ):
+                raise MobileUploadInvariantError(
+                    "Mobile lifecycle history is contradictory."
+                )
+
+    def _requires_content_reservation(self, row: sqlite3.Row) -> bool:
+        if row["state"] in ACTIVE_STATES:
+            return True
+        if row["state"] != "failed":
+            return False
+        error = self._stored_error(row)
+        return bool(error and error.get("retryable") is True)
 
     @staticmethod
     def _ensure_private_directory(path: Path, *, parents: bool = False) -> None:
@@ -1217,7 +2174,13 @@ class MobileUploadRegistry:
 
     @contextmanager
     def _upload_lock(self, upload_id: str) -> Iterator[None]:
-        lock_path = self.locks_root / f"{upload_id}.lock"
+        with self._exclusive_file_lock(self.locks_root / f"{upload_id}.lock"):
+            yield
+
+    @contextmanager
+    def _exclusive_file_lock(self, lock_path: Path) -> Iterator[None]:
+        """Hold one no-follow process lock for an exact registry-owned path."""
+
         flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -1497,6 +2460,7 @@ class MobileUploadRegistry:
                     """,
                     (row["upload_id"],),
                 )
+                self._release_content_reservation(connection, row)
 
     def _expire_row(
         self, connection: sqlite3.Connection, row: sqlite3.Row, now: datetime
@@ -1512,6 +2476,7 @@ class MobileUploadRegistry:
                 "UPDATE mobile_uploads SET cleanup_pending = 1 WHERE upload_id = ?",
                 (row["upload_id"],),
             )
+            self._release_content_reservation(connection, row)
             return self._row_for_id(connection, row["upload_id"])
         return row
 
@@ -1753,6 +2718,169 @@ class MobileUploadRegistry:
                 "Mobile upload storage entry is not a regular file."
             )
 
+    @staticmethod
+    def _content_duplicate_result(row: sqlite3.Row) -> ContentDuplicateResult:
+        """Restore a closed duplicate result without exposing the original asset."""
+
+        return ContentDuplicateResult(
+            client_asset_id=row["client_asset_id"],
+            staging_area_id=row["staging_area_id"],
+            checksum=row["checksum"],
+        )
+
+    def _assert_duplicate_asset_history(
+        self, connection: sqlite3.Connection, duplicate: sqlite3.Row
+    ) -> None:
+        """Allow only terminal uncommitted history beside a duplicate outcome."""
+
+        asset = connection.execute(
+            "SELECT * FROM mobile_assets WHERE client_asset_id = ?",
+            (duplicate["client_asset_id"],),
+        ).fetchone()
+        if asset is None:
+            return
+        current = (
+            self._row_for_id(connection, asset["current_upload_id"])
+            if asset["current_upload_id"]
+            else None
+        )
+        if (
+            asset["staging_area_id"] != duplicate["staging_area_id"]
+            or asset["owner_user_iri"] != duplicate["owner_user_iri"]
+            or asset["committed_upload_id"] is not None
+            or asset["committed_asset_id"] is not None
+            or asset["committed_resource_iri"] is not None
+            or asset["committed_at"] is not None
+            or current is None
+            or current["client_asset_id"] != duplicate["client_asset_id"]
+            or current["owner_user_iri"] != duplicate["owner_user_iri"]
+            or current["staging_area_id"] != duplicate["staging_area_id"]
+            or current["checksum"] != duplicate["checksum"]
+            or self._requires_content_reservation(current)
+        ):
+            raise MobileUploadInvariantError(
+                "Client asset identity has contradictory permanent outcomes."
+            )
+
+    def _duplicate_idempotency_replay(
+        self,
+        connection: sqlite3.Connection,
+        owner: MobileAccessIdentity,
+        staging_area_id: str,
+        key: str,
+        request_hash: str,
+    ) -> ContentDuplicateResult | None:
+        """Replay one duplicate initialization or reject changed key reuse."""
+
+        row = connection.execute(
+            """
+            SELECT duplicate.*,
+                   replay.request_hash AS replay_request_hash
+            FROM mobile_content_duplicate_idempotency AS replay
+            JOIN mobile_content_duplicates AS duplicate
+              ON duplicate.client_asset_id = replay.client_asset_id
+            WHERE replay.owner_user_iri = ? AND replay.staging_area_id = ?
+              AND replay.idempotency_key = ?
+            """,
+            (owner.user_iri, staging_area_id, key),
+        ).fetchone()
+        if row is None:
+            return None
+        if (
+            row["replay_request_hash"] != request_hash
+            or row["request_hash"] != request_hash
+            or row["owner_user_iri"] != owner.user_iri
+            or row["staging_area_id"] != staging_area_id
+        ):
+            raise MobileUploadError(
+                409,
+                "idempotency_conflict",
+                "Idempotency key was reused with another request",
+            )
+        return self._content_duplicate_result(row)
+
+    @staticmethod
+    def _assert_no_duplicate_idempotency_key(
+        connection: sqlite3.Connection,
+        owner: MobileAccessIdentity,
+        staging_area_id: str,
+        key: str,
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT 1 FROM mobile_content_duplicate_idempotency
+            WHERE owner_user_iri = ? AND staging_area_id = ? AND idempotency_key = ?
+            """,
+            (owner.user_iri, staging_area_id, key),
+        ).fetchone()
+        if row is not None:
+            raise MobileUploadError(
+                409,
+                "idempotency_conflict",
+                "Idempotency key was reused with another request",
+            )
+
+    @staticmethod
+    def _insert_duplicate_idempotency(
+        connection: sqlite3.Connection,
+        owner: MobileAccessIdentity,
+        staging_area_id: str,
+        key: str,
+        request_hash: str,
+        client_asset_id: str,
+        now: datetime,
+    ) -> None:
+        regular = connection.execute(
+            """
+            SELECT 1 FROM mobile_idempotency
+            WHERE owner_user_iri = ? AND staging_area_id = ? AND idempotency_key = ?
+            """,
+            (owner.user_iri, staging_area_id, key),
+        ).fetchone()
+        if regular is not None:
+            raise MobileUploadError(
+                409,
+                "idempotency_conflict",
+                "Idempotency key was reused with another request",
+            )
+        connection.execute(
+            """
+            INSERT INTO mobile_content_duplicate_idempotency (
+                owner_user_id, owner_user_iri, staging_area_id, idempotency_key,
+                request_hash, client_asset_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                owner.user_id,
+                owner.user_iri,
+                staging_area_id,
+                key,
+                request_hash,
+                client_asset_id,
+                format_timestamp(now),
+            ),
+        )
+
+    @staticmethod
+    def _release_content_reservation(
+        connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> None:
+        """Release only the exact generation's uncommitted content claim."""
+
+        connection.execute(
+            """
+            DELETE FROM mobile_content_reservations
+            WHERE staging_area_id = ? AND checksum = ?
+              AND upload_id = ? AND client_asset_id = ?
+            """,
+            (
+                row["staging_area_id"],
+                row["checksum"],
+                row["upload_id"],
+                row["client_asset_id"],
+            ),
+        )
+
     def _idempotency_replay(
         self,
         connection: sqlite3.Connection,
@@ -1773,20 +2901,102 @@ class MobileUploadRegistry:
         ).fetchone()
         if row is None:
             return None
-        if (
-            row["operation"] != operation
-            or row["request_hash"] != request_hash
-            or (
-                expected_upload_id is not None
-                and row["upload_id"] != expected_upload_id
-            )
-        ):
+        if row["operation"] != operation or row["request_hash"] != request_hash:
             raise MobileUploadError(
                 409,
                 "idempotency_conflict",
                 "Idempotency key was reused with another request",
             )
+        if expected_upload_id is not None and row["upload_id"] != expected_upload_id:
+            if operation != "commit" or not self._transfer_terminal_commit_identity(
+                connection,
+                owner,
+                staging_area_id,
+                row,
+                expected_upload_id,
+            ):
+                raise MobileUploadError(
+                    409,
+                    "idempotency_conflict",
+                    "Idempotency key was reused with another request",
+                )
+            return expected_upload_id
         return str(row["upload_id"])
+
+    def _transfer_terminal_commit_identity(
+        self,
+        connection: sqlite3.Connection,
+        owner: MobileAccessIdentity,
+        staging_area_id: str,
+        replay: sqlite3.Row,
+        current_upload_id: str,
+    ) -> bool:
+        """Move one permanent commit key onto the current safe generation.
+
+        A commit key is logical client-asset identity, not permission to revive
+        arbitrary work. Transfer is therefore limited to a newer current
+        generation after the previously bound generation became authoritatively
+        cancelled or safely expired without any committed asset receipt.
+        """
+
+        previous = self._row_for_id(connection, replay["upload_id"])
+        current = self._row_for_id(connection, current_upload_id)
+        asset = connection.execute(
+            "SELECT * FROM mobile_assets WHERE client_asset_id = ?",
+            (current["client_asset_id"],),
+        ).fetchone()
+        if (
+            previous["state"] not in REOPENABLE_STATES
+            or current["state"]
+            not in {
+                "initialized",
+                "uploading",
+                "verifying",
+                "processing",
+                "committing",
+                "failed",
+            }
+            or previous["client_asset_id"] != current["client_asset_id"]
+            or previous["owner_user_iri"] != owner.user_iri
+            or current["owner_user_iri"] != owner.user_iri
+            or previous["staging_area_id"] != staging_area_id
+            or current["staging_area_id"] != staging_area_id
+            or int(current["generation"]) <= int(previous["generation"])
+            or int(previous["byte_length"]) != int(current["byte_length"])
+            or previous["checksum"] != current["checksum"]
+            or asset is None
+            or asset["owner_user_iri"] != owner.user_iri
+            or asset["staging_area_id"] != staging_area_id
+            or asset["current_upload_id"] != current_upload_id
+            or asset["committed_upload_id"] is not None
+            or asset["committed_asset_id"] is not None
+            or asset["committed_resource_iri"] is not None
+            or asset["committed_at"] is not None
+        ):
+            return False
+        transferred = connection.execute(
+            """
+            UPDATE mobile_idempotency
+            SET upload_id = ?, owner_user_id = ?
+            WHERE owner_user_iri = ? AND staging_area_id = ?
+              AND idempotency_key = ? AND operation = 'commit'
+              AND request_hash = ? AND upload_id = ?
+            """,
+            (
+                current_upload_id,
+                owner.user_id,
+                owner.user_iri,
+                staging_area_id,
+                replay["idempotency_key"],
+                replay["request_hash"],
+                previous["upload_id"],
+            ),
+        )
+        if transferred.rowcount != 1:
+            raise MobileUploadInvariantError(
+                "Commit idempotency generation transfer lost its transaction race."
+            )
+        return True
 
     @staticmethod
     def _insert_idempotency(
@@ -1817,6 +3027,17 @@ class MobileUploadRegistry:
                 format_timestamp(now),
             ),
         )
+
+    @staticmethod
+    def _assert_same_asset_content(row: sqlite3.Row, request: InitializeUpload) -> None:
+        """Prevent one permanent client identity from changing original bytes."""
+
+        if (
+            row["original_mime_type"] != request.original_mime_type
+            or int(row["byte_length"]) != request.byte_length
+            or row["checksum"] != request.checksum
+        ):
+            raise MobileUploadRegistry._asset_conflict()
 
     @staticmethod
     def _assert_same_asset_request(row: sqlite3.Row, request: InitializeUpload) -> None:

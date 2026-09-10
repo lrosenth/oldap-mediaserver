@@ -19,6 +19,10 @@ if str(SOURCE) not in sys.path:
 from config import MobileUploadLimits  # noqa: E402
 from mobile_media_assets import MobileMediaAssetError, MobilePublication  # noqa: E402
 from mobile_media_commit import MobileMediaCommitFailure  # noqa: E402
+from mobile_media_lifecycle import (  # noqa: E402
+    MobileMediaLifecycleEvent,
+    MobileMediaLifecycleTransportError,
+)
 from mobile_upload_domain import (  # noqa: E402
     CommitUpload,
     InitializeUpload,
@@ -57,6 +61,17 @@ class Clock:
         return self.value
 
 
+class MonotonicClock:
+    def __init__(self) -> None:
+        self.value = 100.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
 class Assets:
     def __init__(self, *, fail_at: str | None = None) -> None:
         self.fail_at = fail_at
@@ -90,6 +105,11 @@ class Assets:
         self.calls.append("compensate")
         self.compensated = True
 
+    def delete_committed(self, spec) -> None:
+        self.calls.append("delete-committed")
+        if self.fail_at == "delete-committed":
+            raise MobileMediaAssetError("deletion failed")
+
 
 class Oldap:
     def __init__(self, failure: MobileMediaCommitFailure | None = None) -> None:
@@ -110,6 +130,21 @@ class Oldap:
             "checksum": payload["checksum"],
             "committedAt": "2026-08-23T12:00:00Z",
         }
+
+
+class Lifecycle:
+    def __init__(self) -> None:
+        self.event: MobileMediaLifecycleEvent | None = None
+        self.completed: list[str] = []
+        self.claims = 0
+
+    def claim(self, worker_id: str) -> MobileMediaLifecycleEvent | None:
+        self.claims += 1
+        event, self.event = self.event, None
+        return event
+
+    def complete(self, event: MobileMediaLifecycleEvent) -> None:
+        self.completed.append(event.event_id)
 
 
 class Capacity:
@@ -158,8 +193,13 @@ def queued(
     init_key: str = INIT_KEY,
     commit_key: str = COMMIT_KEY,
 ):
+    checksum = (
+        CHECKSUM
+        if asset == ASSET
+        else f"sha256:{hashlib.sha256(asset.encode('ascii')).hexdigest()}"
+    )
     request = InitializeUpload(
-        asset, AREA, "photo.jpg", "image/jpeg", len(CONTENT), CHECKSUM, "Keller"
+        asset, AREA, "photo.jpg", "image/jpeg", len(CONTENT), checksum, "Keller"
     )
     status, _ = registry.initialize(OWNER, request, destination(), init_key)
     registry.append_chunk(
@@ -181,7 +221,7 @@ def queued(
     registry.request_commit(
         status.upload_id,
         OWNER,
-        CommitUpload(asset, len(CONTENT), CHECKSUM),
+        CommitUpload(asset, len(CONTENT), checksum),
         destination(),
         commit_key,
     )
@@ -198,14 +238,146 @@ def registry(tmp_path: Path, clock: Clock) -> MobileUploadRegistry:
     return MobileUploadRegistry(tmp_path / "mobile", limits(), clock=clock)
 
 
-def worker(registry, assets=None, oldap=None, capacity=None, worker_id=WORKER):
+def worker(
+    registry,
+    assets=None,
+    oldap=None,
+    capacity=None,
+    worker_id=WORKER,
+    **options,
+):
     return MobileUploadWorker(
         registry,
         assets or Assets(),
         oldap or Oldap(),
         capacity or Capacity(),
         worker_id=worker_id,
+        **options,
     )
+
+
+def test_remote_lifecycle_polling_is_throttled_without_delaying_local_work(
+    registry: MobileUploadRegistry,
+) -> None:
+    lifecycle = Lifecycle()
+    clock = MonotonicClock()
+    oldap = Oldap()
+    runner = worker(
+        registry,
+        oldap=oldap,
+        lifecycle=lifecycle,
+        lifecycle_poll_seconds=20,
+        monotonic_clock=clock,
+    )
+
+    assert runner.run_once() is False
+    assert lifecycle.claims == 1
+    assert runner.run_once() is False
+    assert lifecycle.claims == 1
+
+    queued(registry)
+    assert runner.run_once() is True
+    assert lifecycle.claims == 1
+    assert oldap.calls == 1
+
+    clock.advance(19.9)
+    runner.run_once()  # Local cleanup may still be available.
+    assert lifecycle.claims == 1
+    clock.advance(0.1)
+    assert runner.run_once() is False
+    assert lifecycle.claims == 2
+
+
+def test_unavailable_lifecycle_endpoint_obeys_the_same_poll_interval(
+    registry: MobileUploadRegistry,
+) -> None:
+    class UnavailableLifecycle:
+        def __init__(self) -> None:
+            self.claims = 0
+
+        def claim(self, worker_id: str):
+            self.claims += 1
+            raise MobileMediaLifecycleTransportError("offline")
+
+        def complete(self, event):
+            raise AssertionError("No unavailable claim can be completed.")
+
+    lifecycle = UnavailableLifecycle()
+    clock = MonotonicClock()
+    runner = worker(
+        registry,
+        lifecycle=lifecycle,
+        lifecycle_poll_seconds=20,
+        monotonic_clock=clock,
+    )
+
+    assert runner.run_once() is False
+    assert runner.run_once() is False
+    assert lifecycle.claims == 1
+    clock.advance(20)
+    assert runner.run_once() is False
+    assert lifecycle.claims == 2
+
+
+def test_lifecycle_backlog_alternates_with_ready_local_upload_work(
+    registry: MobileUploadRegistry,
+) -> None:
+    committed = queued(registry)
+    assert worker(registry).run_once() is True
+    queued(
+        registry,
+        asset="99999999-9999-4999-8999-999999999981",
+        init_key="99999999-9999-4999-8999-999999999982",
+        commit_key="99999999-9999-4999-8999-999999999983",
+    )
+
+    class LifecycleBacklog:
+        def __init__(self) -> None:
+            self.events = [
+                MobileMediaLifecycleEvent(
+                    event_id=f"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa{index}",
+                    claim_id=f"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb{index}",
+                    worker_id=WORKER,
+                    kind="moved",
+                    upload_id=committed.upload_id,
+                    client_asset_id=ASSET,
+                    owner_user_iri=OWNER.user_iri,
+                    staging_area_id=AREA,
+                    resource_iri="urn:uuid:66666666-6666-4666-8666-666666666666",
+                    checksum=CHECKSUM,
+                    occurred_at=NOW + timedelta(minutes=index),
+                    lease_expires_at=NOW + timedelta(minutes=index + 5),
+                )
+                for index in (1, 2)
+            ]
+            self.completed: list[str] = []
+
+        def claim(self, worker_id: str) -> MobileMediaLifecycleEvent | None:
+            assert worker_id == WORKER
+            return self.events.pop(0) if self.events else None
+
+        def complete(self, event: MobileMediaLifecycleEvent) -> None:
+            self.completed.append(event.event_id)
+
+    lifecycle = LifecycleBacklog()
+    oldap = Oldap()
+    runner = worker(registry, lifecycle=lifecycle, oldap=oldap)
+
+    assert runner.run_once() is True
+    assert oldap.calls == 0
+    assert len(lifecycle.completed) == 1
+    assert runner.run_once() is True
+    assert oldap.calls == 1
+    assert len(lifecycle.completed) == 1
+    assert runner.run_once() is True
+    assert len(lifecycle.completed) == 2
+
+
+def test_lifecycle_poll_interval_must_be_positive(
+    registry: MobileUploadRegistry,
+) -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        worker(registry, lifecycle_poll_seconds=0)
 
 
 def test_happy_commit_is_atomic_and_cleanup_never_removes_final_asset(
@@ -218,6 +390,15 @@ def test_happy_commit_is_atomic_and_cleanup_never_removes_final_asset(
     committed = registry.get_status(status.upload_id, OWNER)
     assert committed.state == "committed"
     assert committed.asset_id == ASSET
+    with registry._connect() as connection:
+        receipt_count = connection.execute(
+            "SELECT COUNT(*) FROM mobile_content_receipts"
+        ).fetchone()[0]
+        reservation_count = connection.execute(
+            "SELECT COUNT(*) FROM mobile_content_reservations"
+        ).fetchone()[0]
+    assert receipt_count == 1
+    assert reservation_count == 0
     assert (registry.uploads_root / status.upload_id).exists()
     assert runner.run_once() is True
     assert not (registry.uploads_root / status.upload_id).exists()
@@ -455,6 +636,13 @@ def test_lost_oldap_response_retries_same_publication_and_converges(
     failed = registry.get_status(status.upload_id, OWNER)
     assert failed.state == "failed" and failed.error["retryable"] is True  # type: ignore[index]
     assert assets.compensated is False
+    with registry._connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_reservations"
+            ).fetchone()[0]
+            == 1
+        )
 
     registry.request_commit(
         status.upload_id,
@@ -484,6 +672,13 @@ def test_definite_oldap_rejection_compensates_but_ambiguous_failure_does_not(
     failed = registry.get_status(status.upload_id, OWNER)
     assert failed.state == "failed" and failed.error["retryable"] is False  # type: ignore[index]
     assert assets.compensated is True
+    with registry._connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM mobile_content_reservations"
+            ).fetchone()[0]
+            == 0
+        )
     registry.cancel(status.upload_id, OWNER)
     cleanup = registry.claim_next_cleanup(str(uuid4()))
     assert cleanup is not None
@@ -644,3 +839,153 @@ def test_stale_cleanup_claim_cannot_remove_private_storage(
         worker(registry)._cleanup(stale)
 
     assert (registry.uploads_root / status.upload_id).exists()
+
+
+def test_authoritative_staging_delete_is_applied_once_before_acknowledgement(
+    registry: MobileUploadRegistry,
+) -> None:
+    status = queued(registry)
+    commit_runner = worker(registry)
+    assert commit_runner.run_once() is True
+
+    lifecycle = Lifecycle()
+    lifecycle.event = MobileMediaLifecycleEvent(
+        event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+        claim_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        worker_id=WORKER,
+        kind="staging_deleted",
+        upload_id=status.upload_id,
+        client_asset_id=ASSET,
+        owner_user_iri=OWNER.user_iri,
+        staging_area_id=AREA,
+        resource_iri="urn:uuid:66666666-6666-4666-8666-666666666666",
+        checksum=CHECKSUM,
+        occurred_at=NOW + timedelta(minutes=1),
+        lease_expires_at=NOW + timedelta(minutes=6),
+    )
+    assets = Assets()
+    lifecycle_runner = worker(registry, assets=assets)
+    lifecycle_runner.lifecycle = lifecycle
+
+    assert lifecycle_runner.run_once() is True
+    assert assets.calls == ["delete-committed"]
+    assert lifecycle.completed == ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"]
+    with registry._connect() as connection:
+        receipt = connection.execute(
+            "SELECT lifecycle_state, release_reason FROM mobile_content_receipts"
+        ).fetchone()
+    assert tuple(receipt) == ("released", "staging_deleted")
+
+    replacement = InitializeUpload(
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+        AREA,
+        "photo-again.jpg",
+        "image/jpeg",
+        len(CONTENT),
+        CHECKSUM,
+        None,
+    )
+    replacement_status, created = registry.initialize(
+        OWNER,
+        replacement,
+        destination(),
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+    )
+    assert created is True
+    assert replacement_status.client_asset_id == replacement.client_asset_id
+
+
+def test_failed_staging_file_deletion_keeps_receipt_active_and_event_unacknowledged(
+    registry: MobileUploadRegistry,
+) -> None:
+    status = queued(registry)
+    assert worker(registry).run_once() is True
+    lifecycle = Lifecycle()
+    lifecycle.event = MobileMediaLifecycleEvent(
+        event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5",
+        claim_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6",
+        worker_id=WORKER,
+        kind="staging_deleted",
+        upload_id=status.upload_id,
+        client_asset_id=ASSET,
+        owner_user_iri=OWNER.user_iri,
+        staging_area_id=AREA,
+        resource_iri="urn:uuid:66666666-6666-4666-8666-666666666666",
+        checksum=CHECKSUM,
+        occurred_at=NOW + timedelta(minutes=1),
+        lease_expires_at=NOW + timedelta(minutes=6),
+    )
+    runner = worker(registry, assets=Assets(fail_at="delete-committed"))
+    runner.lifecycle = lifecycle
+
+    with pytest.raises(MobileMediaAssetError, match="deletion failed"):
+        runner.run_once()
+
+    assert lifecycle.completed == []
+    with registry._connect() as connection:
+        receipt = connection.execute(
+            "SELECT lifecycle_state, released_at FROM mobile_content_receipts"
+        ).fetchone()
+        event_state = connection.execute(
+            "SELECT state FROM mobile_lifecycle_events"
+        ).fetchone()[0]
+    assert tuple(receipt) == ("active", None)
+    assert event_state == "received"
+
+
+def test_restart_after_lost_lifecycle_ack_replays_without_second_file_deletion(
+    registry: MobileUploadRegistry,
+) -> None:
+    status = queued(registry)
+    assert worker(registry).run_once() is True
+    event = MobileMediaLifecycleEvent(
+        event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7",
+        claim_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa8",
+        worker_id=WORKER,
+        kind="staging_deleted",
+        upload_id=status.upload_id,
+        client_asset_id=ASSET,
+        owner_user_iri=OWNER.user_iri,
+        staging_area_id=AREA,
+        resource_iri="urn:uuid:66666666-6666-4666-8666-666666666666",
+        checksum=CHECKSUM,
+        occurred_at=NOW + timedelta(minutes=1),
+        lease_expires_at=NOW + timedelta(minutes=6),
+    )
+
+    class LostAcknowledgementLifecycle:
+        def __init__(self) -> None:
+            self.fail = True
+            self.completed = 0
+
+        def claim(self, worker_id: str):
+            return event
+
+        def complete(self, claimed: MobileMediaLifecycleEvent) -> None:
+            assert claimed == event
+            self.completed += 1
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("response lost")
+
+    lifecycle = LostAcknowledgementLifecycle()
+    first_assets = Assets()
+    first = worker(registry, assets=first_assets)
+    first.lifecycle = lifecycle
+    with pytest.raises(RuntimeError, match="response lost"):
+        first.run_once()
+    assert first_assets.calls == ["delete-committed"]
+
+    restarted_assets = Assets()
+    restarted = worker(registry, assets=restarted_assets)
+    restarted.lifecycle = lifecycle
+    assert restarted.run_once() is True
+    assert restarted_assets.calls == []
+    assert lifecycle.completed == 2
+    with registry._connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT lifecycle_state FROM mobile_content_receipts"
+            ).fetchone()[0]
+            == "released"
+        )

@@ -214,6 +214,17 @@ class MobileMediaAssetStore:
             return
         self._remove_owned_staging_if_present(withdrawn, spec)
 
+    def delete_committed(self, spec: MobileAssetSpec) -> None:
+        """Durably remove only the exact mobile-owned committed publication.
+
+        The same owner-marker and rename-first primitive used by compensation
+        makes an authoritative staging deletion idempotent across worker crashes.
+        A missing final after a repeated, durable lifecycle event is already a
+        completed file outcome; unrelated paths are never traversed.
+        """
+
+        self.compensate(spec)
+
     def publication(self, spec: MobileAssetSpec) -> MobilePublication:
         self._verify_asset(self.final_root(spec), spec)
         return MobilePublication(

@@ -1,5 +1,11 @@
 # CODEX_LOG
 
+### Update 2026-09-11 00:01
+- Decisions: Merge origin/main's mobile reconciliation/lifecycle work with local archive-safe Staging discard; preserve both histories and contracts.
+- Implementation: Resolved app/test/log conflicts. Authoritative OLDAP deletion precedes mobile owner-aware cleanup under the worker lock; failed cleanup reports cleanupPending. Retained both test suites and added mobile rejection/timeout/ownership-failure regressions. 324 tests pass, one platform skip; focused Black, Poetry validation and diff checks pass. Separate Docker image builds; network-disabled Flask/mobile imports and native HEIF smoke pass.
+- Open: Merge is staged for the user's Tower commit and push; release/deployment remains separate.
+- Risks/Assumptions: No running services, secrets, media data or sibling repositories changed. Poetry reports existing metadata deprecation warnings. Upstream mediahelper version 0.2.10 retained; no additional version bump.
+
 ### Update 2026-09-09 23:19
 - Decisions: Deploy checked local media source for archive-protected deletion ordering during MacBook rollout.
 - Implementation: Ran media tests (281 passed, 1 skipped); rebuilt local helper image and recreated existing helper/ingest/export services; restarted Caddy/image server. No source edits in this rollout. Live health, public thumbnails and original HTTP Range pass.
@@ -11,6 +17,42 @@
 - Implementation: Added permission-checked catalogue references, deduplicated source resolution, per-placement totals/CSV kinds, frozen path/membership/source reauthorization; authoritative RDF deletion now precedes binary withdrawal. Verified 141 API tests, 281 media tests (one Linux-only skip), isolated GraphDB/real-writer integration, and network-disabled Docker deletion smoke; Black/Poetry/diff checks pass. Updated an older Staging test double to expose its required property model.
 - Open: Verification complete; evidence is recorded in FasnachtsPage docs/as-05; AS-06–AS-09 UI, SALSAH, native acceptance and operational rollout remain separate.
 - Risks/Assumptions: Already issued links remain valid for at most five minutes; uncertain DELETE outcomes retain originals for reconciliation. No ontology, CaptureApp, application RDF, policy activation, secret or deployment changes; existing uncommitted work preserved.
+
+### Update 2026-09-03 19:39
+- Decisions: Decouple remote lifecycle polling from the worker's frequent local upload loop; use a 20-second empty/error cadence while allowing finite event backlogs to drain promptly and fairly.
+- Implementation: Added an independent monotonic lifecycle schedule; both empty claims and transport failures now wait for the next lifecycle window, while a non-empty lifecycle backlog alternates with ready local commit or cleanup work; added timing, fairness, outage, and configuration regressions.
+- Open: Rebuild/restart the mobile worker before observing the new cadence in local API logs and repeating disposable lifecycle acceptance.
+- Risks/Assumptions: Intentional staging deletion may remain receipt-blocked for up to roughly 20 seconds before the next claim. This is fail-closed and affects neither `/upload`, public `/media/v1`, upload throughput, nor existing token/IIIF consumers.
+
+### Update 2026-09-02 18:08
+- Decisions: Consume OLDAP lifecycle events durably and release a same-StagingArea checksum only after the exact mobile-owned publication is absent. Preserve immutable client/upload/owner/area/checksum tombstones; archived receipts remain permanently blocking and movement is a no-op.
+- Implementation: Added registry schema v4 lifecycle states and idempotent event history, the purpose-authenticated OLDAP claim/ack client, worker-side exact deletion and crash recovery, and shared locking/owner-marker deletion for the compatible legacy delete route. Added migration, move-then-delete, replay, race, lost-response, archive-precedence, permission, legacy-route, and two-device regressions; updated container inputs and documentation; prepared mediahelper 0.2.10.
+- Open: Deploy only with oldaplib 0.7.17 and oldap-api 0.2.22 after the API lock is updated; then run isolated move/delete/archive lifecycle acceptance.
+- Risks/Assumptions: An unavailable API or failed file deletion keeps the receipt active and retries later. /upload, existing /media/v1 requests and responses, storage paths, token/IIIF consumers, and deployment settings remain unchanged.
+
+### Update 2026-09-01 17:06
+- Decisions: Keep the stable media-server roadmap synchronized with the completed Capture Step-13 integration found during the explicit final merge-readiness review.
+- Implementation: Replaced the stale statement that Capture still needed Step 13B with the completed Step-13B/13C consumer and recovery-matrix status. No runtime module, route, payload, test behavior, deployment setting, or generated artifact changed.
+- Open: Deployment and live acceptance remain operator-controlled.
+- Risks/Assumptions: Documentation-only correction; `/upload`, `/media/v1`, token/IIIF consumers, persistence, and worker behavior are unchanged.
+
+### Update 2026-09-01 16:06
+- Decisions: Close the exact Step-13C concurrent-user matrix gap without changing media-server production behavior or widening duplicate disclosure.
+- Implementation: Added a registry regression for two authorized owners racing identical bytes in one StagingArea; proved one active generation, one privacy-preserving `content-duplicate` result after commit, and durable replay after registry restart. The complete suite passes with 291 tests and three planned skips; the changed test passes Black, all modules compile, and a mediahelper 0.2.9 container build/import/HEIF runtime smoke test passes.
+- Open: Production deployment and any destructive live movement/deletion/archive acceptance remain operator-controlled and must use disposable data.
+- Risks/Assumptions: No runtime module, route, payload, `/upload` behavior, deployment setting, token/IIIF consumer, or secret changed. A repository-wide Black check still reports the two pre-existing untouched files `mediaserver/media.py` and `tests/test_asset_auth.py`; the authorized Step-13C test itself is formatted.
+
+### Update 2026-09-01 15:04
+- Decisions: Keep the permanent commit idempotency identity stable across a client-authorized upload-generation restart, but permit its registry binding to move only from an authoritatively cancelled or safely expired generation to the newer current generation of the same immutable asset scope.
+- Implementation: Added a transaction-local, exact owner/StagingArea/clientAssetId/size/checksum and no-receipt guard before rebinding a commit key; retained conflicts for every foreign, committed, stale, or otherwise incompatible reuse; added the cancelled-generation regression; bumped mediahelper to 0.2.9; and passed Black, Poetry metadata validation, and the complete 290-test suite with three planned skips.
+- Open: Step 13C owns the live cross-system restart and reinstall acceptance matrix.
+- Risks/Assumptions: No route, payload, deployment setting, legacy `/upload` behavior, or existing normal `/media/v1` replay changes. The transfer is possible only inside the same SQLite transaction and only while the permanent asset row identifies the replacement as its current generation.
+
+### Update 2026-08-31 20:01
+- Decisions: Integrate the independently developed secure staging `/upload` extension and Step-13A mobile reconciliation additively on the current `main` history; preserve both compatibility baselines and use a distinct combined release version.
+- Implementation: Rebased Step 13A onto the two newer staging-upload commits, retained both documentation histories, set the combined mediahelper version to `0.2.8`, and normalized the newly integrated Python files with the repository's current Black version. The staging `/upload` changes and `/media/v1` registry-v3 changes remain in separate modules and routes.
+- Open: Fasnacht Capture Step 13B must consume `content-duplicate` before a coordinated mobile rollout. The staging-upload acceptance check documented below remains operator-owned.
+- Risks/Assumptions: The integration introduces no shared code-path conflict; the complete combined test and compatibility suite must pass before push.
 
 ### Update 2026-08-30 00:38
 - Decisions: Fix local ZIP-worker startup at the Make/Compose interpolation boundary; do not attach the helper's multi-purpose credential file to the least-privileged worker container.
@@ -41,6 +83,24 @@
 - Implementation: Added oldap-api target authorization to `OldapClient`; made `/upload` create a fully linked `shared:StagingMediaObject`, reject client path/role overrides, enforce the per-file quota ceiling, retain rollback, and return target evidence; updated OpenAPI and focused upload regressions.
 - Open: Restart/rebuild the media service and perform one Chama image acceptance upload. Aggregate existing-area quota accounting and ZIP/bulk ingest remain separate increments.
 - Risks/Assumptions: The route currently rejects a single file larger than the area quota but does not yet sum all standalone uploads. Normal and existing-resource uploads retain their previous behavior. All tests were isolated from GraphDB.
+
+### Update 2026-08-28 18:58
+- Decisions: Reuse authenticated idempotent `POST /media/v1/uploads` as the sole client-asset reconciliation operation; keep exact-content deduplication separate from operation idempotency and scope it strictly to the currently permitted StagingArea.
+- Implementation: Added registry schema v3 with atomic `(StagingArea, SHA-256)` active reservations, permanent committed-content receipts, closed non-alias duplicate outcomes, privacy-preserving active collisions, v1/v2 backfill and contradiction quarantine, serialized cross-process startup migration, complete durable owner/scope and idempotency-namespace validation, and focused restart, reinstall, race, expiry, permission, migration, worker, and compatibility regressions. Terminal uncommitted upload history may safely converge to a later duplicate outcome without discarding evidence; legacy `/upload`, existing normal `/media/v1` results, OLDAP, token/IIIF, and deployment configuration remain unchanged.
+- Open: Fasnacht Capture Step 13B must consume `content-duplicate` before a coordinated rollout; Step 13C owns the real cross-system reinstall, concurrent-device, movement, deletion, and archive-independence acceptance matrix.
+- Risks/Assumptions: Historical pre-v3 duplicate commits are retained as evidence and block another Capture upload. A same-area duplicate response deliberately exposes no existing remote identifiers, and no local or server media is deleted by this change.
+
+### Update 2026-08-24 22:34
+- Decisions: Exercise the new contract through the local `:local` image before considering a versioned release.
+- Implementation: Built `lrosenth/oldap-mediahelper:local`, recreated only the local Mediahelper service, and verified its proxied health response as version 0.2.4. Caddy and Cantaloupe remained running. Prepared the real Chama HEIC attachment/IIIF verification script outside the repository.
+- Open: Execute the password-gated real attachment, inspect OLDAP and IIIF round trips, then decide the immutable component version for any non-local deployment.
+- Risks/Assumptions: The real binary attachment is still pending user-supplied authentication. The unrelated existing Makefile modification and the independently restarting ingest worker were not changed.
+
+### Update 2026-08-24 22:30
+- Decisions: Add a backward-compatible attachment mode to the existing single-file upload route instead of deleting/recreating catalogue records or weakening create semantics. Permit only the explicit unbound `local`/`custom` placeholder transition to generated IIIF/HTTP delivery metadata.
+- Implementation: Added `existingResourceIri` preflight, authorized MediaObject lookup, exact existing file-identity checks, server-managed-only instance updates, placeholder protocol replacement, and rollback on conflicts or update failure. Extended the OLDAP client with authenticated MediaObject lookup/update operations, documented the contract, and added success, overwrite-prevention, metadata-conflict, and rollback regression coverage. The complete media suite passes: 179 passed, 1 skipped.
+- Open: Build the local mediahelper image, restart only the required local service, attach the real Chama HEIC file, and verify its pyramidal TIFF plus IIIF response before frontend integration.
+- Risks/Assumptions: The running local mediahelper still contains the previous image until rebuilt. Production publication requires a new immutable component version/tag. The unrelated existing Makefile modification remains untouched.
 
 ### Update 2026-08-23 19:26
 - Decisions: Resolve the complete Step-11 final-check findings with durable state preceding destructive filesystem effects, bounded ownership checks, and fair worker scheduling. Preserve the legacy `/upload` route and disabled-by-default deployment.
@@ -83,18 +143,6 @@
 - Implementation: Added closed versioned HTTP contracts for initialization, owner-only status, exact-offset chunks, commit acceptance, and cancellation; added a private SQLite/file registry with permanent `clientAssetId` ownership, idempotency receipts, quotas, expiry, locks, durable offsets, crash repair, and future worker leases; packaged the modules and added focused protocol, security, concurrency, capacity, restart, and compatibility tests.
 - Open: Step 11D must verify checksums, create derivatives, call the atomic OLDAP commit, recover leased work, and perform terminal cleanup. Step 11E must provision persistent storage and explicitly route/deploy `/media/v1`.
 - Risks/Assumptions: A Step 11C commit request intentionally stops in `verifying`; no production client can reach the routes through Caddy yet. The existing untracked `imageserver/test-images/` directory was not modified.
-
-### Update 2026-08-24 22:34
-- Decisions: Exercise the new contract through the local `:local` image before considering a versioned release.
-- Implementation: Built `lrosenth/oldap-mediahelper:local`, recreated only the local Mediahelper service, and verified its proxied health response as version 0.2.4. Caddy and Cantaloupe remained running. Prepared the real Chama HEIC attachment/IIIF verification script outside the repository.
-- Open: Execute the password-gated real attachment, inspect OLDAP and IIIF round trips, then decide the immutable component version for any non-local deployment.
-- Risks/Assumptions: The real binary attachment is still pending user-supplied authentication. The unrelated existing Makefile modification and the independently restarting ingest worker were not changed.
-
-### Update 2026-08-24 22:30
-- Decisions: Add a backward-compatible attachment mode to the existing single-file upload route instead of deleting/recreating catalogue records or weakening create semantics. Permit only the explicit unbound `local`/`custom` placeholder transition to generated IIIF/HTTP delivery metadata.
-- Implementation: Added `existingResourceIri` preflight, authorized MediaObject lookup, exact existing file-identity checks, server-managed-only instance updates, placeholder protocol replacement, and rollback on conflicts or update failure. Extended the OLDAP client with authenticated MediaObject lookup/update operations, documented the contract, and added success, overwrite-prevention, metadata-conflict, and rollback regression coverage. The complete media suite passes: 179 passed, 1 skipped.
-- Open: Build the local mediahelper image, restart only the required local service, attach the real Chama HEIC file, and verify its pyramidal TIFF plus IIIF response before frontend integration.
-- Risks/Assumptions: The running local mediahelper still contains the previous image until rebuilt. Production publication requires a new immutable component version/tag. The unrelated existing Makefile modification remains untouched.
 
 ### Update 2026-08-19 22:52
 - Decisions: Fail closed when libvips omits HEIF image-count evidence and apply the same single-image policy to direct uploads and ZIP imports.
@@ -491,14 +539,14 @@
 - Open: Production still needs to be redeployed or force-pulled so `/status` reports `v0.0.12`.
 - Risks/Assumptions: Docker Hub shows `v0.0.12` and `latest` share the new digest; the observed production `v0.0.11` is assumed to be a stale local image/tag on the host.
 
-### Update 2026-05-16 00:30
-- Decisions: Created the required project context files before substantial code changes.
-- Implementation: Added stable repository context in `codex.md` and initialized this technical work log.
-- Open: Audio upload behavior still needs implementation cleanup and verification.
-- Risks/Assumptions: Existing uncommitted repository changes are assumed to be user-owned and are left untouched.
-
 ### Update 2026-05-16 00:32
 - Decisions: Use MP3 as the default browser-delivery derivative for audio, with optional M4A/AAC when explicitly requested.
 - Implementation: Updated audio target-format validation, added ffprobe stream validation, added an MP3 ffmpeg helper, renamed audio derivatives to `web.mp3`/`web.m4a`, and synchronized README/OpenAPI/context docs.
 - Open: End-to-end upload and Caddy range-request testing still needs the Docker runtime or a local system with `ffmpeg`, `ffprobe`, and `libvips`.
 - Risks/Assumptions: Debian's `ffmpeg` package in the runtime image is assumed to include `ffprobe`, AAC encoding, and `libmp3lame`.
+
+### Update 2026-05-16 00:30
+- Decisions: Created the required project context files before substantial code changes.
+- Implementation: Added stable repository context in `codex.md` and initialized this technical work log.
+- Open: Audio upload behavior still needs implementation cleanup and verification.
+- Risks/Assumptions: Existing uncommitted repository changes are assumed to be user-owned and are left untouched.

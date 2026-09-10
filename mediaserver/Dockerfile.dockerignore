@@ -31,6 +31,7 @@
 !mediaserver/media.py
 !mediaserver/mobile_media_assets.py
 !mediaserver/mobile_media_commit.py
+!mediaserver/mobile_media_lifecycle.py
 !mediaserver/mobile_staging.py
 !mediaserver/mobile_upload_domain.py
 !mediaserver/mobile_upload_registry.py
