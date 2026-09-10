@@ -4,8 +4,9 @@ MEDIAHELPER_TAG ?= $(shell $(MAKE) --no-print-directory -s -C mediaserver show-t
 AUTH_SECRETS_FILE ?= $(HOME)/ProgDev/OLDAP/auth/auth.vault.yml
 ANSIBLE_VAULT_ARGS ?= --ask-vault-pass
 ANSIBLE_ARGS ?=
+LOCAL_COMPOSE_ENV_FILES := $(if $(wildcard .env),--env-file .env) --env-file mediahelper-access.env
 
-.PHONY: help show-versions check-auth-secrets deploy-production deploy-test
+.PHONY: help show-versions check-auth-secrets check-local-media-env deploy-production deploy-test run-local
 
 help:
 	@echo "Usage: make [target] ..."
@@ -24,6 +25,20 @@ show-versions:
 check-auth-secrets:
 	@test -f "$(AUTH_SECRETS_FILE)" || { \
 		echo "Missing authentication Vault file: $(AUTH_SECRETS_FILE)"; \
+		exit 1; \
+	}
+
+check-local-media-env:
+	@test -f "mediaserver.env" || { \
+		echo "Missing local media configuration: mediaserver.env"; \
+		exit 1; \
+	}
+	@test -f "mediahelper-access.env" || { \
+		echo "Missing local media access configuration: mediahelper-access.env"; \
+		exit 1; \
+	}
+	@grep -Eq '^OLDAP_IMPORT_SERVICE_JWT_SECRET=.{32,}$$' mediahelper-access.env || { \
+		echo "OLDAP_IMPORT_SERVICE_JWT_SECRET is missing or shorter than 32 characters in mediahelper-access.env"; \
 		exit 1; \
 	}
 
@@ -50,8 +65,8 @@ deploy-test: check-auth-secrets
 		-e oldap_imageserver_tag="$(IMAGESERVER_TAG)" \
 		-e oldap_mediahelper_tag="$(MEDIAHELPER_TAG)" $(ANSIBLE_ARGS)
 
-run-local:
-	docker compose \
+run-local: check-local-media-env
+	docker compose $(LOCAL_COMPOSE_ENV_FILES) \
 		--profile zip-import-validation \
 		--profile zip-export-worker \
 		up -d

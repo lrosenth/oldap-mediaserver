@@ -7,6 +7,16 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_local_start_supplies_only_interpolated_import_worker_secret() -> None:
+    """The supported local start must not silently launch an unauthenticated worker."""
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert "--env-file mediahelper-access.env" in makefile
+    assert "$(if $(wildcard .env),--env-file .env)" in makefile
+    assert "run-local: check-local-media-env" in makefile
+    assert "^OLDAP_IMPORT_SERVICE_JWT_SECRET=.{32,}$$" in makefile
+
+
 def test_local_compose_mounts_ingest_only_into_mediahelper() -> None:
     """Delivery containers must have no filesystem path to quarantine."""
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))

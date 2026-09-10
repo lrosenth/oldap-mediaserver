@@ -5,6 +5,33 @@ import jwt
 import requests
 
 
+class OldapApiError(RuntimeError):
+    """An OLDAP HTTP failure whose safe response detail must cross services."""
+
+    def __init__(self, operation: str, response: requests.Response):
+        self.status_code = response.status_code
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            detail = payload.get("message") or payload.get("error")
+        else:
+            detail = None
+        if not isinstance(detail, str) or not detail.strip():
+            detail = (
+                response.text.strip() or response.reason or "OLDAP request failed"
+            )
+        self.detail = detail
+        super().__init__(f"{operation}: {detail}")
+
+
+def _require_success(operation: str, response: requests.Response) -> None:
+    """Raise an error that retains OLDAP's useful validation message."""
+    if not response.ok:
+        raise OldapApiError(operation, response)
+
+
 class OldapClient:
     # ------------------------------------------------------------------
     # Unknown-user token cache (process-local)
@@ -102,7 +129,7 @@ class OldapClient:
             headers=headers,
             timeout=5,
         )
-        response.raise_for_status()
+        _require_success("OLDAP resource creation failed", response)
         return response.json()
 
     def authorize_staging_upload(
@@ -135,7 +162,7 @@ class OldapClient:
             headers=headers,
             timeout=10,
         )
-        response.raise_for_status()
+        _require_success("OLDAP Staging target authorization failed", response)
         data = response.json()
         if not isinstance(data, dict):
             raise RuntimeError("oldap-api returned an unexpected Staging target response")
@@ -159,7 +186,7 @@ class OldapClient:
             headers=headers,
             timeout=10,
         )
-        response.raise_for_status()
+        _require_success("OLDAP resource update failed", response)
         data = response.json()
         if not isinstance(data, dict):
             raise RuntimeError("oldap-api returned an unexpected update response")

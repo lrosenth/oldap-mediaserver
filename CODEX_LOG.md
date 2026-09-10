@@ -1,5 +1,41 @@
 # CODEX_LOG
 
+### Update 2026-09-09 23:19
+- Decisions: Deploy checked local media source for archive-protected deletion ordering during MacBook rollout.
+- Implementation: Ran media tests (281 passed, 1 skipped); rebuilt local helper image and recreated existing helper/ingest/export services; restarted Caddy/image server. No source edits in this rollout. Live health, public thumbnails and original HTTP Range pass.
+- Open: Versioned production image rollout and new target mixed ZIP/ZIP-Range acceptance remain separate.
+- Risks/Assumptions: Native Capture source unchanged; no extra mobile worker enabled. Image digest/evidence recorded in ../FasnachtsPage/docs/as-09/local-rollout.md.
+
+### Update 2026-09-08 12:08
+- Decisions: AS-05 reuses manifest/metadata v1 and existing public APIs; count originals per private path and retain the five-minute capability lifetime.
+- Implementation: Added permission-checked catalogue references, deduplicated source resolution, per-placement totals/CSV kinds, frozen path/membership/source reauthorization; authoritative RDF deletion now precedes binary withdrawal. Verified 141 API tests, 281 media tests (one Linux-only skip), isolated GraphDB/real-writer integration, and network-disabled Docker deletion smoke; Black/Poetry/diff checks pass. Updated an older Staging test double to expose its required property model.
+- Open: Verification complete; evidence is recorded in FasnachtsPage docs/as-05; AS-06–AS-09 UI, SALSAH, native acceptance and operational rollout remain separate.
+- Risks/Assumptions: Already issued links remain valid for at most five minutes; uncertain DELETE outcomes retain originals for reconciliation. No ontology, CaptureApp, application RDF, policy activation, secret or deployment changes; existing uncommitted work preserved.
+
+### Update 2026-08-30 00:38
+- Decisions: Fix local ZIP-worker startup at the Make/Compose interpolation boundary; do not attach the helper's multi-purpose credential file to the least-privileged worker container.
+- Implementation: Made `run-local` merge optional root overrides with `mediahelper-access.env`, fail before Compose when the import-service key is absent or too short, retained the worker's explicit environment allowlist, documented the local credential flow, and added a static deployment regression. The previously stalled 23.9-MB/four-JPEG Chama job reached `READY` 1.4 seconds after the worker claimed it.
+- Open: Continue with immutable report rendering and explicit import confirmation in SALSAH.
+- Risks/Assumptions: This changes only local orchestration. Production Ansible already renders a dedicated worker environment and verifies exactly one running worker.
+
+### Update 2026-08-30 00:13
+- Decisions: Keep the media-owned ZIP ingress contract synchronized with oldap-api's additive project-QName request support; no media runtime behavior changes are required.
+- Implementation: Updated the retained ZIP-import OpenAPI copy to document selected-project QNames and canonical absolute response targets.
+- Open: Exercise one real Chama ZIP through SALSAH's direct capability upload and existing validation worker.
+- Risks/Assumptions: The upload capability, quarantine, validation, and receipt contracts are unchanged; this entry records documentation synchronization only.
+
+### Update 2026-08-29 23:24
+- Decisions: Make Staging discard an identity-bound media-owner operation and withdraw files before RDF mutation, with restoration on OLDAP rejection.
+- Implementation: Hardened `DELETE /upload/{assetId}` with expected-resource and Staging-only checks, exact asset matching, safe upstream statuses, symlink/path validation, hidden same-directory withdrawal, rollback, structured success evidence, OpenAPI documentation, and success/conflict filesystem regressions.
+- Open: Live-test only with a deliberately disposable Staging upload; retain `PICT0039.JPG`. The rebuilt local container already runs the verified code.
+- Risks/Assumptions: A rare failure removing an already withdrawn post-delete tree returns `cleanupPending=true` and is logged; the authoritative RDF/resource is already deleted in that case.
+
+### Update 2026-08-29 01:35
+- Decisions: Preserve OLDAP validation details across the media-service boundary; a downstream 400/403/404/409 must not become an opaque media-server 500.
+- Implementation: Added a typed `OldapApiError`, retained OLDAP JSON `message`/`error` details for create/update/target calls, forwarded safe status and detail through `/upload`, preserved rollback, and added a focused rejection/cleanup regression.
+- Open: Rebuild the mediahelper and repeat the Chama upload once to expose the exact OLDAP model rejection; fix that concrete cause rather than guessing from the former generic error.
+- Risks/Assumptions: Read-only GraphDB inspection confirmed the Chama area, folder, Curator role, permission, media path, and quota, and the generated field set matches existing Fasnacht Staging media. The failed asset was rolled back; no graph data was changed.
+
 ### Update 2026-08-29 01:15
 - Decisions: Extend the proven single-file media pipeline with a strict Staging mode instead of creating a second derivative implementation. Treat storage path, role permission, folder relations, and initial status as server-owned facts.
 - Implementation: Added oldap-api target authorization to `OldapClient`; made `/upload` create a fully linked `shared:StagingMediaObject`, reject client path/role overrides, enforce the per-file quota ceiling, retain rollback, and return target evidence; updated OpenAPI and focused upload regressions.

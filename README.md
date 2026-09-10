@@ -337,11 +337,19 @@ the local `oldap-api`. Set `OLDAP_ACCESS_JWT_SECRET` in
 `mediahelper-access.env` to the API's access key and
 `OLDAP_IMPORT_UPLOAD_JWT_SECRET` to the API's purpose-specific ZIP upload key.
 Set `OLDAP_IMPORT_SERVICE_JWT_SECRET` to the API's distinct import-service key;
-Mediahelper uses it only for the internal `sip-stored` callback.
+Mediahelper uses it only for the internal `sip-stored` callback. The isolated
+ZIP worker needs the same key for its claim, heartbeat, result, commit, and
+cleanup calls. Start the complete local stack with `make run-local`: the target
+validates that this key is configured, lets Compose use
+`mediahelper-access.env` for variable interpolation, and still passes only the
+explicit import-service variables declared in `docker-compose.yml` into the
+worker. It does not attach the complete access environment file to that
+container. If the optional repository-root `.env` exists, the target reads it
+first so local image-tag, export-worker, and path overrides remain effective.
 For local ZIP-export worker startup, also place
 `OLDAP_EXPORT_SERVICE_JWT_SECRET` and `OLDAP_MEDIAHELPER_TAG=local` in the
 repository-root `.env`; Compose interpolation for the isolated worker does not
-read `mediahelper-access.env`. Recreate the worker with
+receive the helper's full environment. Recreate the worker with
 `docker compose --profile zip-export-worker up -d --force-recreate export-worker`.
 For the mobile worker, place the distinct
 `OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET` in the same ignored repository-root
@@ -512,3 +520,10 @@ rm -rf data/cache/*
 ## prerequisites
 - docker
 - poetry with export plugin: `poetry self add poetry-plugin-export`
+
+### Mixed private ZIP export (AS-05)
+
+Private exports can contain unfinished originals and multiple folder references
+to catalogue originals using the existing v1 worker. See
+[the export contract](docs/zip-export/v1/README.md#as-05-mixed-private-export-compatibility)
+for CSV entry kinds, download-link lifetime and authoritative deletion ordering.

@@ -105,3 +105,27 @@ physical free-space reserve.
 The same worker, route, storage layout, and credential purpose serve every
 OLDAP project. No project short name or ontology IRI affects media-side
 authorization or filesystem routing.
+
+## AS-05 mixed private export compatibility
+
+Manifest/metadata version 1.0.0 already supports repeated media IRIs at distinct
+private ZIP paths. Keep every entry; validate unique paths/indexes, count/copy/hash
+bytes for each occurrence. The API resolves each unique source once. The opaque
+metadata field `repository_entry_kind` becomes an additional CSV column with
+`stagingMedia` or `archiveReference`. No ontology logic or worker protocol change
+is needed. External entries remain exclusions without remote fetches.
+
+The API rechecks frozen private memberships, paths and source access before
+issuing a download capability. Already issued capabilities retain their existing
+maximum five-minute validity; they are not immediately revoked by an RDF change.
+
+`DELETE /upload/{assetId}` now completes the authoritative OLDAP deletion before
+withdrawing any asset files. Identity/Staging-only prechecks remain unchanged;
+OLDAP's serialized class/archive/incoming-reference checks decide deletion.
+A conflict or ambiguous timeout leaves originals at their published location.
+After confirmed RDF deletion, rename/removal failures return the existing
+`cleanupPending: true` and log the asset identifier for operator reconciliation.
+An ambiguous response may leave files whose RDF deletion actually committed;
+operators must verify RDF state before cleaning those files. Do not automatically
+retry destructive cleanup on uncertain database evidence. Reference moves never
+call this binary-delete route.

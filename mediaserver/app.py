@@ -20,7 +20,7 @@ from oldaplib.src.helpers.oldaperror import OldapError, OldapErrorConfiguration
 from oldaplib.src.xsd.iri import Iri
 from oldaplib.src.xsd.xsd_qname import Xsd_QName
 
-from oldap_client import OldapClient
+from oldap_client import OldapApiError, OldapClient
 from config import MediahelperSettings, ZipImportLimits
 from derivatives import DerivativeProcessor
 from media import (
@@ -804,7 +804,10 @@ def create_app() -> Flask:
             request.form.get("existingResourceIri", "").strip() or None
         )
         if is_staging_upload and existing_resource_iri:
-            return jsonify({"message": "A Staging upload must create a new resource"}), 400
+            return (
+                jsonify({"message": "A Staging upload must create a new resource"}),
+                400,
+            )
         existing_resource = None
 
         def existing_scalar(property_iri: str):
@@ -943,10 +946,17 @@ def create_app() -> Flask:
                 fpath = str(staging_target["mediaPath"])
                 roles = staging_target["attachedToRole"]
                 quota_bytes = int(staging_target["quotaBytes"])
-                if not fpath or not isinstance(roles, dict) or not roles or quota_bytes <= 0:
+                if (
+                    not fpath
+                    or not isinstance(roles, dict)
+                    or not roles
+                    or quota_bytes <= 0
+                ):
                     raise ValueError("Incomplete Staging upload configuration")
             except Exception as exc:
-                status = getattr(getattr(exc, "response", None), "status_code", None)
+                status = getattr(exc, "status_code", None) or getattr(
+                    getattr(exc, "response", None), "status_code", None
+                )
                 return (
                     jsonify({"message": f"Staging target authorization failed: {exc}"}),
                     status if status in {400, 403, 404, 409} else 502,
@@ -959,7 +969,10 @@ def create_app() -> Flask:
                 try:
                     roles = json.loads(roles_json)
                 except json.JSONDecodeError:
-                    return jsonify({"message": "attachedToRole must be valid JSON"}), 400
+                    return (
+                        jsonify({"message": "attachedToRole must be valid JSON"}),
+                        400,
+                    )
 
         # User-provided subpath (relative)
         try:
@@ -1177,9 +1190,7 @@ def create_app() -> Flask:
             if staging_target is not None:
                 # These relations are authoritative results of the OLDAP target
                 # check and are deliberately assigned after client metadata.
-                resource_data["shared:inStagingArea"] = staging_target[
-                    "stagingAreaIri"
-                ]
+                resource_data["shared:inStagingArea"] = staging_target["stagingAreaIri"]
                 resource_data["shared:inStagingFolder"] = staging_target[
                     "stagingFolderIri"
                 ]
@@ -1234,6 +1245,18 @@ def create_app() -> Flask:
                 response = client.create_resource(
                     resource=resource_class, resource_data=resource_data
                 )
+        except OldapApiError as exc:
+            shutil.rmtree(asset_root, ignore_errors=True)
+            operation = "update" if existing_resource_iri else "create"
+            return (
+                jsonify(
+                    {
+                        "message": exc.detail,
+                        "error": f"Failed to {operation} OLDAP resource: {exc.detail}",
+                    }
+                ),
+                exc.status_code if exc.status_code in {400, 403, 404, 409} else 502,
+            )
         except Exception as exc:
             # The directory is exclusively owned by this upload, so failed
             # registration must not leave an unaddressable partial asset.
@@ -1280,7 +1303,15 @@ def create_app() -> Flask:
 
     @app.delete("/upload/<asset_id>")
     def delete(asset_id):
-        """Delete an OLDAP media resource and its local asset files."""
+        """Delete an OLDAP media resource and its local asset files.
+
+        A Staging discard supplies ``expectedResourceIri`` and
+        ``stagingOnly=true``. The media lookup must then resolve that exact
+        resource and expose Staging membership before any mutation occurs.
+        The authoritative OLDAP deletion must succeed before files are withdrawn.
+        Conflicts and ambiguous responses leave originals continuously available;
+        filesystem cleanup failures after logical deletion report cleanupPending.
+        """
         # Deletion is a mutating upload operation and therefore accepts only a
         # strictly validated OLDAP access token, never a media capability.
         token, _ = require_access_token()
@@ -1289,11 +1320,20 @@ def create_app() -> Flask:
         except ValueError:
             return jsonify({"error": "Invalid asset identifier"}), 400
 
-        #
-        # now let's retieve the MediaObject from the OLDAP-API
-        #
-        id_esc = quote(str(asset_id), safe="")
-        url = f"{oldap_api_url}/data/mediaobject/id/{id_esc}"
+        expected_resource_iri = request.args.get("expectedResourceIri", "").strip()
+        staging_only = request.args.get("stagingOnly", "").lower() == "true"
+        if staging_only and not expected_resource_iri:
+            return (
+                jsonify(
+                    {"error": "expectedResourceIri is required for Staging discard"}
+                ),
+                400,
+            )
+
+        lookup_value = expected_resource_iri or asset_id
+        lookup_kind = "iri" if expected_resource_iri else "id"
+        lookup_esc = quote(str(lookup_value), safe="")
+        url = f"{oldap_api_url}/data/mediaobject/{lookup_kind}/{lookup_esc}"
         headers = {"Authorization": f"Bearer {token}"}
         try:
             response = requests.get(url, headers=headers, timeout=10)
@@ -1304,7 +1344,45 @@ def create_app() -> Flask:
             )
         except requests.exceptions.RequestException as exc:
             return jsonify({"error": f"Failed to fetch OLDAP resource: {exc}"}), 500
-        res = response.json()
+        if response.status_code < 200 or response.status_code >= 300:
+            return (
+                jsonify({"error": f"Failed to fetch OLDAP resource: {response.text}"}),
+                (
+                    response.status_code
+                    if response.status_code in {400, 403, 404, 409}
+                    else 502
+                ),
+            )
+        try:
+            res = response.json()
+        except ValueError:
+            return jsonify({"error": "OLDAP returned an invalid media response"}), 502
+
+        iri = str(res.get("iri") or "")
+        stored_asset_id = str(res.get("shared:assetId") or "")
+        if not iri or stored_asset_id != asset_id:
+            return (
+                jsonify(
+                    {"error": "The media resource does not match the requested asset"}
+                ),
+                409,
+            )
+        if expected_resource_iri and iri != expected_resource_iri:
+            return (
+                jsonify(
+                    {"error": "The media resource identity changed during discard"}
+                ),
+                409,
+            )
+        if staging_only and not (
+            res.get("shared:inStagingArea")
+            and res.get("shared:inStagingFolder")
+            and res.get("shared:stagingStatus")
+        ):
+            return (
+                jsonify({"error": "Only a Staging media object may be discarded here"}),
+                409,
+            )
 
         #
         # we need the project id (aka projectShortName) which is the prefix of the graph
@@ -1321,28 +1399,12 @@ def create_app() -> Flask:
         #
         # now let's check if the user has the permission to delete the asset
         #
-        permval = res.get("permval")
-        if permval < DataPermission.DATA_DELETE.numeric:
-            return jsonify({"error": f"Insufficient permissions: {permval}"}), 403
-
-        iri = res.get("iri")
-
-        url = f"{oldap_api_url}/data/{project_id}/{iri}"
-        headers = {"Authorization": f"Bearer {token}"}
         try:
-            response = requests.delete(url, headers=headers, timeout=10)
-        except requests.exceptions.Timeout as exc:
-            return (
-                jsonify({"error": f"Timeout: Failed to fetch OLDAP resource: {exc}"}),
-                500,
-            )
-        except requests.exceptions.RequestException as exc:
-            return jsonify({"error": f"Failed to fetch OLDAP resource: {exc}"}), 500
-        if response.status_code < 200 or response.status_code >= 300:
-            return (
-                jsonify({"error": f"Failed to delete OLDAP resource: {response.text}"}),
-                500,
-            )
+            permval = int(res.get("permval"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "OLDAP returned no usable delete permission"}), 502
+        if permval < int(DataPermission.DATA_DELETE.numeric):
+            return jsonify({"error": f"Insufficient permissions: {permval}"}), 403
 
         raw_asset_basepath = res.get("shared:path", "")
         if isinstance(raw_asset_basepath, list):
@@ -1352,17 +1414,59 @@ def create_app() -> Flask:
 
         try:
             safe_basepath = safe_subpath(str(asset_basepath))
-            asset_root = (IMAGE_ROOT / safe_basepath / asset_id).resolve()
+            unresolved_asset_root = IMAGE_ROOT / safe_basepath / asset_id
+            if unresolved_asset_root.is_symlink():
+                return jsonify({"error": "Asset root must not be a symbolic link"}), 409
+            asset_root = unresolved_asset_root.resolve()
             asset_root.relative_to(IMAGE_ROOT.resolve())
         except ValueError as exc:
             return jsonify({"error": f"Invalid stored path: {exc}"}), 400
         except Exception:
             return jsonify({"error": "Resolved path escapes media root"}), 403
 
-        if asset_root.exists():
-            shutil.rmtree(asset_root)
+        if not asset_root.is_dir():
+            return jsonify({"error": "The asset files are missing"}), 409
 
-        return jsonify({"message": f"Deleted asset {asset_id} at {asset_root}"}), 200
+        iri_esc = quote(iri, safe="")
+        url = f"{oldap_api_url}/data/{project_id}/{iri_esc}"
+        try:
+            response = requests.delete(url, headers=headers, timeout=10)
+        except requests.exceptions.RequestException as exc:
+            return jsonify({"error": f"Failed to delete OLDAP resource: {exc}"}), 502
+        if response.status_code < 200 or response.status_code >= 300:
+            return (
+                jsonify({"error": f"Failed to delete OLDAP resource: {response.text}"}),
+                (
+                    response.status_code
+                    if response.status_code in {400, 403, 404, 409}
+                    else 502
+                ),
+            )
+
+        # OLDAP serializes the authoritative incoming-reference/archive checks.
+        # Never withdraw an original based on the earlier, potentially stale GET.
+        withdrawn_root = asset_root.with_name(f".discard-{asset_id}-{uuid4().hex}")
+        cleanup_pending = False
+        try:
+            asset_root.rename(withdrawn_root)
+            shutil.rmtree(withdrawn_root)
+        except OSError:
+            cleanup_pending = True
+            app.logger.exception(
+                "Discarded asset cleanup remains pending for %s", asset_id
+            )
+
+        return (
+            jsonify(
+                {
+                    "message": f"Discarded asset {asset_id}",
+                    "iri": iri,
+                    "assetId": asset_id,
+                    "cleanupPending": cleanup_pending,
+                }
+            ),
+            200,
+        )
 
     try:
         reconcile_seconds = int(

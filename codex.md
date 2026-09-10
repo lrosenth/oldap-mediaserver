@@ -18,6 +18,17 @@
   media path, quota, default role permission, and area/folder relations. Client
   path/role overrides are rejected, the initial status is always
   `shared:StagingStatusNew`, and registration failure removes the new asset.
+  OLDAP HTTP validation failures retain their safe response detail and status at
+  this boundary, so a browser sees the actionable model error rather than an
+  opaque media-server 500 while rollback still removes unpublished files.
+- `DELETE /upload/{assetId}` supports an identity-bound Staging discard. The
+  caller supplies the expected OLDAP resource IRI and Staging-only flag; the
+  media helper verifies resource/asset identity, Staging membership, and delete
+  permission, waits for authoritative OLDAP deletion before withdrawing any
+  files, and reports `cleanupPending` if subsequent filesystem cleanup fails.
+  Rejections/timeouts leave originals continuously available. AS-05 mixed ZIP
+  manifests use the existing v1 worker and an additional CSV entry-kind column;
+  see `docs/zip-export/v1/README.md`.
 - `mediaserver/config.py` parses environment-backed mediahelper settings without
   filesystem or network side effects and freezes the approved ZIP/worker
   security limits. `mediaserver/storage.py` provides the Flask-independent
@@ -169,6 +180,11 @@
   verify exactly one running ingest worker. `zip_import_worker_enabled=false`
   is the explicit maintenance/incident switch. Deployment also refuses to
   create media/ingest paths unless `/data` is an active mountpoint.
+- Local `make run-local` validates the ignored media environment, merges the
+  optional root `.env` with `mediahelper-access.env` for Compose interpolation,
+  and starts the ZIP profile with the import-service key. The worker still
+  receives only its explicitly declared variables, not the helper's complete
+  credential file.
 - Mobile media remains disabled in shared Ansible defaults. Both reviewed hosts
   opt in for their next explicit deployment, which fails before changing the
   host unless the distinct mobile-media JWT secret is present and unlike every
@@ -377,3 +393,11 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
 - Add focused automated tests for media type detection, target format validation, and asset path resolution.
 - Verify audio/video conversion behavior in the Docker runtime where `ffmpeg` and `ffprobe` are installed.
 - Keep README and OpenAPI aligned with media derivative naming and delivery behavior.
+
+## MacBook archive rollout (2026-09-09)
+
+Local archive policy/model/ACL activation is applied. The API uses a dedicated
+AOF/fsync-always writer Redis on localhost:6380/1 and matching local source;
+FasnachtsPage and SALSAH-2 share the activated backend. Production deployment
+remains separate. Native Capture acceptance was waived only for this test rollout.
+See `../FasnachtsPage/docs/as-09/local-rollout.md` for runtime, backup, recovery, verification and production steps.

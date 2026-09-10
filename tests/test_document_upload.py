@@ -91,6 +91,166 @@ def test_delete_requires_access_token(media_app):
     assert media_capability.status_code == 401
 
 
+def test_staging_discard_withdraws_files_and_deletes_exact_oldap_resource(
+    media_app, monkeypatch
+):
+    """A confirmed Staging discard removes one identity-bound RDF/file pair."""
+
+    module, client, media_root = media_app
+    asset_id = "staging-delete"
+    resource_iri = "testproject:StagedImage"
+    asset_root = media_root / "testproject" / "image" / "trusted" / asset_id
+    (asset_root / "original").mkdir(parents=True)
+    (asset_root / "original" / "image.jpg").write_bytes(b"image")
+    calls: list[tuple[str, str]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict, text: str = ""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **_kwargs):
+        calls.append(("GET", url))
+        return FakeResponse(
+            200,
+            {
+                "iri": resource_iri,
+                "graph": "testproject:data",
+                "permval": 6,
+                "shared:assetId": asset_id,
+                "shared:path": "testproject/image/trusted",
+                "shared:inStagingArea": ["testproject:Area"],
+                "shared:inStagingFolder": ["testproject:Folder"],
+                "shared:stagingStatus": ["shared:StagingStatusNew"],
+            },
+        )
+
+    def fake_delete(url, **_kwargs):
+        calls.append(("DELETE", url))
+        assert asset_root.exists()
+        assert list(asset_root.parent.glob(f".discard-{asset_id}-*")) == []
+        return FakeResponse(200, {"message": "deleted"})
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
+    monkeypatch.setattr(module.requests, "delete", fake_delete)
+
+    response = client.delete(
+        f"/upload/{asset_id}",
+        query_string={
+            "expectedResourceIri": resource_iri,
+            "stagingOnly": "true",
+        },
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "message": f"Discarded asset {asset_id}",
+        "iri": resource_iri,
+        "assetId": asset_id,
+        "cleanupPending": False,
+    }
+    assert calls == [
+        ("GET", "http://localhost:8000/data/mediaobject/iri/testproject%3AStagedImage"),
+        ("DELETE", "http://localhost:8000/data/testproject/testproject%3AStagedImage"),
+    ]
+    assert not asset_root.exists()
+    assert list(asset_root.parent.glob(f".discard-{asset_id}-*")) == []
+
+
+@pytest.mark.parametrize(
+    "outcome", ["conflict", "timeout", "cleanup_failure", "already_archived"]
+)
+def test_staging_discard_keeps_files_when_oldap_rejects_delete(
+    media_app, monkeypatch, outcome
+):
+    """An OLDAP conflict must leave the previously published asset untouched."""
+
+    module, client, media_root = media_app
+    asset_id = "staging-retained"
+    resource_iri = "testproject:ReferencedImage"
+    asset_root = media_root / "testproject" / "image" / "trusted" / asset_id
+    (asset_root / "original").mkdir(parents=True)
+    original = asset_root / "original" / "image.jpg"
+    original.write_bytes(b"image")
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict, text: str = ""):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    monkeypatch.setattr(
+        module.requests,
+        "get",
+        lambda *_args, **_kwargs: FakeResponse(
+            200,
+            {
+                "iri": resource_iri,
+                "graph": "testproject:data",
+                "permval": 6,
+                "shared:assetId": asset_id,
+                "shared:path": "testproject/image/trusted",
+                "shared:inStagingArea": (
+                    [] if outcome == "already_archived" else ["testproject:Area"]
+                ),
+                "shared:inStagingFolder": ["testproject:Folder"],
+                "shared:stagingStatus": ["shared:StagingStatusNew"],
+            },
+        ),
+    )
+
+    def authoritative_delete(*_args, **_kwargs):
+        assert outcome != "already_archived"
+        assert original.read_bytes() == b"image"
+        assert list(asset_root.parent.glob(f".discard-{asset_id}-*")) == []
+        if outcome == "timeout":
+            raise module.requests.exceptions.Timeout("ambiguous database result")
+        if outcome == "cleanup_failure":
+            return FakeResponse(200, {})
+        return FakeResponse(409, {}, "resource is referenced")
+
+    monkeypatch.setattr(module.requests, "delete", authoritative_delete)
+    if outcome == "cleanup_failure":
+
+        def fail_rename(*_args, **_kwargs):
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(Path, "rename", fail_rename)
+
+    response = client.delete(
+        f"/upload/{asset_id}",
+        query_string={
+            "expectedResourceIri": resource_iri,
+            "stagingOnly": "true",
+        },
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+    )
+
+    assert (
+        response.status_code
+        == {
+            "conflict": 409,
+            "timeout": 502,
+            "cleanup_failure": 200,
+            "already_archived": 409,
+        }[outcome]
+    )
+    if outcome == "conflict":
+        assert "resource is referenced" in response.get_json()["error"]
+    if outcome == "cleanup_failure":
+        assert response.get_json()["cleanupPending"] is True
+    assert original.read_bytes() == b"image"
+    assert list(asset_root.parent.glob(f".discard-{asset_id}-*")) == []
+
+
 @pytest.mark.parametrize("target_format", [None, "tiff", "TIFF"])
 def test_image_target_format_normalizes_to_tiff(media_app, target_format):
     """Images use pyramidal TIFF whether the target is omitted or explicit."""
@@ -156,6 +316,21 @@ class FailingCreateOldapClient(FakeOldapClient):
 
     def create_resource(self, resource: str, resource_data: dict) -> dict:
         raise RuntimeError("OLDAP create failed")
+
+
+class RejectingCreateOldapClient(FakeOldapClient):
+    """Simulate a detailed OLDAP validation rejection."""
+
+    def create_resource(self, resource: str, resource_data: dict) -> dict:
+        response = types.SimpleNamespace(
+            status_code=400,
+            json=lambda: {"message": "Property shared:path is invalid."},
+            text='{"message":"Property shared:path is invalid."}',
+            reason="Bad Request",
+        )
+        raise sys.modules["app"].OldapApiError(
+            "OLDAP resource creation failed", response
+        )
 
 
 class FailingUpdateOldapClient(FakeOldapClient):
@@ -291,6 +466,42 @@ def test_staging_upload_rejects_client_path_and_role_overrides(media_app, monkey
 
     assert response.status_code == 400
     assert "server-owned" in response.get_json()["message"]
+
+
+def test_oldap_validation_detail_is_forwarded_and_asset_is_removed(
+    media_app, monkeypatch
+):
+    """A useful OLDAP 400 must reach the browser without leaving local files."""
+
+    module, client, media_root = media_app
+    monkeypatch.setattr(module, "OldapClient", RejectingCreateOldapClient)
+
+    class FakeVipsImage:
+        def tiffsave(self, destination: str, **options) -> None:
+            Path(destination).write_bytes(b"pyramidal tiff")
+
+    monkeypatch.setattr(
+        module.DERIVATIVE_PROCESSOR,
+        "vips_loader",
+        lambda *args, **kwargs: FakeVipsImage(),
+    )
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "archive",
+            "identifier": "rejected-image",
+            "file": (io.BytesIO(b"image bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["message"] == "Property shared:path is invalid."
+    assert not (
+        media_root / "testproject" / "image" / "archive" / "rejected-image"
+    ).exists()
 
 
 def test_heic_upload_uses_content_derived_mime_and_pyramidal_tiff(

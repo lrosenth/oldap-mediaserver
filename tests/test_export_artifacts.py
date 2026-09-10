@@ -371,3 +371,47 @@ def test_flask_export_auth_returns_only_fixed_finalized_archive(monkeypatch, tmp
     assert response.headers["X-Oldap-Content-Type"] == "application/zip"
     assert response.headers["X-Oldap-Digest"] == digest_header(evidence.archive_sha256)
     assert response.headers["X-Oldap-Cors-Allow-Origin"] == ("https://frontend.example")
+
+
+def test_mixed_zip_duplicates_original_per_private_path_and_marks_csv(tmp_path):
+    """Manifest v1 already supports mixed entries and repeated source identities."""
+    from copy import deepcopy
+
+    content = b"unchanged original"
+    store, exports = _store(tmp_path, content)
+    manifest, _ = _manifest(content)
+    first = manifest["media"][0]
+    first["metadata"]["repository_entry_kind"] = "archiveReference"
+    duplicate = deepcopy(first)
+    duplicate.update(
+        entryIndex=2,
+        relativePath="Posters/Empty/one.txt",
+        containerIri=manifest["directories"][1]["containerIri"],
+    )
+    unfinished = deepcopy(first)
+    unfinished.update(
+        entryIndex=3,
+        mediaIri="urn:uuid:66666666-6666-4666-8666-666666666666",
+        relativePath="Posters/unfinished.txt",
+    )
+    unfinished["metadata"]["repository_entry_kind"] = "stagingMedia"
+    manifest["media"].extend([duplicate, unfinished])
+    digest = hashlib.sha256(rfc8785.dumps(manifest)).hexdigest()
+    store.build(manifest, digest, started_at=NOW)
+    with zipfile.ZipFile(exports / EXPORT_ID / "archive.zip") as archive:
+        for path in (
+            "Posters/one.txt",
+            "Posters/Empty/one.txt",
+            "Posters/unfinished.txt",
+        ):
+            assert archive.read(path) == content
+        rows = list(
+            csv.DictReader(
+                io.StringIO(archive.read("metadata.csv").decode("utf-8-sig"))
+            )
+        )
+        refs = [
+            row for row in rows if row["repository_entry_kind"] == "archiveReference"
+        ]
+        assert len(refs) == 2 and refs[0]["media_iri"] == refs[1]["media_iri"]
+        assert sum(row["repository_entry_kind"] == "stagingMedia" for row in rows) == 1

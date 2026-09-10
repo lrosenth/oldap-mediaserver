@@ -166,6 +166,12 @@ paths:
   /upload/{asset_id}:
     delete:
       summary: Delete an asset and its media files
+      description: |
+        Deletes the authorized OLDAP MediaObject and its owned local asset tree.
+        Staging clients must supply both `expectedResourceIri` and
+        `stagingOnly=true`; the server then verifies exact resource/asset identity
+        and Staging membership. Files are atomically withdrawn before OLDAP
+        deletion and restored if OLDAP rejects the operation.
       tags:
         - upload
       parameters:
@@ -174,6 +180,20 @@ paths:
           required: true
           schema:
             type: string
+        - name: expectedResourceIri
+          in: query
+          required: false
+          schema:
+            type: string
+            format: iri
+          description: Exact OLDAP resource identity required by the Staging discard workflow.
+        - name: stagingOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Require StagingArea, StagingFolder, and StagingStatus relations before deletion.
       responses:
         '200':
           description: Asset deleted
@@ -184,7 +204,14 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Deleted asset abc123
+                    example: Discarded asset abc123
+                  iri:
+                    type: string
+                    format: iri
+                  assetId:
+                    type: string
+                  cleanupPending:
+                    type: boolean
         '400':
           description: Invalid graph information
           content:
@@ -195,6 +222,18 @@ paths:
           description: Missing or invalid bearer token
         '403':
           description: Insufficient permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+        '409':
+          description: Identity, Staging policy, filesystem, or OLDAP reference conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorMessage'
+        '502':
+          description: OLDAP/network response failure
           content:
             application/json:
               schema:

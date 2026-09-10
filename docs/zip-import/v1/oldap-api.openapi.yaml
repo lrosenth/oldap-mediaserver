@@ -522,8 +522,14 @@ components:
       additionalProperties: false
       properties:
         projectShortName: { type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{0,63}$' }
-        stagingAreaIri: { type: string, format: uri, maxLength: 2048 }
-        targetRootFolderIri: { type: string, format: uri, maxLength: 2048 }
+        stagingAreaIri:
+          type: string
+          maxLength: 2048
+          description: Absolute HTTP(S) IRI, canonical UUID URN, or QName using projectShortName; responses contain the canonical absolute IRI.
+        targetRootFolderIri:
+          type: string
+          maxLength: 2048
+          description: Absolute HTTP(S) IRI, canonical UUID URN, or QName using projectShortName; responses contain the canonical absolute IRI.
         originalFileName: { type: string, minLength: 1, maxLength: 255 }
         compressedSizeBytes: { type: integer, minimum: 1, maximum: 500000000 }
       required: [projectShortName, stagingAreaIri, targetRootFolderIri, originalFileName, compressedSizeBytes]
