@@ -1,5 +1,7 @@
 # oldap-mediaserver Codex Context
 
+- Publication local activation (2026-09-13): native API now enables the project-configured publication command with oldaplib 0.7.19. API-only media services run v0.2.12; no duplicate policy on those workers. Shared local API also serves SALSAH-2. Production remains unchanged; user UI acceptance is next. See FasnachtsPage/docs/permissions/archive-roles.md for evidence and backups.
+
 ## Purpose
 `oldap-mediaserver` provides the media infrastructure around OLDAP. It combines a Flask upload/auth helper, Caddy for public asset delivery, and Cantaloupe for IIIF delivery of pyramidal TIFF images.
 
