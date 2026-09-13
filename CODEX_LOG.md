@@ -1,5 +1,17 @@
 # CODEX_LOG
 
+### Update 2026-09-11 02:29
+- Decisions: Accept media service deployment/basic endpoint checks; keep end-to-end acceptance and backup resumption outstanding.
+- Implementation: User deployment recap ok=41 changed=8 failed=0. Helper/ingest/export use v0.2.11 and both worker-running assertions pass; image server remains v0.2.1. Mobile worker is created but not running. Independent public curl checks with certificate verification: API v0.2.23 /health 200, mediahelper 0.2.11 /health 200, unauthenticated IIIF probe 401.
+- Open: Ordinary-user archive UI, image delivery and small ZIP export acceptance; resume oldap-backup.timer after acceptance. No native CaptureApp changes or SALSAH-2 deployment.
+- Risks/Assumptions: Media container state evidenced by deployment output (Docker requires sudo); public endpoints independently checked. Local Python default trust store failed, system curl verified TLS successfully without bypass. Basic health is not full workflow acceptance.
+
+### Update 2026-09-11 02:25
+- Decisions: Prepare archive-rollout media upgrade to helper v0.2.11 with image server v0.2.1 and the two existing ZIP workers; do not introduce the separate mobile worker in this step.
+- Implementation: Inspected effective Ansible host overrides: production ZIP export is already enabled; mobile_media_enabled is also true in host_vars despite no existing production mobile worker. Keep source configuration unchanged and explicitly override mobile_media_enabled=false for this rollout command. Verified effective import/export settings, Make dry-run and Ansible syntax with exact tags.
+- Open: User deploy-production invocation with Vault/sudo, inspect worker/public health/auth results, full archive/export acceptance, resume API backup timer.
+- Risks/Assumptions: No deployment/runtime changes in this turn. Mobile-worker exclusion is command-specific; a later normal deployment without override follows the saved host true setting and needs separate coordination. Existing CaptureApp contracts unchanged.
+
 ### Update 2026-09-11 00:01
 - Decisions: Merge origin/main's mobile reconciliation/lifecycle work with local archive-safe Staging discard; preserve both histories and contracts.
 - Implementation: Resolved app/test/log conflicts. Authoritative OLDAP deletion precedes mobile owner-aware cleanup under the worker lock; failed cleanup reports cleanupPending. Retained both test suites and added mobile rejection/timeout/ownership-failure regressions. 324 tests pass, one platform skip; focused Black, Poetry validation and diff checks pass. Separate Docker image builds; network-disabled Flask/mobile imports and native HEIF smoke pass.
