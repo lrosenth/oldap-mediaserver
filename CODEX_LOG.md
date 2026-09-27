@@ -1,3 +1,10 @@
+### Update 2026-09-27 23:08
+- Decisions: Reuse the existing media origins for SALSAH.
+- Implementation: Add exact SALSAH production/home frontend origins to media CORS configuration; retain all existing origins.
+- Open: Apply with the normal media deployment during SALSAH activation.
+- Risks/Assumptions: Configuration only; no media host deployment or token-contract change.
+- Validation: 324 tests passed, one skipped; focused Black, Poetry metadata check and diff checks passed (existing Poetry deprecation warnings only). No media deployment performed.
+
 # CODEX_LOG
 
 ### Update 2026-09-13 23:18

@@ -73,6 +73,7 @@ def test_production_inventory_preserves_public_media_clients() -> None:
         "https://app.oldap.org",
         "https://fasnacht.oldap.org",
         "https://fasnacht.digital",
+        "https://salsah.org",
     }
 
 
@@ -89,5 +90,6 @@ def test_home_inventory_cannot_inherit_production_endpoints() -> None:
         "https://fasnacht.home.org",
         "http://app.home.org",
         "http://fasnacht.home.org",
+        "https://salsah.home.org",
     }
     assert host["caddy_tls_internal"] is True

@@ -61,7 +61,7 @@ oldap_import_service_subject: media.oldap.org
 oldap_export_service_subject: media.oldap.org
 oldap_unknown_userid: unknown
 oldap_unknown_password: ""
-cors_origins: "https://app.oldap.org,https://fasnacht.oldap.org,https://fasnacht.digital"
+cors_origins: "https://app.oldap.org,https://fasnacht.oldap.org,https://fasnacht.digital,https://salsah.org"
 
 # ACME contact address used by the production Caddy instance.
 caddy_acme_email: lukas.rosenthaler@unibas.ch
