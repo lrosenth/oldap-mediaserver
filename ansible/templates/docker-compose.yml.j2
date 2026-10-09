@@ -134,12 +134,48 @@ services:
     command: ["python", "-m", "export_worker"]
 
   imageserver:
+{% if iiif_backend == 'sipi' %}
+    image: {{ sipi_image | to_json }}
+    entrypoint: ["/bin/sh", "/opt/sipi/examples/oldap/docker-entrypoint.sh"]
+    environment:
+      SIPI_LISTEN_ADDRESS: "0.0.0.0"
+      SIPI_PORT: "8182"
+      SIPI_IIIF_ROOT: /data/images
+      SIPI_PREFLIGHT_SCRIPT: {{ ('/etc/sipi/preflight.lua' if sipi_preflight_source else '/opt/sipi/examples/oldap/preflight.lua') | to_json }}
+      SIPI_PUBLIC_BASE_URL: {{ sipi_public_origin | to_json }}
+      SIPI_CACHE_DIR: /var/cache/sipi
+      SIPI_CACHE_MAX_BYTES: "{{ sipi_cache_max_bytes }}"
+      SIPI_IIIF_WORKERS: "{{ sipi_workers }}"
+      SIPI_JPEG_QUALITY: "{{ sipi_jpeg_quality }}"
+      SIPI_JPEG_SAMPLING: {{ sipi_jpeg_sampling | to_json }}
+      SIPI_CORS_ORIGINS: {{ sipi_cors_origins | to_json }}
+      SIPI_CORS_CREDENTIALS: "{{ sipi_cors_credentials | bool | lower }}"
+      OLDAP_SIPI_ANONYMOUS: "{{ sipi_anonymous_enabled | bool | lower }}"
+      SIPI_PREFLIGHT_CONFIG_ANONYMOUS_PERMISSION_TTL: "{{ sipi_anonymous_permission_ttl }}"
+    working_dir: /tmp
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: {{ sipi_memory_limit }}
+{% else %}
     image: lrosenth/oldap-imageserver:{{ oldap_imageserver_tag }}
+{% endif %}
     container_name: oldap-imageserver
     env_file:
       - ./mediaserver.env
     volumes:
+{% if iiif_backend == 'sipi' %}
+      - {{ media_root }}:/data/images:ro
+      - sipi_cache:/var/cache/sipi
+{% if sipi_preflight_source %}
+      - ./sipi-preflight.lua:/etc/sipi/preflight.lua:ro
+{% endif %}
+{% else %}
       - {{ media_root }}:/data/images
+{% endif %}
     expose:
       - "8182"
     extra_hosts:
@@ -165,3 +201,6 @@ services:
       - mediaserver
       - imageserver
     restart: unless-stopped
+
+volumes:
+  sipi_cache:

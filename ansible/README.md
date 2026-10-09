@@ -11,9 +11,13 @@ The inventory also contains a separate test target:
 - Caddy listens on both `http://media.home.org` and `https://media.home.org`
 - HTTPS uses Caddy's internal CA because the host has no public ACME/Let's Encrypt name
 
+See the [SIPI migration and fallback guide](../docs/sipi-deployment.md) for the
+current image selection and operational sequence.
+
 ## What gets deployed
 - `lrosenth/oldap-mediahelper:<explicit tag from mediaserver/VERSION>`
-- `lrosenth/oldap-imageserver:<explicit tag from imageserver/VERSION>`
+- `lrosenth/sipi-2:<explicit version>` (or an explicit digest via `SIPI_IMAGE`)
+- Cantaloupe only when `IIIF_BACKEND=cantaloupe` is explicitly selected
 - `caddy:2.8`
 
 Caddy exposes ports `80` and `443`.
@@ -135,9 +139,9 @@ make deploy-production
 ```
 
 Run these commands from the repository root. `make deploy-production` derives
-the mediahelper and imageserver tags from their component `VERSION` files,
-passes them to Ansible as `oldap_mediahelper_tag` and
-`oldap_imageserver_tag`, and targets only the production group `mediaserver`,
+the mediahelper and legacy imageserver tags from their component `VERSION` files,
+passes them as `oldap_mediahelper_tag` / `oldap_imageserver_tag`, selects SIPI
+through the explicit `SIPI_IMAGE` value (`sipi_image`), and targets only the production group `mediaserver`,
 currently `dhlab-iii.dhlab.unibas.ch`. Both the play host expression and an
 Ansible inventory limit protect this production target explicitly.
 `-K` prompts for the remote sudo password.
@@ -203,14 +207,14 @@ The playbook defaults remain production-oriented:
 - the production host override enables exactly one ZIP export worker; the
   shared default remains disabled so an unprepared new host fails closed
 - `media.home.org` settings live in `host_vars/media.home.org.yml`
-- `oldap_mediahelper_tag` and `oldap_imageserver_tag` have no silent Ansible
-  defaults and must be supplied explicitly; the repository-root Makefile
-  provides both for normal deployments
+- `oldap_mediahelper_tag` and `sipi_image` must be supplied explicitly;
+  Cantaloupe additionally needs `oldap_imageserver_tag`. The root Makefile
+  supplies these values and selects the `sipi` backend by default
 - Compose must report the services as running, and the public `/health`
   endpoint must return the requested mediahelper version before Ansible reports
   a successful deployment
-- a tokenless probe through the public IIIF route must reach Cantaloupe and be
-  rejected with `401`, verifying both routing and the authorization boundary
+- an invalid-token probe through the public IIIF route must return `403` for
+  SIPI (`401` for legacy Cantaloupe); SIPI health is also checked internally
 
 Therefore, the test server is deployed only when explicitly requested with:
 
@@ -250,7 +254,7 @@ The private `media_mobile_upload_root` defaults to
 `/data/oldap-mobile-uploads` on the dedicated media filesystem. It contains the
 SQLite protocol registry, accepted originals, temporary renditions, ownership
 evidence, and recoverable processing state. Only mediahelper and the dedicated
-mobile worker mount it read-write; Caddy, Cantaloupe, and the ZIP workers do not
+mobile worker mount it read-write; Caddy, the IIIF server, and the ZIP workers do not
 mount it. Deployment rejects a symlinked root and compares canonical paths so
 the private root cannot alias, contain, or sit below any delivery, ingest,
 record, or export root.
@@ -263,10 +267,12 @@ technology cannot provide an atomic filesystem snapshot. Final media remains
 backed up independently under `media_root` together with matching GraphDB state.
 
 ## Optional flags
-- Deploy or roll back to a specific imageserver image:
+- Deploy a specific SIPI image:
 
 ```bash
-make deploy-production IMAGESERVER_TAG=v0.1.5
+make deploy-vm SIPI_IMAGE=lrosenth/sipi-2:0.1.0
+# Explicit fallback instead:
+make deploy-vm IIIF_BACKEND=cantaloupe IMAGESERVER_TAG=v0.2.1
 ```
 
 - Deploy or roll back to a specific mediahelper image:
@@ -287,7 +293,7 @@ make deploy-production ANSIBLE_ARGS='-e force_pull=true'
 make deploy-test ANSIBLE_ARGS='-e force_pull=true'
 ```
 
-- Stop/remove stack (rollback):
+- Stop/remove the entire stack (historical flag; NOT image fallback):
 
 ```bash
 make deploy-production ANSIBLE_ARGS='-e rollback=true'
@@ -336,7 +342,7 @@ make deploy-production \
 The playbook validates all required keys before changing the host. It renders a shared
 root-only `mediaserver.env` containing the media key and a separate root-only
 `mediahelper-access.env` containing the access key. Only the Flask media-helper
-container receives the access-key file; Cantaloupe receives only the media-key
+container receives the access-key file; the IIIF server receives only the media-key
 environment. The isolated mobile worker receives a third root-only
 `mobile-media-worker.env` containing only its purpose-specific key and
 non-secret runtime limits.

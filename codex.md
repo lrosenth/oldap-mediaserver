@@ -1,9 +1,56 @@
 # oldap-mediaserver Codex Context
 
+## Normalized image derivatives (2026-10-09)
+
+The shared DerivativeProcessor now normalizes originals into SIPI-compatible
+upright gray/RGB/RGBA8 pyramidal TIFFs before publication. Embedded profiles are
+validated and converted to sRGB; untagged RGB assumes sRGB, gray Gamma 2.2, and
+untagged CMYK is rejected. Originals stay bit-identical. Header pixel limits and
+post-write IFD validation enforce the contract; native conversion tests run in the
+mediahelper runtime. See docs/image-normalization.md and image_normalization.py.
+Existing derivatives are not migrated. Locally active since 2026-10-10 as
+`lrosenth/oldap-mediahelper:normalization-local-20261010` (runtime version
+0.2.14-normalization-local); only mediahelper was recreated. Packaged native and
+isolated multipart tests pass; public health/auth checks pass. A normal published
+release is still required for VM rollout. No SIPI rebuild.
+
+## SIPI-2 default deployment (2026-10-09)
+
+Local docker-compose.yml and the Ansible Compose template now select SIPI-2 by
+default. The root Makefile passes explicit SIPI_IMAGE (lrosenth/sipi-2:0.1.0)
+and IIIF_BACKEND=sipi; deploy-vm/home alias production/test with existing inventory
+limits. Legacy imageserver/VERSION applies only to IIIF_BACKEND=cantaloupe fallback.
+Upload/helper/mobile/ZIP contracts are unchanged. The bundled OLDAP Lua adapter
+uses the existing media JWT key and optional anonymous API lookup (enabled here,
+fixed positive-grant TTL 600s). Invalid supplied tokens never fall back. Caddy
+preserves /iiif/3; SIPI public URL is origin-only. Media mounts are read-only,
+UID 10001; sipi_cache is a separate persistent named volume, 1 GiB default.
+Default JPEG stays 90/4:4:4; CORS is * without credentialed cookies, configurable.
+
+Ansible backs up the preceding Compose file, replaces changed services without
+full-stack shutdown, checks SIPI health internally and an invalid-token 403 through
+Caddy (401 for legacy). An optional controller-side sipi_preflight_source is copied,
+mounted read-only and triggers image-service recreation on changes. Local fallback
+uses docker-compose.cantaloupe.yml; VM fallback uses IIIF_BACKEND=cantaloupe with
+the previous IMAGESERVER_TAG. Historical rollback=true stops the whole stack and
+must not be confused with image fallback. See docs/sipi-deployment.md.
+
+Local activation uses the tested turbo ARM64 tag in ignored .env. Only imageserver
+was recreated; helper/Caddy/MinIO IDs are unchanged. An isolated real-image smoke
+passed signed/anonymous JPEG/PNG/WebP, CORS, HEAD, warm-cache denials, restart and
+source hash preservation. Public Caddy probes pass. Python suite: 331 passed,
+one skipped; Black/Poetry/Ansible syntax and backend/template tests pass. No remote
+deployment/publication. Registry lookup returned HTTP 500; a second query stalled,
+so release availability remains unverified. Legacy v0.2.1 is not locally installed;
+fallback configuration is verified, its runtime must be available before VM rollout.
+Next: publish/verify the SIPI multi-architecture release, then deploy-home and
+accept real viewer/auth/upload/non-image flows before production.
+
+
 - Publication local activation (2026-09-13): native API now enables the project-configured publication command with oldaplib 0.7.19. API-only media services run v0.2.12; no duplicate policy on those workers. Shared local API also serves SALSAH-2. Production remains unchanged; user UI acceptance is next. See FasnachtsPage/docs/permissions/archive-roles.md for evidence and backups.
 
 ## Purpose
-`oldap-mediaserver` provides the media infrastructure around OLDAP. It combines a Flask upload/auth helper, Caddy for public asset delivery, and Cantaloupe for IIIF delivery of pyramidal TIFF images.
+`oldap-mediaserver` provides the media infrastructure around OLDAP. It combines a Flask upload/auth helper, Caddy for public asset delivery, and SIPI-2 for IIIF delivery of pyramidal TIFF images (Cantaloupe retained as fallback).
 
 ## Merge integration (2026-09-11)
 - Combined mobile lifecycle/reconciliation with archive-safe legacy deletion. Files
@@ -159,7 +206,7 @@
   context-refresh state without deleting transport records or poisoning the
   worker queue. Fully compensated uncommitted assets may be explicitly
   cancelled and reinitialized, but are never reopened implicitly.
-- `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to Cantaloupe,
+- `Caddyfile` and `ansible/templates/Caddyfile.j2` route `/iiif/*` to the selected IIIF backend (SIPI-2 by default),
   `/asset/*` through Flask `forward_auth`, direct ZIP ingress to its bounded PUT
   handler, the exact additive `/media/v1` methods to mediahelper, and only the
   JWT-protected retained-report GET from the internal import surface. The
@@ -209,8 +256,9 @@
   default remains disabled for unprepared future hosts.
 - Ansible waits for Compose to report running services, flushes pending Caddy
   handlers, and then verifies the public media `/health` response including the
-  requested mediahelper version. A tokenless public IIIF probe must also reach
-  Cantaloupe and return `401`. Rollback suppresses Caddy handlers because the
+  requested mediahelper version. SIPI internal health and a public invalid-token
+  IIIF probe must also pass (403 for SIPI, 401 for Cantaloupe). The historical
+  rollback=true stop option suppresses Caddy handlers because the
   stack has intentionally been removed.
 - Normal Ansible deployments enable the `zip-import-validation` profile and
   verify exactly one running ingest worker. `zip_import_worker_enabled=false`
@@ -259,7 +307,7 @@ Images are served through the canonical pyramidal TIFF IIIF derivative `master.t
 - Use `shared:protocol = "iiif"` for images and `"http"` for media served by Caddy.
 - PDF document uploads are stored as `mediaType=document`, `dcterms:type = dcmitype:Text`, `shared:protocol = "http"`, and `shared:derivativeName = "document.pdf"`; frontends should render them via `assetUrl` rather than IIIF.
 - PDF rendering uses Poetry-managed `pdf2image`/Pillow with native `poppler-utils` supplied by the Docker runtime; Docker hosts do not need a separate Poppler installation.
-- `/asset/<assetId>/original` may serve authorized originals for both HTTP and IIIF media. IIIF derived delivery remains blocked on `/asset/<assetId>` and `/asset/<assetId>/derived`; those derivatives are served through Cantaloupe.
+- `/asset/<assetId>/original` may serve authorized originals for both HTTP and IIIF media. IIIF derived delivery remains blocked on `/asset/<assetId>` and `/asset/<assetId>/derived`; those derivatives are served through the IIIF backend.
 - Use `download=1` on original asset URLs when callers need `Content-Disposition: attachment`; otherwise originals remain inline.
 - For audio delivery, prefer MP3 as the default derivative because it is the broadest browser-compatible serving format.
 - Prefer explicit helpers for conversion logic and keep public functions/classes documented with concise docstrings.
@@ -445,3 +493,23 @@ AOF/fsync-always writer Redis on localhost:6380/1 and matching local source;
 FasnachtsPage and SALSAH-2 share the activated backend. Production deployment
 remains separate. Native Capture acceptance was waived only for this test rollout.
 See `../FasnachtsPage/docs/as-09/local-rollout.md` for runtime, backup, recovery, verification and production steps.
+
+## Earlier local SIPI-2 trial (2026-10-07; superseded by default deployment above)
+
+An explicitly selected docker-compose.sipi-test.yml replaces only imageserver with
+sipi-2:local-test built from ../../sipi-2. Existing Caddy forwards /iiif/3 unchanged
+to port 8182, so the SIPI public base is origin-only. Images are mounted read-only;
+rendered cache uses its own named volume. The image's OLDAP entrypoint maps existing
+media-key/issuer/audience settings and explicitly preserves permission threshold 1.
+Anonymous lookup is explicitly enabled in the local .env; OLDAP unknown is passwordless, while other accounts require credentials. At that time base Compose and Ansible remained Cantaloupe. This is superseded:
+use the explicit fallback documented above, not ordinary base Compose.
+See docs/sipi-test.md; runtime validation is recorded in CODEX_LOG.md.
+
+Anonymous login-token reuse is implemented through sipi-2's generic bounded Lua
+cache (process memory, TTL, concurrent miss sharing, revision-safe invalidation).
+OLDAP expiry and one-time 401 renewal remain in its Lua policy. Successful anonymous
+image decisions also have a fixed600s TTL (generic config anonymous_permission_ttl,
+0 disables, max3600). Permission changes may take that long to apply. Denials and
+errors are not retained; expired grants never survive API failure. Supplied JWTs
+remain independently validated. Restart clears login tokens and permissions; no
+admin purge endpoint exists. The current local image includes this policy.

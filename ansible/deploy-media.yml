@@ -4,13 +4,24 @@
   become: true
 
   pre_tasks:
+    - name: Validate IIIF backend and pinned SIPI image
+      ansible.builtin.assert:
+        that:
+          - iiif_backend in ['sipi', 'cantaloupe']
+          - >-
+            iiif_backend != 'sipi' or
+            (sipi_image | default('') is match('^[^\\s]+(:[^/:@\\s]+|@sha256:[a-f0-9]{64})$') and
+             not (sipi_image | default('')).endswith(':latest'))
+          - sipi_public_origin is match('^https?://[^/?#@\\s]+$')
+        fail_msg: Select sipi/cantaloupe, a versioned SIPI image, and an origin without /iiif/3.
+
     - name: Validate explicit component deployment tags
       ansible.builtin.assert:
         that:
-          - (oldap_imageserver_tag | default('') | string | trim | length) > 0
+          - iiif_backend != 'cantaloupe' or (oldap_imageserver_tag | default('') | string | trim | length) > 0
           - (oldap_mediahelper_tag | default('') | string | trim | length) > 0
         fail_msg: >-
-          Supply oldap_imageserver_tag and oldap_mediahelper_tag explicitly.
+          Supply oldap_mediahelper_tag and, for Cantaloupe, oldap_imageserver_tag explicitly.
           The repository-root Makefile derives them from the component VERSION
           files for normal deployments.
 
@@ -96,7 +107,7 @@
           - media_ingest_root != media_root
           - not (media_ingest_root.startswith(media_root.rstrip('/') + '/'))
         fail_msg: >-
-          media_ingest_root must be outside media_root so Caddy and Cantaloupe
+          media_ingest_root must be outside media_root so Caddy and the IIIF server
           cannot read quarantine data through their delivery-volume mount.
 
     - name: Validate retained import-record storage separation
@@ -320,6 +331,7 @@
       ansible.builtin.template:
         src: templates/docker-compose.yml.j2
         dest: "{{ compose_dir }}/docker-compose.yml"
+        backup: true
         owner: root
         group: root
         mode: "0644"
@@ -380,6 +392,20 @@
         mode: "0600"
       no_log: true
 
+    - name: Install an optional deployment-specific SIPI policy
+      ansible.builtin.copy:
+        src: "{{ sipi_preflight_source }}"
+        dest: "{{ compose_dir }}/sipi-preflight.lua"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - iiif_backend == 'sipi'
+        - sipi_preflight_source | length > 0
+        - not rollback | bool
+
+      notify: Restart SIPI after policy change
+
     - name: Validate rendered Docker Compose configuration
       ansible.builtin.command:
         cmd: docker compose config --quiet
@@ -387,7 +413,8 @@
       changed_when: false
       no_log: true
 
-    - name: Roll back stack
+    # Historical rollback=true means STOP, not restoration of a previous image.
+    - name: Stop stack when explicitly requested
       community.docker.docker_compose_v2:
         project_src: "{{ compose_dir }}"
         state: absent
@@ -532,15 +559,30 @@
       delay: 5
       when: not rollback | bool
 
+    - name: Verify SIPI health over the internal Compose network
+      ansible.builtin.command:
+        argv: [docker, exec, oldap-media-caddy, wget, -q, -O, "-", "http://imageserver:8182/health"]
+      register: sipi_health
+      changed_when: false
+      until:
+        - sipi_health.rc == 0
+        - (sipi_health.stdout | from_json).status == 'ok'
+        - ((sipi_health.stdout | from_json).version | length) > 0
+      retries: 24
+      delay: 5
+      when:
+        - not rollback | bool
+        - iiif_backend == 'sipi'
+
     - name: Verify the public IIIF authorization path
       ansible.builtin.uri:
-        url: "https://{{ media_domain }}/iiif/3/__oldap_deployment_probe__/info.json"
+        url: "https://{{ media_domain }}/iiif/3/__oldap_deployment_probe__/info.json?token=invalid-deployment-probe"
         method: GET
-        status_code: 401
+        status_code: "{{ 403 if iiif_backend == 'sipi' else 401 }}"
         timeout: 10
         validate_certs: "{{ not (caddy_tls_internal | default(false) | bool) }}"
       register: iiif_auth_probe
-      until: iiif_auth_probe.status == 401
+      until: iiif_auth_probe.status == (403 if iiif_backend == 'sipi' else 401)
       retries: 24
       delay: 5
       when: not rollback | bool
@@ -561,6 +603,14 @@
         - mobile_media_enabled | bool
 
   handlers:
+    - name: Restart SIPI after policy change
+      ansible.builtin.command:
+        cmd: docker compose up -d --no-deps --force-recreate imageserver
+        chdir: "{{ compose_dir }}"
+      when:
+        - not rollback | bool
+        - iiif_backend == 'sipi'
+
     - name: Reload Caddyfile
       ansible.builtin.command:
         cmd: docker exec oldap-media-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile

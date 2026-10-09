@@ -8,8 +8,8 @@ A server infrastructure for media in OLDAP
 `oldap-mediaserver` provides the media infrastructure around OLDAP, in particular:
 
 - **Upload server** (Flask): receives uploads, checks permissions, converts media when needed, stores files on disk, and creates a `shared:MediaObject` via `oldap-api`.
-- **Image server** (Cantaloupe IIIF): serves images via the **IIIF Image API**.
-- **Cantaloupe delegate** (`delegates.rb`): maps an IIIF identifier to a file on disk using information stored in the `shared:MediaObject`.
+- **Image server** (SIPI-2 IIIF): serves images via the **IIIF Image API**.
+- **Lua preflight policy** (bundled OLDAP policy in the SIPI image): maps an IIIF identifier to a file on disk using information stored in the `shared:MediaObject`.
 
 The design goal is a clean separation between:
 
@@ -52,11 +52,11 @@ The IIIF URL contains only the stable key (`assetId`):
 - `.../iiif/3/<assetId>/info.json`
 - `.../iiif/3/<assetId>/full/max/0/default.jpg`
 
-Cantaloupe calls the Ruby delegate to translate `<assetId>` into an on-disk file path.
+SIPI-2 calls the Lua preflight policy to translate `<assetId>` into an on-disk file path.
 
 ### Fast path (token present)
 
-If the client supplies a `token` query parameter, the delegate validates the
+If the client supplies a `token` query parameter, the policy validates the
 short-lived media capability JWT and avoids API calls. It requires `typ=media`,
 issuer `OLDAP_JWT_ISSUER`, audience `OLDAP_MEDIA_JWT_AUDIENCE`, and a valid
 signature from `OLDAP_MEDIA_JWT_SECRET`; an API access token is not accepted.
@@ -74,11 +74,14 @@ the `oldap-api` deployment, but the two keys must never equal each other.
 
 ### Fallback path (no token)
 
-If no valid token is present, the delegate assumes the user `unknown` and performs **one** `oldap-api` request to fetch the MediaObject.
+If no token is supplied, the policy resolves permissions through the OLDAP
+`unknown` pseudo-user. Anonymous login tokens and positive per-image grants are
+cached for bounded lifetimes (permission default: 600 seconds). A supplied invalid
+token is rejected and never falls back to anonymous access.
 
 ## Required MediaObject fields
 
-For image delivery via Cantaloupe, the `shared:MediaObject` (or subclass) must provide:
+For IIIF image delivery, the `shared:MediaObject` (or subclass) must provide:
 
 - `shared:assetId` — stable key used in the IIIF URL and for efficient lookup in `oldap-api`
 - `shared:path` — base directory containing the `<assetId>/original` and `<imageId>/derived` folders
@@ -357,7 +360,7 @@ continuous commit backlog.
 
 The deployment starts one hardened `mobile-media-worker` through the
 `mobile-media` Compose profile and mounts `/data/oldap-mobile-uploads` only into
-that worker and the Flask service. Caddy and Cantaloupe cannot read the private
+that worker and the Flask service. Caddy and the IIIF server cannot read the private
 registry or accepted bytes. The worker receives only its distinct
 `OLDAP_MOBILE_MEDIA_SERVICE_JWT_SECRET`; it uses separate commit and lifecycle
 JWT purposes/audiences derived from that key and does not receive access, media/IIIF,
@@ -402,7 +405,7 @@ For the mobile worker, place the distinct
 the profile with
 `docker compose --profile mobile-media up -d --force-recreate mediaserver mobile-media-worker caddy`.
 Generate independent values with `openssl rand -hex 32`; never reuse a key for
-another token purpose. Docker Compose gives Cantaloupe only `mediaserver.env`,
+another token purpose. Docker Compose gives the IIIF server only `mediaserver.env`,
 while the Flask helper receives both files.
 
 `make -C mediaserver run` sets `OLDAP_MOBILE_UPLOAD_ROOT` to the ignored local
@@ -415,7 +418,7 @@ Bearer upload capability, an exact `Content-Length`, and a UUID
 `X-Upload-Request-Id`. The helper independently enforces the streamed 500 MB
 ceiling and atomically finalizes `<OLDAP_INGEST_ROOT>/<importId>/sip.zip` plus
 its SHA-256 receipt. Local Compose maps `${MEDIA_INGEST_HOST:-./ingest}` only
-into mediahelper; neither Caddy nor Cantaloupe receives this private volume.
+into mediahelper; neither Caddy nor the IIIF server receives this private volume.
 After finalization, Mediahelper submits the persisted event to `oldap-api`. A
 failed submission remains PENDING and is retried with the same event ID by an
 exact PUT replay and by the bounded periodic reconciler (60 seconds by default).
@@ -434,101 +437,51 @@ Use Docker Desktop’s host gateway instead:
 
 - `OLDAP_API_URL=http://host.docker.internal:8000`
 
-The `imageserver/Makefile` targets `docker-run` and `docker-run-local` set this accordingly.
-
-### Common Docker commands
-
-```bash
-# build the Flask media helper with a tiny Dockerfile-specific context
-make -C mediaserver docker-build-local
-
-# (re)build local multi-arch image
-make -C imageserver docker-build-local
-
-# start image server (local tag)
-make -C imageserver docker-run-local
-
-# stop/remove container
-docker rm -f oldap-imageserver
-```
-
 ## Component versioning and deployment
 
-`imageserver/VERSION` is the single source of truth for the independently
-released OLDAP imageserver component. It contains a plain semantic version such
-as `0.2.0`; the imageserver Makefile derives the Docker tag `v0.2.0` from it.
-This component version is separate from the bundled Cantaloupe version and from
-the mediahelper version.
+SIPI-2 is now the default IIIF service. See the [deployment and fallback guide](docs/sipi-deployment.md)
+for local Compose, VM/home deployment, policy/CORS settings, persistent cache,
+custom Lua scripts and acceptance checks.
 
-`mediaserver/VERSION` independently versions the Flask mediahelper component.
-It contains a plain semantic version such as `0.2.0`; the mediahelper Makefile
-derives the Docker tag `v0.2.0`. This is intentionally separate from the
-repository-wide Python package version in `pyproject.toml`. Container builds
-also expose the component version through OCI metadata and the `/health` and
-`/status` responses.
-
-Inspect the effective values before building or deploying:
-
-```bash
-make -C imageserver show-version
-make -C imageserver show-tag
-make -C imageserver show-image
-make -C mediaserver show-version
-make -C mediaserver show-tag
-make -C mediaserver show-image
+```sh
 make show-versions
+docker compose up -d                       # local stack
+make deploy-home SIPI_IMAGE=lrosenth/sipi-2:0.1.0
+make deploy-vm SIPI_IMAGE=lrosenth/sipi-2:0.1.0
 ```
 
-Build and push the immutable version tag plus the convenience `latest` alias:
+Publish/verify the selected SIPI version for both architectures before VM use.
+Its version and build belong to the separate sipi-2 repository. VM deployment
+requires an explicit version tag or digest; the local ignored `.env` can select
+a development image independently. `deploy-home` / `deploy-vm` alias the existing
+`deploy-test` / `deploy-production` targets, preserving their inventory limits.
+No full-stack shutdown is needed to replace the image service.
 
-```bash
-make -C imageserver docker-build
-make -C mediaserver docker-build
-```
+`mediaserver/VERSION` independently versions the Flask helper (`v`-prefixed image
+tags); the root Makefile passes that tag to Ansible. `/health` reports that helper
+version. SIPI health is checked internally, and an invalid media token through
+the public IIIF route must return 403. Existing upload and non-image contracts
+remain unchanged.
 
-Production and test deployments use the repository-root Makefile. It reads both
-component versions and passes the resulting tags explicitly to Ansible:
+`imageserver/VERSION`, its Makefile, Dockerfile and Ruby delegate are retained
+for explicit **Cantaloupe fallback**, not for building or versioning SIPI-2.
+Use `IIIF_BACKEND=cantaloupe IMAGESERVER_TAG=<previous-tag>` for that VM fallback;
+locally use `docker-compose.cantaloupe.yml` alongside the base file. Preserve the
+prior mediahelper version too when reverting a coordinated release.
 
-```bash
-make deploy-production
-make deploy-test
-```
-
-`deploy-production` is limited to the production inventory group and renders
-`media.oldap.org` with public ACME TLS. `deploy-test` is independently limited
-to `media.home.org`, uses Caddy's internal CA for HTTPS, and calls the separate
-home API at `http://api.home.org`. Both deployments load the matching access
-and media JWT keys from the shared encrypted authentication Vault. A deployment
-finishes only after Compose reports the services as running and the public
-`/health` endpoint reports the expected mediahelper component version. A
-tokenless IIIF probe must also reach Cantaloupe and be rejected with `401`,
-confirming that the public image path and its authorization boundary are active.
-
-Deployment never selects `latest`. To roll back or stage other already
-published component tags, override the derived values explicitly:
-
-```bash
-make deploy-production IMAGESERVER_TAG=v0.1.5
-make deploy-test IMAGESERVER_TAG=v0.1.5
-make deploy-production MEDIAHELPER_TAG=v0.0.14
-make deploy-test MEDIAHELPER_TAG=v0.0.14
-```
-
-For a new component release, update only its `VERSION` file, review
-`make show-versions`, build and push that image, and then deploy it. Published
-version tags must be treated as immutable. Optional matching Git tags should be
-component-specific, for example `imageserver-v0.2.0` or
-`mediahelper-v0.2.0`, because this repository contains several independently
-versioned images.
+To release the helper, update its VERSION, inspect `make show-versions`, then
+run `make -C mediaserver docker-build`. Publish only changed components and treat
+version tags as immutable. Optional Git tags remain component-specific. No
+new API/frontend/oldaplib image is required solely for the IIIF backend switch.
 
 ## TIFF derivative image pipeline
 
 The image pipeline accepts JPEG, PNG, single-page TIFF, and HEIF/HEIC originals
 and intentionally has no JPEG 2000 target or proprietary codec runtime. Every
 image upload is normalized to `derived/master.tif` with 256 px
-tiles, an embedded pyramid, BigTIFF support, and no compression. Cantaloupe is
-configured with `ManualSelectionStrategy` and serves `.tif` sources through its
-built-in `Java2dProcessor`.
+tiles, an embedded pyramid, BigTIFF support, and no compression. SIPI-2 reads
+these TIFFs directly with optimized pyramid/tile selection. The retained legacy
+Cantaloupe image uses Java2dProcessor for the same derivatives.
 
 `imageserver/.dockerignore` whitelists only the Cantaloupe JAR and the
 OLDAP-owned configuration/delegate files. Optional native dependencies and
@@ -547,7 +500,10 @@ whitelists just those manifests and the helper source files, so local media
 data, tar archives, Caddy runtime state, Cantaloupe bundles, and the Git object
 store are not sent to Docker during the media helper build.
 
-## Cantaloupe cache
+## Legacy Cantaloupe cache
+
+SIPI uses the separate `sipi_cache` named volume; see the deployment guide.
+The following applies only to the retained fallback backend.
 
 Cantaloupe uses a filesystem-backed derivative cache.
 
@@ -572,3 +528,5 @@ Private exports can contain unfinished originals and multiple folder references
 to catalogue originals using the existing v1 worker. See
 [the export contract](docs/zip-export/v1/README.md#as-05-mixed-private-export-compatibility)
 for CSV entry kinds, download-link lifetime and authoritative deletion ordering.
+
+Image derivative color/orientation policy, limits and native tests: [Image normalization](docs/image-normalization.md).

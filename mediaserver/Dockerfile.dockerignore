@@ -16,6 +16,7 @@
 !mediaserver/app.py
 !mediaserver/config.py
 !mediaserver/derivatives.py
+!mediaserver/image_normalization.py
 !mediaserver/export_artifacts.py
 !mediaserver/export_service.py
 !mediaserver/export_sources.py

@@ -24,6 +24,12 @@ from pdf2image.exceptions import (
 )
 from PIL import Image, ImageOps
 
+from image_normalization import (
+    normalize_image,
+    validate_delivery_tiff,
+    validate_source_pages,
+)
+
 from media import (
     InvalidPdfError,
     MediaType,
@@ -120,6 +126,8 @@ class DerivativeProcessor:
             pyvips = importlib.import_module("pyvips")
             loader = pyvips.Image.new_from_file
         image = loader(str(source), access="sequential")
+        validate_source_pages(source, image)
+        image = normalize_image(image)
         image.tiffsave(
             str(destination),
             tile=True,
@@ -129,6 +137,7 @@ class DerivativeProcessor:
             tile_height=256,
             bigtiff=True,
         )
+        validate_delivery_tiff(destination)
 
     def _create_mp4(self, source: Path, destination: Path) -> None:
         self._run(

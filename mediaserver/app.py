@@ -23,6 +23,7 @@ from oldaplib.src.xsd.xsd_qname import Xsd_QName
 from oldap_client import OldapApiError, OldapClient
 from config import MediahelperSettings, ZipImportLimits
 from derivatives import DerivativeProcessor
+from image_normalization import InvalidImageError
 from media import (
     InvalidHeifError,
     InvalidPdfError,
@@ -1122,7 +1123,7 @@ def create_app() -> Flask:
                             ),
                             413,
                         )
-                except InvalidPdfError as exc:
+                except (InvalidPdfError, InvalidImageError) as exc:
                     shutil.rmtree(asset_root, ignore_errors=True)
                     return jsonify({"message": str(exc)}), 400
                 except InvalidHeifError as exc:
@@ -1142,7 +1143,7 @@ def create_app() -> Flask:
                         derived_dir,
                         classification,
                     )
-                except InvalidPdfError as exc:
+                except (InvalidPdfError, InvalidImageError) as exc:
                     shutil.rmtree(asset_root, ignore_errors=True)
                     return jsonify({"message": str(exc)}), 400
                 except Exception as exc:

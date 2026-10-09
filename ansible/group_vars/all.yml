@@ -72,3 +72,19 @@ manage_ufw: false
 # Docker apt repo architecture
 # amd64 for x86_64 VMs; change if needed.
 docker_apt_arch: amd64
+
+# IIIF backend selection. Cantaloupe remains an explicit rollback option.
+iiif_backend: sipi
+# sipi_image is supplied explicitly by Make (version tag or digest, never latest).
+sipi_public_origin: "https://{{ media_domain }}"
+sipi_cache_max_bytes: 1073741824
+sipi_workers: 4
+sipi_memory_limit: 2g
+sipi_jpeg_quality: 90
+sipi_jpeg_sampling: "4:4:4"
+sipi_cors_origins: "*"
+sipi_cors_credentials: false
+sipi_anonymous_enabled: true
+sipi_anonymous_permission_ttl: 600
+# Optional controller-side Lua file; empty uses the policy bundled in the image.
+sipi_preflight_source: ""

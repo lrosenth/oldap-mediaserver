@@ -1,0 +1,9 @@
+# Optional source build; ordinary docker-compose.yml now selects SIPI-2 too.
+# docker compose -f docker-compose.yml -f docker-compose.sipi-test.yml build imageserver
+# docker compose -f docker-compose.yml -f docker-compose.sipi-test.yml up -d --no-deps imageserver
+services:
+  imageserver:
+    image: sipi-2:local-test
+    build:
+      context: ../../sipi-2
+      dockerfile: Dockerfile

@@ -1,0 +1,16 @@
+# Explicit local rollback. Requires Compose support for !reset.
+# docker compose -f docker-compose.yml -f docker-compose.cantaloupe.yml up -d --no-deps imageserver
+services:
+  imageserver:
+    image: lrosenth/oldap-imageserver:${OLDAP_IMAGESERVER_TAG:-v0.2.1}
+    entrypoint: !reset null
+    environment: !reset {}
+    working_dir: !reset null
+    read_only: false
+    tmpfs: !reset []
+    cap_drop: !reset []
+    security_opt: !reset []
+    pids_limit: -1
+    mem_limit: 4g
+    volumes: !override
+      - ${MEDIA_DATA_HOST:-./data}:/data/images

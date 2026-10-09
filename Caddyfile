@@ -8,7 +8,7 @@
 	encode zstd gzip
 
 	# ----------------------------
-	# IIIF -> Cantaloupe
+	# IIIF -> SIPI-2 (prefix preserved)
 	# ----------------------------
 	@iiif path /iiif/*
 	handle @iiif {

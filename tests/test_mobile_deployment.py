@@ -174,6 +174,8 @@ def test_ansible_mobile_templates_render_strictly_without_secret_values() -> Non
         {
             "oldap_mediahelper_tag": "v-test",
             "oldap_imageserver_tag": "v-test",
+            "sipi_image": "example/sipi:1.2.3",
+            "sipi_public_origin": "https://media.example.org",
             "mobile_media_enabled": True,
             "oldap_mobile_media_service_jwt_secret": "dummy-mobile-secret-not-used",
             "container_extra_hosts": [],

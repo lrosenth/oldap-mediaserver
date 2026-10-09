@@ -42,6 +42,10 @@ def media_app(monkeypatch, tmp_path):
 
     sys.modules.pop("app", None)
     module = importlib.import_module("app")
+    # Route tests simulate the native writer; real conversion has its own suite.
+    monkeypatch.setattr("derivatives.validate_source_pages", lambda path, image: None)
+    monkeypatch.setattr("derivatives.normalize_image", lambda image: image)
+    monkeypatch.setattr("derivatives.validate_delivery_tiff", lambda path: None)
     return module, module.app.test_client(), tmp_path
 
 
@@ -1340,3 +1344,37 @@ def test_pdf_derivative_resolves_as_http_asset(media_app):
         thumbnail.resolve()
     )
     assert thumbnail_response.headers["X-OLDAP-Content-Type"] == "image/jpeg"
+
+
+def test_image_normalization_rejection_is_client_error_and_not_registered(
+    media_app, monkeypatch
+):
+    """Invalid image color/layout must not publish a broken delivery asset."""
+    from image_normalization import InvalidImageError
+
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+    monkeypatch.setattr(
+        module.DERIVATIVE_PROCESSOR, "vips_loader", lambda *args, **kwargs: object()
+    )
+
+    def reject(image):
+        raise InvalidImageError("CMYK images require an embedded ICC profile.")
+
+    monkeypatch.setattr("derivatives.normalize_image", reject)
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "archive",
+            "resourceClass": "shared:MediaObject",
+            "file": (io.BytesIO(b"image bytes"), "cmyk.tif", "image/tiff"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 400
+    assert "ICC profile" in response.get_json()["message"]
+    assert not FakeOldapClient.created
+    assert not list(media_root.rglob("master.tif"))

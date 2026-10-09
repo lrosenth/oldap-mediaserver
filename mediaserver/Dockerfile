@@ -73,6 +73,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY mediaserver/app.py /app/app.py
 COPY mediaserver/config.py /app/config.py
 COPY mediaserver/derivatives.py /app/derivatives.py
+COPY mediaserver/image_normalization.py /app/image_normalization.py
 COPY mediaserver/export_sources.py /app/export_sources.py
 COPY mediaserver/export_artifacts.py /app/export_artifacts.py
 COPY mediaserver/export_service.py /app/export_service.py
