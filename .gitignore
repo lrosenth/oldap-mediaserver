@@ -6,6 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+#
+# Dumm gelaufen
+#
+media-transfer-2026-10.10.tar.gz
+
 # Distribution / packaging
 .Python
 build/
