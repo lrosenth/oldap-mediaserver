@@ -35,6 +35,16 @@ The IIIF prefix is not a storage prefix. The Lua policy resolves the asset ID to
 for example `https://media.oldap.org`, without `/iiif/3` or a trailing slash.
 SIPI preserves the incoming `/iiif/3` in information/canonical URLs.
 
+## Image upscaling
+
+This OLDAP deployment enables IIIF upscaling for Stories and other viewers that
+request sizes prefixed with `^`. Local Compose uses `SIPI_SIZE_UPSCALING=true`;
+Ansible uses `sipi_size_upscaling: true`. Set the respective option to false to
+restore the generic SIPI default. This does not bypass authorization, preflight
+resolution restrictions or configured output limits; it permits enlargement of
+the available image pixels. No image rebuild is needed, but the imageserver
+container must be recreated through Compose/deployment to apply the environment.
+
 ## Local laptop
 
 Put Compose interpolation settings in the ignored root `.env` (not in
@@ -46,6 +56,7 @@ SIPI_PUBLIC_ORIGIN=http://localhost:8088
 SIPI_CACHE_MAX_BYTES=1073741824
 SIPI_IIIF_WORKERS=4
 SIPI_MEMORY_LIMIT=2g
+SIPI_SIZE_UPSCALING=true
 SIPI_JPEG_QUALITY=90
 SIPI_JPEG_SAMPLING=4:4:4
 OLDAP_SIPI_ANONYMOUS=true

@@ -80,6 +80,8 @@ sipi_public_origin: "https://{{ media_domain }}"
 sipi_cache_max_bytes: 1073741824
 sipi_workers: 4
 sipi_memory_limit: 2g
+# Stories may request enlarged IIIF sizes (the ^ prefix).
+sipi_size_upscaling: true
 sipi_jpeg_quality: 90
 sipi_jpeg_sampling: "4:4:4"
 sipi_cors_origins: "*"

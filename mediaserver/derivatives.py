@@ -125,7 +125,9 @@ class DerivativeProcessor:
         else:
             pyvips = importlib.import_module("pyvips")
             loader = pyvips.Image.new_from_file
-        image = loader(str(source), access="sequential")
+        # Orientation normalization can rotate rows into columns or reverse them.
+        # Allow libvips to cache/spool decoder input for these nonsequential reads.
+        image = loader(str(source), access="random", revalidate=True)
         validate_source_pages(source, image)
         image = normalize_image(image)
         image.tiffsave(

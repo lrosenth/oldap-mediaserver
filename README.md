@@ -530,3 +530,5 @@ to catalogue originals using the existing v1 worker. See
 for CSV entry kinds, download-link lifetime and authoritative deletion ordering.
 
 Image derivative color/orientation policy, limits and native tests: [Image normalization](docs/image-normalization.md).
+
+For existing incompatible TIFF derivatives, see the [one-off audit and repair tool](docs/repair-image-derivatives.md).

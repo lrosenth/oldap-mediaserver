@@ -469,9 +469,10 @@ def test_image_upload_defaults_to_pyramidal_tiff(media_app, monkeypatch):
             }
             Path(destination).write_bytes(b"pyramidal tiff")
 
-    def fake_vips_load(source: str, *, access: str):
+    def fake_vips_load(source: str, *, access: str, revalidate: bool):
         assert Path(source).read_bytes() == b"image bytes"
-        assert access == "sequential"
+        assert access == "random"
+        assert revalidate is True
         return FakeVipsImage()
 
     monkeypatch.setattr(module.DERIVATIVE_PROCESSOR, "vips_loader", fake_vips_load)
@@ -635,9 +636,10 @@ def test_heic_upload_uses_content_derived_mime_and_pyramidal_tiff(
         def tiffsave(self, destination: str, **options) -> None:
             Path(destination).write_bytes(b"pyramidal heic derivative")
 
-    def fake_vips_load(source: str, *, access: str):
+    def fake_vips_load(source: str, *, access: str, revalidate=None):
         assert Path(source).read_bytes() == heic
-        assert access == "sequential"
+        # Header probe is sequential; actual normalization needs random access.
+        assert (access, revalidate) in {("sequential", None), ("random", True)}
         return FakeVipsImage()
 
     monkeypatch.setattr(module.DERIVATIVE_PROCESSOR, "vips_loader", fake_vips_load)

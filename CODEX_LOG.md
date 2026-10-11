@@ -1,3 +1,21 @@
+### Update 2026-10-11 23:44
+- Decisions: Enable IIIF upscaling in OLDAP's local and VM deployment defaults for Stories; keep the generic SIPI binary default unchanged and allow operator opt-out.
+- Implementation: Wire SIPI_SIZE_UPSCALING into local Compose and the Ansible Compose template via sipi_size_upscaling=true. Document activation, overrides and unchanged access/output restrictions.
+- Open: Redeploy the imageserver with the intended SIPI image tag to activate; no running service or VM changed, no rebuild required.
+- Risks/Assumptions: Enlarged requests can require more processing; existing output limits still apply. Existing deployment and Python tests pass (337 passed, 18 skipped); Poetry/diff checks pass with existing Poetry deprecations. Unrelated local changes preserved.
+
+### Update 2026-10-11 22:04
+- Decisions: Ignore macOS AppleDouble `._*` sidecars when selecting the original for the one-off repair; preserve all metadata files.
+- Implementation: Extended original selection beside the existing .DS_Store exclusion, documented the rule, and added selection/preservation and native repair coverage with sidecars.
+- Open: Copy the updated standalone script to the VM and repeat the pilot; no Docker image rebuild required.
+- Risks/Assumptions: `._*` names are reserved for macOS metadata in this repository. Missing or multiple actual originals still fail safely. Full suite: 337 passed, 18 skipped; all 9 repair tests pass in the v0.2.15 container. Black and diff checks pass; Poetry reports existing metadata deprecations.
+
+### Update 2026-10-11 21:43
+- Decisions: Add an operator-run, read-only-by-default legacy TIFF repair script; explicit apply with an external backup directory, unchanged uncompressed pyramid policy. Reuse the upload converter and keep originals/IDs/GraphDB untouched.
+- Implementation: Added scripts/repair_image_derivatives.py, JSONL reporting, asset selection, source hashes/change checks, verified non-overwriting backups, ownership/mode preservation, staged validation and atomic publication. Documented VM Docker audit/pilot/apply/recovery and updated master context. Real orientation-8 JPEG exposed sequential decoder failure; shared converter now uses random access with revalidation, and the standalone script overrides the loader for already deployed images.
+- Open: Operator audit and pilot on Home, then production; no repository data or running services changed. Compression comparison remains separate. Publish a new mediahelper release for the upload decoder fix; the migration script needs no image rebuild or SIPI changes.
+- Risks/Assumptions: Single operator with repository writers paused; no concurrent-writer lock or ACL/xattr preservation. Header audit is not a full pixel/profile integrity audit. Full suite: 336 passed, 18 skipped; 8 migration and 13 normalization native tests pass in Docker. Standalone /repair.py mount repaired a disposable copy of asset 0R9AFPvCTnMn and skipped it on rerun; actual original/derivative hashes unchanged. Black, Poetry (existing metadata deprecations), and diff checks pass. Existing media-transfer archive untouched.
+
 ### Update 2026-10-10 00:21
 - Decisions: Activate normalization locally using a dedicated development image tag; retain the previous v0.2.12 image and change only the mediahelper service. No registry push or VM rollout.
 - Implementation: Added missing image_normalization.py Docker context allowlist entry. Built lrosenth/oldap-mediahelper:normalization-local-20261010 with runtime version 0.2.14-normalization-local; backed up Compose .env under ~/.codex/backups/mediahelper-normalization-20261010-002043, selected the local tag and recreated mediaserver with --no-deps --pull never. Updated deployment state documentation.

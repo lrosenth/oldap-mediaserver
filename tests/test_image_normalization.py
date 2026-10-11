@@ -48,6 +48,17 @@ class ImageNormalizationTests(unittest.TestCase):
         validate_delivery_tiff(output)
         return Image.open(output)
 
+    def test_rotated_jpeg_exceeds_sequential_decoder_window(self):
+        source = self.root / "rotated.jpg"
+        exif = Image.Exif()
+        exif[274] = 8
+        Image.new("RGB", (1536, 2048), (40, 80, 120)).save(source, exif=exif)
+        output = self.root / "master.tif"
+        DerivativeProcessor()._create_pyramidal_tiff(source, output)
+        validate_delivery_tiff(output)
+        with Image.open(output) as image:
+            self.assertEqual(image.size, (2048, 1536))
+
     def test_rgb_gray_rgba_pyramids(self):
         for mode, pixel in [
             ("RGB", (30, 60, 90)),

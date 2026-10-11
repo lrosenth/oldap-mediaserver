@@ -1,5 +1,18 @@
 # oldap-mediaserver Codex Context
 
+## One-off legacy derivative repair (2026-10-11)
+
+`scripts/repair_image_derivatives.py` audits existing `derived/master.tif` headers;
+explicit `--apply --backup-dir` regenerates failures from unambiguous originals
+using the shared converter, validates, backs up outside the media tree and atomically
+replaces each TIFF. JSONL records include hashes; compatible entries are skipped.
+No GraphDB/API changes or automatic migration. Run one instance with repository
+writers paused; see docs/repair-image-derivatives.md. Compression remains unchanged.
+The real orientation-8 JPEG exposed sequential-decoder failure: shared conversion
+now requests random access with revalidation. The script overrides the loader for
+compatibility with existing mediahelper images. The upload fix needs the next
+mediahelper image release; SIPI needs no changes. Tests use disposable copies only.
+
 ## Normalized image derivatives (2026-10-09)
 
 The shared DerivativeProcessor now normalizes originals into SIPI-compatible
@@ -513,3 +526,9 @@ image decisions also have a fixed600s TTL (generic config anonymous_permission_t
 errors are not retained; expired grants never survive API failure. Supplied JWTs
 remain independently validated. Restart clears login tokens and permissions; no
 admin purge endpoint exists. The current local image includes this policy.
+
+## IIIF upscaling (2026-10-11)
+
+OLDAP deployments enable SIPI_SIZE_UPSCALING by default to support Stories requests
+using the IIIF ^ size prefix. Local Compose can override SIPI_SIZE_UPSCALING; VM
+deployments use sipi_size_upscaling. Authorization and output limits remain active.

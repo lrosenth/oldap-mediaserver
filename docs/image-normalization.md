@@ -45,7 +45,8 @@ before the caller can register/publish the derivative.
   characterization. The user must supply an appropriately profiled source.
 
 No original is overwritten. Normalization is a delivery conversion, not archival
-preservation of bit depth or gamut. Existing repository derivatives are not migrated.
+preservation of bit depth or gamut. Existing repository derivatives are not migrated automatically; use the
+[one-off repair tool](repair-image-derivatives.md) after a read-only audit.
 
 ## Limits and errors
 
@@ -104,3 +105,14 @@ or remote deployment was performed. Twelve native tests exercised packaged image
 code; an isolated real multipart upload verified normalization and original-byte
 preservation with an in-memory registration stand-in. Public health and missing-auth
 checks pass; user-facing upload acceptance remains separate.
+
+### Random-access decoding for orientation (2026-10-11)
+
+The converter now loads with `access="random", revalidate=True`. Rotated JPEG
+input may need rows already consumed by a sequential decoder; real orientation-8
+input exposed a libvips out-of-order read that small fixtures did not trigger.
+Random access permits decoder caching/spooling, with additional working storage;
+revalidation prevents stale libvips loader-cache entries when a pathname is reused.
+A 1536x2048 rotated-JPEG regression covers this path. Future uploads need a new
+mediahelper release to receive this fix. The standalone repair script overrides
+the existing loader injection point, so it also works with the deployed v0.2.15.

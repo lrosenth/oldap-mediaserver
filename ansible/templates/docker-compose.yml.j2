@@ -146,6 +146,7 @@ services:
       SIPI_CACHE_DIR: /var/cache/sipi
       SIPI_CACHE_MAX_BYTES: "{{ sipi_cache_max_bytes }}"
       SIPI_IIIF_WORKERS: "{{ sipi_workers }}"
+      SIPI_SIZE_UPSCALING: "{{ sipi_size_upscaling | bool | lower }}"
       SIPI_JPEG_QUALITY: "{{ sipi_jpeg_quality }}"
       SIPI_JPEG_SAMPLING: {{ sipi_jpeg_sampling | to_json }}
       SIPI_CORS_ORIGINS: {{ sipi_cors_origins | to_json }}
