@@ -165,7 +165,9 @@ def heif_page_count(image: Any) -> int:
     except InvalidHeifError:
         raise
     except (AttributeError, TypeError, ValueError) as error:
-        raise InvalidHeifError("HEIF decoder reported an invalid image count.") from error
+        raise InvalidHeifError(
+            "HEIF decoder reported an invalid image count."
+        ) from error
     if page_count <= 0:
         raise InvalidHeifError("HEIF decoder reported an invalid image count.")
     return page_count
@@ -233,7 +235,7 @@ def validate_target_format(media_type: MediaType, raw: str | None) -> str:
 
     requested = (raw or "").lower().strip()
     allowed_and_default = {
-        MediaType.IMAGE: ({"tiff"}, "tiff"),
+        MediaType.IMAGE: ({"tiff", "htj2k"}, "tiff"),
         MediaType.VIDEO: ({"mp4"}, "mp4"),
         MediaType.AUDIO: ({"m4a", "mp3"}, "mp3"),
         MediaType.DOCUMENT: ({"pdf"}, "pdf"),

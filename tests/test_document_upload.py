@@ -373,11 +373,11 @@ def test_image_target_format_normalizes_to_tiff(media_app, target_format):
 
 
 @pytest.mark.parametrize("target_format", ["jp2", "j2k", "jpeg"])
-def test_image_target_format_rejects_non_tiff_formats(media_app, target_format):
+def test_image_target_format_rejects_unsupported_formats(media_app, target_format):
     """Removed image targets fail explicitly instead of changing storage silently."""
     module, _, _ = media_app
 
-    with pytest.raises(ValueError, match="allowed: \\['tiff'\\]"):
+    with pytest.raises(ValueError, match="allowed: \\['htj2k', 'tiff'\\]"):
         module.validate_target_format(module.MediaType.IMAGE, target_format)
 
 
@@ -1380,3 +1380,61 @@ def test_image_normalization_rejection_is_client_error_and_not_registered(
     assert "ICC profile" in response.get_json()["message"]
     assert not FakeOldapClient.created
     assert not list(media_root.rglob("master.tif"))
+
+
+@pytest.mark.parametrize("target_format", ["htj2k", "HTJ2K", " htj2k "])
+def test_image_target_format_accepts_htj2k(media_app, target_format):
+    module, _, _ = media_app
+    assert (
+        module.validate_target_format(module.MediaType.IMAGE, target_format) == "htj2k"
+    )
+
+
+@pytest.mark.parametrize("outcome", ["success", "alpha", "encoder_error"])
+def test_htj2k_upload_registration_and_cleanup(media_app, monkeypatch, outcome):
+    """Only complete HT output is registered; rejected/failed uploads leave no asset."""
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+
+    def encode(source, destination):
+        assert source.read_bytes() == b"original bytes"
+        assert destination.name == "master.jph"
+        if outcome == "alpha":
+            raise module.InvalidImageError(
+                "HTJ2K does not support transparency; use targetFormat=tiff."
+            )
+        if outcome == "encoder_error":
+            destination.write_bytes(b"partial")
+            raise RuntimeError("HTJ2K encoding failed.")
+        destination.write_bytes(b"complete HTJ2K")
+
+    monkeypatch.setattr(module.DERIVATIVE_PROCESSOR, "_create_htj2k", encode)
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data={
+            "projectId": "test",
+            "path": "archive",
+            "identifier": "asset-htj2k",
+            "targetFormat": "htj2k",
+            "file": (io.BytesIO(b"original bytes"), "scan.png", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+    asset = media_root / "testproject" / "image" / "archive" / "asset-htj2k"
+    assert (
+        response.status_code
+        == {"success": 200, "alpha": 400, "encoder_error": 500}[outcome]
+    ), response.get_json()
+    if outcome == "success":
+        payload = response.get_json()
+        assert payload["derivativeName"] == "master.jph"
+        assert payload["protocol"] == "iiif"
+        assert payload["checksum"] == hashlib.sha256(b"original bytes").hexdigest()
+        assert (asset / "original" / "scan.png").read_bytes() == b"original bytes"
+        assert (asset / "derived" / "master.jph").read_bytes() == b"complete HTJ2K"
+        assert FakeOldapClient.created[0][1]["shared:derivativeName"] == "master.jph"
+    else:
+        assert not asset.exists()
+        assert not FakeOldapClient.created

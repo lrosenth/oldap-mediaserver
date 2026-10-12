@@ -11,6 +11,7 @@ import logging
 import importlib
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -25,6 +26,7 @@ from pdf2image.exceptions import (
 from PIL import Image, ImageOps
 
 from image_normalization import (
+    InvalidImageError,
     normalize_image,
     validate_delivery_tiff,
     validate_source_pages,
@@ -42,6 +44,8 @@ DOCUMENT_DERIVATIVE_NAME = "document.pdf"
 THUMBNAIL_SIZES = (128, 256)
 PDF_RENDER_SIZE = 512
 PDF_RENDER_TIMEOUT_SECONDS = 30
+HTJ2K_ENCODE_TIMEOUT_SECONDS = 300
+HTJ2K_ENCODE_THREADS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,8 +83,12 @@ class DerivativeProcessor:
 
         media_type = classification.media_type
         if media_type is MediaType.IMAGE:
-            primary = derived_directory / "master.tif"
-            self._create_pyramidal_tiff(source, primary)
+            if classification.target_format == "htj2k":
+                primary = derived_directory / "master.jph"
+                self._create_htj2k(source, primary)
+            else:
+                primary = derived_directory / "master.tif"
+                self._create_pyramidal_tiff(source, primary)
             return DerivativeResult(primary=primary)
 
         if media_type is MediaType.VIDEO:
@@ -119,7 +127,8 @@ class DerivativeProcessor:
 
         raise ValueError(f"Unsupported media type: {media_type.value}")
 
-    def _create_pyramidal_tiff(self, source: Path, destination: Path) -> None:
+    def _normalized_image(self, source: Path):
+        """Load one accepted source and return its lazy, normalized libvips image."""
         if self.vips_loader is not None:
             loader = self.vips_loader
         else:
@@ -129,7 +138,11 @@ class DerivativeProcessor:
         # Allow libvips to cache/spool decoder input for these nonsequential reads.
         image = loader(str(source), access="random", revalidate=True)
         validate_source_pages(source, image)
-        image = normalize_image(image)
+        return normalize_image(image)
+
+    def _create_pyramidal_tiff(self, source: Path, destination: Path) -> None:
+        """Write and validate the default upright 8-bit tiled TIFF pyramid."""
+        image = self._normalized_image(source)
         image.tiffsave(
             str(destination),
             tile=True,
@@ -140,6 +153,70 @@ class DerivativeProcessor:
             bigtiff=True,
         )
         validate_delivery_tiff(destination)
+
+    def _create_htj2k(self, source: Path, destination: Path) -> None:
+        """Encode normalized gray/RGB8 losslessly with the pinned Grok CLI.
+
+        Alpha is unsupported by SIPI's JPH reader and must never be discarded
+        silently. A private, non-pyramidal TIFF transfers pixels and ICC to Grok;
+        it is removed even if encoding fails. The caller owns asset publication
+        and cleanup of the destination after errors.
+        """
+        image = self._normalized_image(source)
+        if image.hasalpha():
+            raise InvalidImageError(
+                "HTJ2K does not support transparency; use targetFormat=tiff."
+            )
+        # Small images cannot accommodate six wavelet resolution levels.
+        resolutions = min(6, min(image.width, image.height).bit_length())
+        with tempfile.TemporaryDirectory(
+            prefix="htj2k-", dir=destination.parent
+        ) as work:
+            intermediate = Path(work) / "normalized.tif"
+            image.tiffsave(str(intermediate), compression="none", bigtiff=True)
+            # .jph selects HT block coding. No -I or rate limit: reversible 5/3,
+            # one lossless layer. Two codec threads bound per-request fan-out.
+            command = [
+                "grk_compress",
+                "-i",
+                str(intermediate),
+                "-o",
+                str(destination),
+                "-n",
+                str(resolutions),
+                "-t",
+                "1024,1024",
+                "-H",
+                str(HTJ2K_ENCODE_THREADS),
+            ]
+            try:
+                completed = self.command_runner(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=HTJ2K_ENCODE_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError("HTJ2K encoding exceeded its time limit.") from error
+            if completed.returncode != 0:
+                # Grok's default spdlog sink writes errors to stdout.
+                self.logger.error(
+                    "Grok HTJ2K encoding failed: %s",
+                    "\n".join(
+                        part for part in (completed.stderr, completed.stdout) if part
+                    ),
+                )
+                raise RuntimeError("HTJ2K encoding failed.")
+            # Catch missing/incorrect outputs even if a tool reports success.
+            # Pixel, profile and HT-marker correctness are covered by native tests.
+            with destination.open("rb") as encoded:
+                header = encoded.read(24)
+            if (
+                header[:12] != b"\x00\x00\x00\x0cjP  \r\n\x87\n"
+                or header[16:24] != b"ftypjph "
+            ):
+                raise RuntimeError("HTJ2K encoder did not produce a JPH image.")
 
     def _create_mp4(self, source: Path, destination: Path) -> None:
         self._run(

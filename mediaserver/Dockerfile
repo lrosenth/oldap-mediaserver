@@ -27,7 +27,33 @@ RUN poetry export --only main -f requirements.txt --without-hashes -o requiremen
 FROM --platform=linux/amd64 verapdf/cli:v1.30.2@sha256:d5ee329657cf9bc4b2400392dd54c7d0a0ce9980ff6fa2da5590eebeec007cdb AS verapdf
 
 
-# --- Stage 2: final runtime image ---
+# Build the official Grok tools on each target architecture. Same codec version
+# as SIPI-2; CPU feature selection remains portable (no -march=native).
+FROM python:3.14-slim AS grok
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ cmake ninja-build pkg-config libtiff-dev libpng-dev libjpeg62-turbo-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY mediaserver/grok/fetch_sources.py /fetch_sources.py
+RUN python /fetch_sources.py
+RUN cmake -S /src -B /build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/grok \
+    -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_RPATH=/opt/grok/lib \
+    -DBUILD_SHARED_LIBS=ON -DGRK_BUILD_CODEC=ON \
+    -DGRK_BUILD_CORE_EXAMPLES=OFF -DGRK_BUILD_CODEC_EXAMPLES=OFF \
+    -DGRK_BUILD_CORE_SWIG_BINDINGS=OFF -DGRK_BUILD_PLUGIN_LOADER=OFF \
+    -DGRK_BUILD_LIBPNG=OFF -DGRK_BUILD_LIBTIFF=OFF -DGRK_BUILD_JPEG=OFF \
+    -DGRK_ENABLE_LIBCURL=OFF -DBUILD_TESTING=OFF -DCARGO_EXECUTABLE=OFF \
+ && cmake --build /build --parallel 4 \
+ && cmake --install /build --component Libraries \
+ && cmake --install /build --component Applications
+
+# Retain licenses for statically linked bundled Little CMS and checksum-pinned fmt.
+RUN mkdir -p /opt/grok/licenses/lcms2 /opt/grok/licenses/fmt \
+ && cp /src/thirdparty/liblcms2/LICENSE /opt/grok/licenses/lcms2/ \
+ && cp /build/_deps/fmt-src/LICENSE /opt/grok/licenses/fmt/ \
+ && cp /src/src/include/spdlog/cmake/fmtlib.cmake /opt/grok/licenses/fmt/
+
+# --- Final runtime image ---
 FROM python:3.14-slim
 
 ARG MEDIAHELPER_VERSION
@@ -46,6 +72,7 @@ WORKDIR /app
 RUN apt-get update -o Acquire::Retries=5 \
  && apt-get install -y --no-install-recommends \
       libvips42 \
+      libgomp1 \
       libheif1 \
       libheif-plugin-libde265 \
       ffmpeg \
@@ -61,6 +88,9 @@ RUN apt-get update -o Acquire::Retries=5 \
 RUN groupadd --system --gid 65532 oldap-parser \
  && useradd --system --uid 65532 --gid 65532 --no-create-home \
       --home-dir /nonexistent --shell /usr/sbin/nologin oldap-parser
+
+COPY --from=grok /opt/grok /opt/grok
+ENV PATH="/opt/grok/bin:${PATH}"
 
 COPY --from=verapdf /opt/verapdf /opt/verapdf
 RUN ln -s /opt/verapdf/verapdf /usr/local/bin/verapdf

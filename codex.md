@@ -1,5 +1,18 @@
 # oldap-mediaserver Codex Context
 
+## Optional HTJ2K upload (2026-10-12)
+
+Ordinary `/upload` accepts `targetFormat=htj2k` and registers `master.jph`;
+omitted format still means pyramidal TIFF. Both use the same orientation,
+8-bit/color normalization. HT output is lossless gray/RGB, with alpha rejected
+explicitly; originals remain byte-identical. ZIP/mobile retain their TIFF contract.
+`DerivativeProcessor` hands a private normalized TIFF to pinned Grok 20.4.15 CLI
+(two threads, 300 s encode deadline, 1024 px tiles, up to six resolutions).
+The Docker multistage build installs only tools/libraries/licenses; source hashes
+are in `mediaserver/grok/fetch_sources.py`. See `docs/htj2k-upload.md` for requests,
+limits and verification. Requires a new mediahelper release; SIPI's existing Grok
+reader needs no rebuild. Legacy Cantaloupe is unsuitable for the new masters.
+
 ## One-off legacy derivative repair (2026-10-11)
 
 `scripts/repair_image_derivatives.py` audits existing `derived/master.tif` headers;

@@ -44,3 +44,6 @@
 !mediaserver/storage_capacity.py
 !mediaserver/zip_validation.py
 !mediaserver/validation_documents.py
+
+!mediaserver/grok/
+!mediaserver/grok/fetch_sources.py

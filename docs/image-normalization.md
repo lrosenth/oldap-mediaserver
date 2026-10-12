@@ -1,14 +1,15 @@
 # Upload image normalization
 
 Image uploads keep the original bit-identical, with its original metadata and
-integrity hash. Only `derived/master.tif` is normalized for SIPI delivery.
+integrity hash. Only the derivative (`derived/master.tif`, or `master.jph` for an explicit
+HTJ2K upload) is normalized for SIPI delivery.
 `DerivativeProcessor` shares this policy across legacy upload, ZIP import and
 mobile preparation. Their existing authentication, storage and registration
 contracts are unchanged.
 
 ## Delivery contract
 
-The derivative is an uncompressed, tiled BigTIFF with 256x256 tiles and reduced
+The default TIFF derivative is an uncompressed, tiled BigTIFF with 256x256 tiles and reduced
 pyramid IFDs, ending when one tile covers a level. libvips constructs the pyramid
 with its default mean reduction. These settings are unchanged; compression tuning
 is a separate benchmark decision.
@@ -18,6 +19,10 @@ unassociated alpha. `image_normalization.py` owns normalization and postconditio
 The writer fully evaluates the pixel pipeline; a separate Pillow header inspection
 then checks every IFD, layout, profile consistency, dimensions and pyramid flags
 before the caller can register/publish the derivative.
+
+The optional ordinary-upload [HTJ2K target](htj2k-upload.md) shares the same
+normalization, but accepts only gray/RGB output and uses lossless Grok encoding.
+ZIP import and mobile preparation continue to create TIFFs.
 
 ## Orientation, samples and color
 

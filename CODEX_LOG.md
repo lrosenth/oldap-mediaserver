@@ -1,3 +1,9 @@
+### Update 2026-10-12 22:48
+- Decisions: Add opt-in lossless HTJ2K only to ordinary /upload; preserve TIFF defaults, original bytes and ZIP/mobile contracts. Reject alpha explicitly rather than flatten it.
+- Implementation: Share image normalization; encode master.jph via pinned Grok 20.4.15 CLI (private TIFF intermediate, bounded threads/time, JPH sanity check, stderr/stdout diagnostics). Reuse dynamic response/OLDAP derivativeName. Add checksum-verified multistage codec build, upstream licenses, format/route/native tests, request and release documentation, and master context.
+- Open: Publish/redeploy a new mediahelper image to activate. No service, VM, sibling repository or version tag changed. ARM64 and AMD64 verification images built locally; nothing published.
+- Risks/Assumptions: Lossless is relative to normalized 8-bit gray/RGB; alpha requires TIFF. Temporary raster needs disk; existing Gunicorn timeout can be shorter than the 300 s codec deadline. Runtime JPH check is structural, not a full second decode. Local suite 345 passed/20 skipped; 4 HT tests plus 13 normalization tests pass in packaged ARM64 and AMD64 images (AMD64 under emulation). Real isolated multipart uploads preserve originals and register JPH; SIPI 0.1.3 serves both gray/RGB info, JPEG thumbnails and PNG crops (six HTTP 200 responses). Black/diff pass; Poetry has existing deprecations. User repair-local.jsonl preserved.
+
 ### Update 2026-10-11 23:44
 - Decisions: Enable IIIF upscaling in OLDAP's local and VM deployment defaults for Stories; keep the generic SIPI binary default unchanged and allow operator opt-out.
 - Implementation: Wire SIPI_SIZE_UPSCALING into local Compose and the Ansible Compose template via sipi_size_upscaling=true. Document activation, overrides and unchanged access/output restrictions.
