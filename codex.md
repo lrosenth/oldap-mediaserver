@@ -1,5 +1,11 @@
 # oldap-mediaserver Codex Context
 
+- Home activation (2026-11-04): helper and ingest/export/mobile workers now use `lrosenth/oldap-mediahelper:jena-0.2.17-rc1-04c2fd90eb1d-amd64` pinned at `sha256:8078872fa5a366fabed13734994bfee04e4223a85e9ea008de8ef1df7e8e6957`. HE-AAC and strict asset authorization are active; packaged codec and live auth/delivery checks pass. SIPI-2 0.1.0 and Caddy unchanged. Source/rollback evidence: sibling oldap-setup/docs/jena-apps-home.md. Earlier pending-deployment statements below are historical.
+
+- Jena migration checkout: this sibling retains the reviewed HE-AAC and asset-authorization work independently of the GraphDB checkout. `ansible/update-jena-home.yml` performs a home-only, digest-pinned helper/three-worker replacement from installed configuration with rollback. It preserves SIPI, Caddy, volumes and access keys; legacy mobile SIGINT requires an empty registry. Release provenance is in sibling oldap-setup/docs/jena-apps-home.md.
+
+- Asset authorization correction (2026-10-31): Invalid supplied capabilities fail closed; matching IDs and integer permissions 1..6 required for signed/public resolution. Tokenless public delivery preserved. 374 mediahelper tests plus four subtests pass (20 skipped); owned real HTTP verifies nine asset, 23 API and ten image checks. Source-overlay container verified; rebuilt release/deployment still pending. See docs/asset-authorization.md.
+
 ## Optional HTJ2K upload (2026-10-12)
 
 Ordinary `/upload` accepts `targetFormat=htj2k` and registers `master.jph`;
@@ -545,3 +551,11 @@ admin purge endpoint exists. The current local image includes this policy.
 OLDAP deployments enable SIPI_SIZE_UPSCALING by default to support Stories requests
 using the IIIF ^ size prefix. Local Compose can override SIPI_SIZE_UPSCALING; VM
 deployments use sipi_size_upscaling. Authorization and output limits remain active.
+
+## HE-AAC upload policy (2026-11-03)
+
+ZIP MP4 validation accepts mono/stereo AAC-LC and HE-AAC. The shared video
+processor preserves HE-AAC audio packets in web derivatives for both individual
+uploads and ZIP imports; originals remain unchanged. Video encoding is unchanged.
+Historical LC-only manifest snapshots remain schema-valid. See
+`docs/zip-import/v1/README.md`. Requires the next mediahelper deployment.

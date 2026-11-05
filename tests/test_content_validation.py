@@ -296,7 +296,20 @@ class MediaRunner:
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
 
-def test_wav_pcm_and_mp4_h264_aac_matrix(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "profile,channels,accepted",
+    [
+        ("LC", 2, True),
+        ("HE-AAC", 1, True),
+        ("HE-AAC", 2, True),
+        ("HE-AACv2", 2, False),
+        ("HE-AAC", 6, False),
+        ("", 2, False),
+    ],
+)
+def test_wav_pcm_and_mp4_h264_aac_matrix(
+    tmp_path: Path, profile, channels, accepted
+) -> None:
     wav = _extracted(tmp_path / "audio", [("sound.wav", b"RIFFxxxxWAVE" + b"x" * 20)])
     audio_runner = MediaRunner(
         {
@@ -336,15 +349,15 @@ def test_wav_pcm_and_mp4_h264_aac_matrix(tmp_path: Path) -> None:
                 {
                     "codec_type": "audio",
                     "codec_name": "aac",
-                    "profile": "LC",
-                    "channels": 2,
+                    "profile": profile,
+                    "channels": channels,
                 },
             ],
             "format": {"duration": "7200"},
         }
     )
     video_result = ContentValidator(command_runner=video_runner).validate(video)
-    assert video_result.accepted
+    assert video_result.accepted is accepted
     assert video_result.entries[0].detected_content["framesPerSecond"] == 60
 
 

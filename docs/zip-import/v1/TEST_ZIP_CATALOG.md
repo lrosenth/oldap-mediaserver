@@ -180,7 +180,7 @@ files from the internet are not acceptable fixtures.
 | MEDIA-011 | MP4 with HEVC, AV1, VP9, or MPEG-4 Part 2 video | `VIDEO_CODEC_UNSUPPORTED` | T1 |
 | MEDIA-011A | H.264 outside Baseline/Main/High, above level 5.2, above 8-bit, or not 4:2:0 | `VIDEO_CODEC_UNSUPPORTED` | T1/T2 |
 | MEDIA-012 | MP4 with non-AAC audio | `VIDEO_AUDIO_CODEC_UNSUPPORTED` | T1 |
-| MEDIA-012A | MP4 with AAC profile other than LC or more than two audio channels | `VIDEO_AUDIO_CODEC_UNSUPPORTED` or `AUDIO_CHANNEL_LIMIT` | T1 |
+| MEDIA-012A | MP4 with AAC profile other than LC or HE-AAC or more than two audio channels | `VIDEO_AUDIO_CODEC_UNSUPPORTED` or `AUDIO_CHANNEL_LIMIT` | T1 |
 | MEDIA-013 | More than one video or audio stream | `VIDEO_STREAM_LAYOUT_UNSUPPORTED` | T1 |
 | MEDIA-014 | Subtitle, data, or attachment stream | `VIDEO_STREAM_LAYOUT_UNSUPPORTED` | T1 |
 | MEDIA-015 | Width/height, fps, or duration just above limit | matching video limit code | T2 scaled |
@@ -274,3 +274,5 @@ Phase 0 fixes the following expected behavior:
    an extension mismatch on genuine plain text remains a warning.
 4. Limit the sequential worker to 4 vCPUs, 6 GiB RAM, an equal
    memory-plus-swap ceiling where supported, and 128 PIDs.
+
+HE-AAC policy extension (2026-11-03): MP4/H.264 with mono or stereo HE-AAC must be READY; HE-AACv2 and more than two audio channels remain rejected. Web derivatives preserve HE-AAC packets; originals remain byte-identical.

@@ -1,3 +1,39 @@
+### Update 2026-11-05 12:08
+- Decisions: Checkpoint the reviewed Jena migration changes on the migration branch; keep publication, merges and deployment separate.
+- Implementation: Rechecked 384 tests (20 skipped), changed-file Black and Poetry metadata. All 42 packaged source files match the accepted home image snapshot; reviewed capability authorization and shared single-file/ZIP HE-AAC handling. Checked candidate changes for accidental credentials and whitespace.
+- Open: Remaining production readiness gates and final release acceptance; see the coordinated setup checkpoint.
+- Risks/Assumptions: This checkpoint does not change running services or production. Existing skipped tests and prior runtime evidence retain their documented scope.
+
+### Update 2026-11-04 23:56
+- Decisions: Accept the four isolated app candidates on home after live verification; retain stable tags, production, data and existing roles.
+- Implementation: Published/deployed digest-pinned oldap-app, SALSAH, Fasnacht and mediahelper/three workers. 28 live API/media checks pass; real browser views pass. Packaged HE-AAC ZIP/conversion succeeds on a two-second copy of the 1946 film, retaining original hash and audio profile. Six infrastructure container IDs/start times unchanged; seven protected registry tags unchanged. Exact references/backups: oldap-setup/docs/jena-apps-home-results.json and jena-apps-home.md.
+- Open: Interactive authenticated writes/uploads and audible cross-browser HE-AAC acceptance; existing production migration/recovery/drain gates. No commits/merges made.
+- Risks/Assumptions: SALSAH DNS now correct. API recreated only for registry/CORS. Media preflight profile omission was corrected before stopping services; successful run used guarded legacy mobile SIGINT with empty registry and no forced kill. SIPI-2 stays on 0.1.0.
+
+### Update 2026-11-04 23:54
+- Decisions: Include all Compose profiles in the staged media-image preflight.
+- Implementation: Installed workers are profile-gated; default Compose config omits them. Added explicit --profile '*' to candidate validation and a real Compose regression resolving all four services. Four focused deployment tests pass.
+- Open: Retry guarded media activation and complete live acceptance.
+- Risks/Assumptions: Initial preflight stopped before any service shutdown or installed configuration change. The published runtime image is unchanged.
+
+### Update 2026-11-04 23:39
+- Decisions: Use a separate migration/jena checkout and image-only home update; preserve original GraphDB checkout and installed volumes/secrets.
+- Implementation: Copied reviewed HE-AAC/asset-auth source changes; added guarded four-service deployment/rollback. Legacy mobile SIGINT requires an empty registry. Suite: 384 passed, 20 skipped, four subtests.
+- Open: Finish candidate build and runtime verification, then publish and deploy on home.
+- Risks/Assumptions: Working-tree fixes are included in the fingerprinted source bundle; no commit/merge or production deployment.
+
+### Update 2026-11-03 21:55
+- Decisions: Accept mono/stereo HE-AAC alongside LC in ZIP MP4 uploads; preserve HE-AAC audio in web derivatives for both multipart and ZIP uploads. Keep originals byte-identical and existing video encoding unchanged.
+- Implementation: Extended codec allowlist and manifest snapshots/schema (historical LC-only snapshots remain valid); shared video processor probes and explicitly maps the first audio stream, copying HE-AAC packets. Added accepted/rejected codec cases, silent-video coverage, and ordinary/Staging multipart regressions; updated contract documentation.
+- Open: Rebuild and deploy mediahelper later; no running service, image tag or sibling repository changed. Browser playback with an audible HE-AAC sample remains a manual compatibility check.
+- Risks/Assumptions: HE-AACv2 and standalone AAC remain outside the ZIP policy. Existing derivatives are not regenerated. Full suite: 384 passed, 20 skipped, four subtests; Black/Poetry/diff checks pass (existing Poetry metadata deprecations). Existing runtime container with changed source mounted read-only accepts the real 1946 film through ZIP validation and produces HE-AAC web audio plus two thumbnails; original hashes unchanged. Earlier uncommitted authorization work preserved.
+
+### Update 2026-10-31 22:59
+- Decisions: Match existing SIPI minimum DATA_RESTRICTED=1; require valid numeric permission and asset binding. Only absent credentials may use public lookup; keep public API signatures unchanged.
+- Implementation: Enforced strict integer grants 1..6 and matching asset IDs; invalid/empty/duplicate/expired tokens fail closed. Added regressions and updated valid PDF test claims. Full mediahelper suite: 374 passed, 20 skipped, four subtests; owned HTTP: 23 API, ten image and nine grouped asset checks pass. Black/Poetry/diff pass (existing Poetry deprecations).
+- Open: Rebuild/version and explicitly deploy mediahelper to activate; no live service changed. Automatic token expiry renewal and uploads remain separate migration gates.
+- Risks/Assumptions: Existing capabilities keep their bounded lifetime. Formerly tolerated malformed capabilities now return 403; callers must omit credentials for public lookup or obtain valid tokens. Source hashes unchanged; owned services stopped.
+
 ### Update 2026-10-12 22:48
 - Decisions: Add opt-in lossless HTJ2K only to ordinary /upload; preserve TIFF defaults, original bytes and ZIP/mobile contracts. Reject alpha explicitly rather than flatten it.
 - Implementation: Share image normalization; encode master.jph via pinned Grok 20.4.15 CLI (private TIFF intermediate, bounded threads/time, JPH sanity check, stderr/stdout diagnostics). Reuse dynamic response/OLDAP derivativeName. Add checksum-verified multistage codec build, upstream licenses, format/route/native tests, request and release documentation, and master context.

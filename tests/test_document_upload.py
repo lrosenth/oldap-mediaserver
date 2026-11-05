@@ -1321,6 +1321,7 @@ def test_pdf_derivative_resolves_as_http_asset(media_app):
         "tester",
         {
             "assetId": asset_id,
+            "permval": 2,
             "path": "fasnacht/document/archive",
             "originalName": "scan.pdf",
             "derivativeName": "document.pdf",
@@ -1438,3 +1439,58 @@ def test_htj2k_upload_registration_and_cleanup(media_app, monkeypatch, outcome):
     else:
         assert not asset.exists()
         assert not FakeOldapClient.created
+
+
+@pytest.mark.parametrize("staging", [False, True])
+def test_he_aac_video_upload_preserves_original_and_copies_audio(
+    media_app, monkeypatch, staging
+):
+    """Ordinary and Staging multipart uploads use the shared HE-AAC policy."""
+    import json
+
+    module, client, media_root = media_app
+    FakeOldapClient.created = []
+    monkeypatch.setattr(module, "OldapClient", FakeOldapClient)
+    original = b"\x00\x00\x00\x18ftypisom" + b"mock HE-AAC video"
+    commands = []
+
+    def runner(command, **kwargs):
+        commands.append(command)
+        if command[0] == "ffprobe":
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "streams": [
+                            {"codec_name": "aac", "profile": "HE-AAC", "channels": 2}
+                        ]
+                    }
+                ),
+            )
+        Path(command[-1]).write_bytes(b"derivative")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module.DERIVATIVE_PROCESSOR, "command_runner", runner)
+    data = {
+        "projectId": "test",
+        "identifier": "he-aac-video",
+        "resourceClass": (
+            "shared:StagingMediaObject" if staging else "shared:MediaObject"
+        ),
+        "file": (io.BytesIO(original), "film.mp4", "video/mp4"),
+    }
+    if staging:
+        data.update(stagingAreaIri="test:Area", stagingFolderIri="test:Photos")
+    response = client.post(
+        "/upload",
+        headers={"Authorization": f"Bearer {_upload_token()}"},
+        data=data,
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200, response.get_json()
+    stored = list(media_root.rglob("original/film.mp4"))
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == original
+    conversion = next(command for command in commands if "-c:a" in command)
+    assert conversion[conversion.index("-c:a") + 1] == "copy"
+    assert FakeOldapClient.created[0][1]["shared:derivativeName"] == "web.mp4"

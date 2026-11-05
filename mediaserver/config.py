@@ -51,7 +51,7 @@ class ZipImportLimits:
     allowed_h264_profiles: tuple[str, ...] = ("Baseline", "Main", "High")
     max_h264_level: float = 5.2
     allowed_video_pixel_formats: tuple[str, ...] = ("yuv420p",)
-    allowed_aac_profiles: tuple[str, ...] = ("LC",)
+    allowed_aac_profiles: tuple[str, ...] = ("LC", "HE-AAC")
     max_video_width: int = 3_840
     max_video_height: int = 2_160
     max_video_frames_per_second: int = 60
