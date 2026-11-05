@@ -1,5 +1,7 @@
 # oldap-mediaserver Codex Context
 
+- Graceful mobile shutdown (2026-11-05): SIGTERM/SIGINT finish the owned processing/cleanup/lifecycle unit with leases intact, then stop before another claim; idle waits are interruptible. Ordinary Compose grace is 15 minutes; coordinated home maintenance waits without forced kill and keeps the API available through mobile completion. Home runs candidate `jena-0.2.17-rc1-a7b5d97ba17b-amd64` at `sha256:a1f9b384929050910e13db74bacc876add2f7cb750f1f6531e10fd341bac3ecf`. Public contracts are unchanged; see `docs/mobile-worker-shutdown.md` for behavior, compatibility, migration and acceptance.
+
 - Home activation (2026-11-04): helper and ingest/export/mobile workers now use `lrosenth/oldap-mediahelper:jena-0.2.17-rc1-04c2fd90eb1d-amd64` pinned at `sha256:8078872fa5a366fabed13734994bfee04e4223a85e9ea008de8ef1df7e8e6957`. HE-AAC and strict asset authorization are active; packaged codec and live auth/delivery checks pass. SIPI-2 0.1.0 and Caddy unchanged. Source/rollback evidence: sibling oldap-setup/docs/jena-apps-home.md. Earlier pending-deployment statements below are historical.
 
 - Jena migration checkout: this sibling retains the reviewed HE-AAC and asset-authorization work independently of the GraphDB checkout. `ansible/update-jena-home.yml` performs a home-only, digest-pinned helper/three-worker replacement from installed configuration with rollback. It preserves SIPI, Caddy, volumes and access keys; legacy mobile SIGINT requires an empty registry. Release provenance is in sibling oldap-setup/docs/jena-apps-home.md.

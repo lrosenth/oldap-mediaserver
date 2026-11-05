@@ -66,6 +66,9 @@ services:
       - "{{ extra_host }}"
 {% endfor %}
     restart: unless-stopped
+# BEGIN OLDAP MOBILE DRAIN
+    stop_grace_period: 15m
+# END OLDAP MOBILE DRAIN
     command: ["python", "-m", "mobile_upload_worker"]
 
   # Explicit operator opt-in until the ZIP-import pilot gate is approved.

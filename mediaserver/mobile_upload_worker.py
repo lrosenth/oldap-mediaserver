@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import errno
 import logging
+import signal
 import threading
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic
 from typing import Callable, Iterator, Protocol
 from uuid import uuid4
 
@@ -167,6 +168,7 @@ class MobileUploadWorker:
     ) -> None:
         if lifecycle_poll_seconds <= 0:
             raise ValueError("Lifecycle polling interval must be positive.")
+        self._stop = threading.Event()
         self.registry = registry
         self.assets = assets
         self.oldap = oldap
@@ -206,6 +208,8 @@ class MobileUploadWorker:
     def run_once(self) -> bool:
         """Advance one processing task, otherwise one cleanup task."""
 
+        if self._stop.is_set():
+            return False
         if self._monotonic() >= self._next_orphan_reconciliation:
             self._next_orphan_reconciliation = (
                 self._monotonic() + ORPHAN_RECONCILIATION_SECONDS
@@ -216,6 +220,8 @@ class MobileUploadWorker:
             self._prefer_local_work = True
             return True
 
+        if self._stop.is_set():
+            return False
         if self._prefer_cleanup:
             cleanup = self.registry.claim_next_cleanup(self.worker_id)
             if cleanup is not None:
@@ -224,6 +230,8 @@ class MobileUploadWorker:
                 self._prefer_cleanup = False
                 return True
 
+        if self._stop.is_set():
+            return False
         claim = self.registry.claim_next_processing(self.worker_id)
         if claim is not None:
             self._process(claim)
@@ -231,6 +239,8 @@ class MobileUploadWorker:
             self._prefer_cleanup = True
             return True
 
+        if self._stop.is_set():
+            return False
         cleanup = self.registry.claim_next_cleanup(self.worker_id)
         if cleanup is None:
             self._prefer_local_work = False
@@ -244,7 +254,11 @@ class MobileUploadWorker:
         """Poll the remote outbox at a bounded cadence without delaying jobs."""
 
         now = self._monotonic()
-        if self.lifecycle is None or now < self._next_lifecycle_poll:
+        if (
+            self._stop.is_set()
+            or self.lifecycle is None
+            or now < self._next_lifecycle_poll
+        ):
             return False
         self._next_lifecycle_poll = now + self._lifecycle_poll_seconds
         worked = self._process_lifecycle_once()
@@ -284,17 +298,35 @@ class MobileUploadWorker:
         self.lifecycle.complete(event)
         return True
 
-    def run_forever(self, *, idle_seconds: float = 2.0) -> None:
-        """Check local work frequently while throttling the remote outbox."""
+    def run_forever(
+        self, *, idle_seconds: float = 2.0, stop: threading.Event | None = None
+    ) -> None:
+        """Poll until stopped, finishing an already claimed unit of work.
 
-        while True:
-            try:
-                worked = self.run_once()
-            except Exception:
-                self.logger.exception("mobile_upload_worker_iteration_failed")
-                worked = False
-            if not worked:
-                sleep(idle_seconds)
+        Args:
+            idle_seconds: Maximum idle wait between local work checks.
+            stop: Optional shutdown event set by the entry point's signal handler.
+
+        A signal does not interrupt file publication, commit acknowledgement,
+        cleanup or lease heartbeats. Once a claim is in flight it must be handled,
+        even if shutdown arrives while the claim call is returning. The existing
+        durable phases and retry policy remain responsible for ordinary failures.
+        """
+        if idle_seconds <= 0:
+            raise ValueError("Idle polling interval must be positive.")
+        if stop is not None:
+            self._stop = stop
+        try:
+            while not self._stop.is_set():
+                try:
+                    worked = self.run_once()
+                except Exception:
+                    self.logger.exception("mobile_upload_worker_iteration_failed")
+                    worked = False
+                if not worked:
+                    self._stop.wait(idle_seconds)
+        finally:
+            self.logger.info("mobile_upload_worker_stopped")
 
     def _process(self, claim: MobileProcessingClaim) -> None:
         spec = self._asset_spec(claim)
@@ -442,7 +474,18 @@ def main() -> None:
     """Run the standalone mobile-media worker entry point."""
 
     logging.basicConfig(level=logging.INFO)
-    MobileUploadWorker.from_environment().run_forever()
+    stop = threading.Event()
+
+    def request_stop(signum: int, frame: object) -> None:
+        # Signal handlers only request shutdown. Raising here could interrupt an
+        # acknowledged commit or filesystem operation before its durable record.
+        del signum, frame
+        stop.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    worker = MobileUploadWorker.from_environment()
+    worker.run_forever(stop=stop)
 
 
 if __name__ == "__main__":

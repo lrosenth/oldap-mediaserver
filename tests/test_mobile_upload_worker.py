@@ -989,3 +989,160 @@ def test_restart_after_lost_lifecycle_ack_replays_without_second_file_deletion(
             ).fetchone()[0]
             == "released"
         )
+
+
+def test_shutdown_finishes_claimed_commit_without_claiming_next_upload(registry):
+    """Finish publication/acknowledgement, keep heartbeat, leave queued work alone."""
+    import threading
+
+    first = queued(registry)
+    second = queued(
+        registry, asset=str(uuid4()), init_key=str(uuid4()), commit_key=str(uuid4())
+    )
+    stop = threading.Event()
+    assets = Assets()
+    oldap = Oldap()
+    original_prepare = assets.prepare
+
+    def prepare(spec):
+        stop.set()
+        original_prepare(spec)
+
+    assets.prepare = prepare
+    runner = worker(registry, assets=assets, oldap=oldap)
+    runner.run_forever(stop=stop)
+    assert oldap.calls == 1
+    assert assets.calls == ["verify", "prepare", "publish"]
+    assert registry.claim_next_processing(str(uuid4())).upload_id == second.upload_id
+    assert not runner.run_once()
+    assert first.upload_id != second.upload_id
+
+
+def test_stop_while_claim_returns_still_completes_owned_work(registry, monkeypatch):
+    """Do not abandon a lease acquired concurrently with a stop signal."""
+    import threading
+
+    queued(registry)
+    stop = threading.Event()
+    original_claim = registry.claim_next_processing
+
+    def claim(worker_id):
+        result = original_claim(worker_id)
+        stop.set()
+        return result
+
+    monkeypatch.setattr(registry, "claim_next_processing", claim)
+    oldap = Oldap()
+    worker(registry, oldap=oldap).run_forever(stop=stop)
+    assert oldap.calls == 1
+
+
+def test_stop_during_empty_lifecycle_poll_does_not_claim_local_work(registry):
+    import threading
+
+    upload = queued(registry)
+    stop = threading.Event()
+    lifecycle = Lifecycle()
+
+    def claim(worker_id):
+        stop.set()
+        return None
+
+    lifecycle.claim = claim
+    oldap = Oldap()
+    worker(registry, oldap=oldap, lifecycle=lifecycle).run_forever(stop=stop)
+    assert oldap.calls == 0
+    assert registry.claim_next_processing(str(uuid4())).upload_id == upload.upload_id
+
+
+def test_shutdown_interrupts_idle_wait(registry):
+    import threading
+
+    stop = threading.Event()
+    idle = threading.Event()
+    runner = worker(registry)
+    original = runner.run_once
+
+    def once():
+        result = original()
+        idle.set()
+        return result
+
+    runner.run_once = once
+    thread = threading.Thread(
+        target=runner.run_forever, kwargs={"stop": stop, "idle_seconds": 60}
+    )
+    thread.start()
+    try:
+        assert idle.wait(2)
+        stop.set()
+        thread.join(2)
+        assert not thread.is_alive()
+    finally:
+        stop.set()
+        thread.join(2)
+
+
+def test_already_requested_shutdown_claims_nothing(registry):
+    import threading
+
+    upload = queued(registry)
+    stop = threading.Event()
+    stop.set()
+    oldap = Oldap()
+    worker(registry, oldap=oldap).run_forever(stop=stop)
+    assert oldap.calls == 0
+    assert registry.claim_next_processing(str(uuid4())).upload_id == upload.upload_id
+
+
+def test_shutdown_during_cleanup_records_completion(registry, monkeypatch):
+    import threading
+
+    upload = queued(registry)
+    runner = worker(registry)
+    assert runner.run_once()
+    stop = threading.Event()
+    original = registry.remove_claimed_upload_directory
+
+    def remove(claim):
+        stop.set()
+        original(claim)
+
+    monkeypatch.setattr(registry, "remove_claimed_upload_directory", remove)
+    runner.run_forever(stop=stop)
+    assert not (registry.uploads_root / upload.upload_id).exists()
+    assert registry.claim_next_cleanup(str(uuid4())) is None
+    assert registry.get_status(upload.upload_id, OWNER).state == "committed"
+
+
+def test_shutdown_during_lifecycle_claim_still_acknowledges_event(registry):
+    import threading
+
+    upload = queued(registry)
+    assert worker(registry).run_once()
+    stop = threading.Event()
+    lifecycle = Lifecycle()
+    event = MobileMediaLifecycleEvent(
+        event_id=str(uuid4()),
+        claim_id=str(uuid4()),
+        worker_id=WORKER,
+        kind="staging_deleted",
+        upload_id=upload.upload_id,
+        client_asset_id=ASSET,
+        owner_user_iri=OWNER.user_iri,
+        staging_area_id=AREA,
+        resource_iri="urn:uuid:66666666-6666-4666-8666-666666666666",
+        checksum=CHECKSUM,
+        occurred_at=NOW + timedelta(minutes=1),
+        lease_expires_at=NOW + timedelta(minutes=6),
+    )
+
+    def claim(worker_id):
+        stop.set()
+        return event
+
+    lifecycle.claim = claim
+    assets = Assets()
+    worker(registry, assets=assets, lifecycle=lifecycle).run_forever(stop=stop)
+    assert assets.calls == ["delete-committed"]
+    assert lifecycle.completed == [event.event_id]

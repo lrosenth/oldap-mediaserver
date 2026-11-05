@@ -36,6 +36,7 @@ def test_local_mobile_worker_and_storage_are_privately_bounded() -> None:
     assert worker["memswap_limit"] == "6g"
     assert worker["pids_limit"] == 128
     assert worker["command"] == ["python", "-m", "mobile_upload_worker"]
+    assert worker["stop_grace_period"] == "15m"
     assert any(volume.endswith(":/data/images") for volume in worker["volumes"])
     assert any(volume.endswith(":/data/mobile-uploads") for volume in worker["volumes"])
 

@@ -1,3 +1,9 @@
+### Update 2026-11-05 17:49
+- Decisions: Treat SIGTERM/SIGINT as a drain request: finish the owned unit, retain lease heartbeats and durable retry semantics, take no new claims. Keep API/media contracts and originals unchanged.
+- Implementation: Added shutdown event and interruptible idle wait, signal handlers installed before startup, claim-boundary guards and seven regression tests. Compose defaults to 15-minute stop grace; the home updater detects drain support, waits without SIGKILL for new workers and retains the guarded legacy path. Built/published isolated AMD64 candidate a7b5d97ba17b and deployed it on home; running source hash matches. 391 tests + four subtests pass (20 skipped), four deployment tests, three packaged signal cases, real idle SIGTERM stop/restart and 26 live API/media checks pass; Black/Poetry/diff checks pass.
+- Open: Production acceptance, off-host restore and broader write-heavy/long-running tests. No production deployment, stable tag update, push or merge of source branches.
+- Risks/Assumptions: Active signal proof uses gated work; SQLite tests cover real durable state with fake media/API effects. Live home was idle. Unbounded maintenance wait requires operator diagnosis for a stuck operation; other host/Docker policies can still force termination. Native build replaced the slower emulated build; evidence in docs/mobile-worker-shutdown-results.json.
+
 ### Update 2026-11-05 12:08
 - Decisions: Checkpoint the reviewed Jena migration changes on the migration branch; keep publication, merges and deployment separate.
 - Implementation: Rechecked 384 tests (20 skipped), changed-file Black and Poetry metadata. All 42 packaged source files match the accepted home image snapshot; reviewed capability authorization and shared single-file/ZIP HE-AAC handling. Checked candidate changes for accidental credentials and whitespace.

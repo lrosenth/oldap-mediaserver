@@ -37,6 +37,18 @@
         regexp: '^(\s*image:\s*)lrosenth/oldap-mediahelper:[^\s]+\s*$'
         replace: '\g<1>{{ jena_mediahelper_image }}'
       no_log: true
+    - name: Allow routine Compose stops to drain the mobile worker
+      ansible.builtin.blockinfile:
+        path: '{{ compose_dir }}/docker-compose.jena-candidate.yml'
+        marker: '# {mark} OLDAP MOBILE DRAIN'
+        insertafter: '^  mobile-media-worker:'
+        block: '    stop_grace_period: 15m'
+      no_log: true
+    - name: Detect graceful shutdown support in the currently installed worker
+      ansible.builtin.command:
+        argv: [docker, exec, oldap-mobile-media-worker, python, -c, 'import inspect; from mobile_upload_worker import MobileUploadWorker; print("stop" in inspect.signature(MobileUploadWorker.run_forever).parameters)']
+      register: mobile_drain_support
+      changed_when: false
     - name: Validate staged Compose configuration
       ansible.builtin.command:
         cmd: docker compose --profile '*' -f docker-compose.jena-candidate.yml config --quiet
@@ -74,9 +86,10 @@
                 assert 'mobile_uploads' in tables;
                 assert all(c.execute('SELECT COUNT(*) FROM "'+t.replace('"','""')+'"').fetchone()[0] == 0 for t in tables), 'Mobile registry is in use; cannot use legacy interrupt'
           changed_when: false
-        - name: Stop unused legacy mobile worker without forced kill
+          when: mobile_drain_support.stdout != 'True'
+        - name: Drain mobile worker, retaining guarded legacy compatibility
           ansible.builtin.command:
-            argv: [docker, stop, --signal, SIGINT, --timeout, '90', oldap-mobile-media-worker]
+            argv: [docker, stop, --signal, '{{ "SIGTERM" if mobile_drain_support.stdout == "True" else "SIGINT" }}', --timeout, '{{ "-1" if mobile_drain_support.stdout == "True" else "90" }}', oldap-mobile-media-worker]
           changed_when: true
         - name: Reject forced worker termination
           ansible.builtin.command:

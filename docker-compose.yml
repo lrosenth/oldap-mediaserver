@@ -88,6 +88,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # Routine Compose stops allow long image/document conversion to finish.
+    # Coordinated maintenance uses an unbounded graceful wait, never SIGKILL.
+# BEGIN OLDAP MOBILE DRAIN
+    stop_grace_period: 15m
+# END OLDAP MOBILE DRAIN
     command: ["python", "-m", "mobile_upload_worker"]
 
   # Explicit operator opt-in until the ZIP-import pilot gate is approved.

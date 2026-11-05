@@ -1,0 +1,106 @@
+{
+  "date": "2026-11-05",
+  "status": "passed",
+  "image": "lrosenth/oldap-mediahelper:jena-0.2.17-rc1-a7b5d97ba17b-amd64@sha256:a1f9b384929050910e13db74bacc876add2f7cb750f1f6531e10fd341bac3ecf",
+  "source_fingerprint": "a7b5d97ba17b283898cdc4324506f7e4bf319b0f816101d2ce7b161d7ae57320",
+  "worker_sha256": "b1e3bcaf8465c7b7b7f223b93bcc5f49c08e8290debc71924c9b411a09961a64",
+  "native_builder": "media.home.org, linux/amd64",
+  "raw_artifacts": "/Users/rosenth/Library/Application Support/OLDAP-Jena/releases/20261105-mobile-drain/verification",
+  "tests": {
+    "mediaserver_passed": 391,
+    "mediaserver_skipped": 20,
+    "mediaserver_subtests": 4,
+    "setup_passed": 92,
+    "setup_skipped": 4,
+    "deployment_checks": 4,
+    "maintenance_failure_injection_cases": 3
+  },
+  "container_signals": {
+    "status": "passed",
+    "image": "lrosenth/oldap-mediahelper:jena-0.2.17-rc1-a7b5d97ba17b-amd64",
+    "cases": [
+      {
+        "mode": "idle",
+        "signal": "SIGTERM",
+        "exit_code": 0,
+        "calls": 1,
+        "completed": false
+      },
+      {
+        "mode": "active",
+        "signal": "SIGTERM",
+        "exit_code": 0,
+        "calls": 1,
+        "completed": true
+      },
+      {
+        "mode": "active",
+        "signal": "SIGINT",
+        "exit_code": 0,
+        "calls": 1,
+        "completed": true
+      }
+    ]
+  },
+  "home_stop": {
+    "status": "passed",
+    "stop_seconds": 0.159,
+    "exit_code": 0,
+    "image": "lrosenth/oldap-mediahelper:jena-0.2.17-rc1-a7b5d97ba17b-amd64@sha256:a1f9b384929050910e13db74bacc876add2f7cb750f1f6531e10fd341bac3ecf",
+    "stop_timeout_seconds": 900
+  },
+  "home_checks": {
+    "checks": [
+      "API selects Jena",
+      "GraphDB is stopped",
+      "Private Jena backend has no published ports",
+      "oldap-api running",
+      "compose-oldap-jena-1 running",
+      "compose-oldap-jena-identity-1 running",
+      "redis running",
+      "caddy running",
+      "API /status HTTP 200",
+      "Existing administrator can log in",
+      "Media upload accepts a fresh API token before form validation",
+      "Media upload rejects missing or invalid access token",
+      "Media upload rejects missing or invalid access token",
+      "API /admin/auth/unknown HTTP 200",
+      "Proxy blocks private identity callback",
+      "Proxy blocks private identity callback",
+      "Export worker route reaches service authentication without proxy shadowing",
+      "API /data/search/fasnacht/class/fasnacht:Story HTTP 200",
+      "API /data/search/fasnacht HTTP 200",
+      "API /data/search/fasnacht HTTP 200",
+      "Nonempty fulltext AND search is independent of word order",
+      "API /data/mediaobject/id/bmg_archive_0024_001_stamm_1912_fotos_fasnacht_004 HTTP 200",
+      "Signed IIIF metadata delivered by home media service",
+      "Signed image delivered as JPEG",
+      "fasnacht.home.org page available",
+      "app.home.org page available"
+    ],
+    "images": {
+      "oldap-api": "lrosenth/oldap-api@sha256:f9db6fd371d3aecac5bc9d0958e62ddb64df95cf558937f7dacbae40016f3def",
+      "compose-oldap-jena-1": "eclipse-temurin@sha256:ecdc0adb37bde1a281c4d245a3cd535004b1fc8322d560f5b09463b248c81df0",
+      "compose-oldap-jena-identity-1": "lrosenth/oldap-api@sha256:f9db6fd371d3aecac5bc9d0958e62ddb64df95cf558937f7dacbae40016f3def",
+      "graphdb": "ontotext/graphdb:11.3.0",
+      "redis": "redis:7-alpine",
+      "caddy": "caddy:2.8"
+    },
+    "stories": 30,
+    "stories_sha256": "00b8ac9492c63d24e169831cd42876d102bf754e0544176770d6e8cf2b653f97",
+    "fulltext_matches": 10,
+    "image_bytes": 9898,
+    "status": "passed"
+  },
+  "preserved": [
+    "SIPI and media Caddy container IDs/start times unchanged",
+    "Production and existing image tags not selected for mutation",
+    "Public API and original media content contracts unchanged"
+  ],
+  "limitations": [
+    "Native active-work signal probe uses a gated fake work item; real SQLite phase/receipt semantics are tested separately.",
+    "Live home worker was idle; no real user upload was interrupted for acceptance.",
+    "Coordinated maintenance can wait indefinitely for a stuck operation; operator diagnosis is required rather than automatic SIGKILL.",
+    "Ordinary Compose stops use 900 seconds; other Docker/host stop policies can still interrupt work."
+  ]
+}
