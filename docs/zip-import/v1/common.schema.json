@@ -77,7 +77,7 @@
         "allowedH264Profiles": { "const": ["Baseline", "Main", "High"] },
         "maxH264Level": { "type": "number", "const": 5.2 },
         "allowedVideoPixelFormats": { "const": ["yuv420p"] },
-        "allowedAacProfiles": { "const": ["LC"] },
+        "allowedAacProfiles": { "enum": [["LC"], ["LC", "HE-AAC"]] },
         "maxVideoWidth": { "type": "integer", "const": 3840 },
         "maxVideoHeight": { "type": "integer", "const": 2160 },
         "maxVideoFramesPerSecond": { "type": "number", "const": 60 },

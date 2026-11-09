@@ -86,7 +86,8 @@ def test_zip_limits_match_frozen_manifest_contract() -> None:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     properties = schema["$defs"]["LimitsSnapshot"]["properties"]
     contract_constants = {
-        name: definition["const"] for name, definition in properties.items()
+        name: definition["const"] if "const" in definition else definition["enum"][-1]
+        for name, definition in properties.items()
     }
 
     assert ZipImportLimits().to_contract_snapshot() == contract_constants

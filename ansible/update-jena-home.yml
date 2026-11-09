@@ -1,0 +1,130 @@
+---
+# Bounded image-only home update; installed volumes, access keys and config stay authoritative.
+- name: Update reviewed mediahelper and worker candidate on home
+  hosts: test_mediaserver
+  become: true
+  vars:
+    ansible_become_exe: /usr/bin/sudo.ws
+    compose_dir: /opt/oldap-mediaserver/compose
+    media_services: [mediaserver, ingest-worker, export-worker, mobile-media-worker]
+  tasks:
+    - name: Require home and a digest-pinned isolated media candidate
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'media.home.org'
+          - jena_mediahelper_image is match('^lrosenth/oldap-mediahelper:jena-[0-9]+[.][0-9]+[.][0-9]+-rc[0-9]+-[a-f0-9]{12}-amd64@sha256:[a-f0-9]{64}$')
+    - name: Pull candidate before any service change
+      ansible.builtin.command:
+        argv: [docker, pull, '{{ jena_mediahelper_image }}']
+      changed_when: true
+    - name: Preserve installed Compose configuration
+      ansible.builtin.copy:
+        src: '{{ compose_dir }}/docker-compose.yml'
+        dest: '{{ compose_dir }}/docker-compose.yml.before-jena-{{ ansible_date_time.iso8601_basic_short }}'
+        remote_src: true
+        mode: '0600'
+      no_log: true
+    - name: Stage an image-only Compose candidate
+      ansible.builtin.copy:
+        src: '{{ compose_dir }}/docker-compose.yml'
+        dest: '{{ compose_dir }}/docker-compose.jena-candidate.yml'
+        remote_src: true
+        mode: '0600'
+      no_log: true
+    - name: Select candidate for helper and its existing workers
+      ansible.builtin.replace:
+        path: '{{ compose_dir }}/docker-compose.jena-candidate.yml'
+        regexp: '^(\s*image:\s*)lrosenth/oldap-mediahelper:[^\s]+\s*$'
+        replace: '\g<1>{{ jena_mediahelper_image }}'
+      no_log: true
+    - name: Allow routine Compose stops to drain the mobile worker
+      ansible.builtin.blockinfile:
+        path: '{{ compose_dir }}/docker-compose.jena-candidate.yml'
+        marker: '# {mark} OLDAP MOBILE DRAIN'
+        insertafter: '^  mobile-media-worker:'
+        block: '    stop_grace_period: 15m'
+      no_log: true
+    - name: Detect graceful shutdown support in the currently installed worker
+      ansible.builtin.command:
+        argv: [docker, exec, oldap-mobile-media-worker, python, -c, 'import inspect; from mobile_upload_worker import MobileUploadWorker; print("stop" in inspect.signature(MobileUploadWorker.run_forever).parameters)']
+      register: mobile_drain_support
+      changed_when: false
+    - name: Validate staged Compose configuration
+      ansible.builtin.command:
+        cmd: docker compose --profile '*' -f docker-compose.jena-candidate.yml config --quiet
+        chdir: '{{ compose_dir }}'
+      changed_when: false
+      no_log: true
+    - name: Verify all four candidate images without exposing configuration
+      ansible.builtin.shell:
+        cmd: >-
+          docker compose --profile '*' -f docker-compose.jena-candidate.yml config --format json |
+          python3 -c 'import json,sys; c=json.load(sys.stdin); expected=sys.argv[1];
+          assert all(c["services"][s]["image"]==expected for s in ["mediaserver","ingest-worker","export-worker","mobile-media-worker"])' {{ jena_mediahelper_image | quote }}
+        chdir: '{{ compose_dir }}'
+        executable: /bin/bash
+      changed_when: false
+      no_log: true
+    - name: Replace workers with rollback on activation failure
+      block:
+        - name: Stop ingress helper and ordinary workers
+          ansible.builtin.command:
+            argv: [docker, stop, --timeout, '90', oldap-mediahelper, oldap-ingest-worker, oldap-export-worker]
+          changed_when: true
+        - name: Require unused mobile registry before legacy SIGINT shutdown
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - oldap-mobile-media-worker
+              - python
+              - -c
+              - >-
+                import sqlite3;
+                c=sqlite3.connect('file:/data/mobile-uploads/registry.sqlite3?mode=ro',uri=True);
+                tables=[r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'mobile_%'")];
+                assert 'mobile_uploads' in tables;
+                assert all(c.execute('SELECT COUNT(*) FROM "'+t.replace('"','""')+'"').fetchone()[0] == 0 for t in tables), 'Mobile registry is in use; cannot use legacy interrupt'
+          changed_when: false
+          when: mobile_drain_support.stdout != 'True'
+        - name: Drain mobile worker, retaining guarded legacy compatibility
+          ansible.builtin.command:
+            argv: [docker, stop, --signal, '{{ "SIGTERM" if mobile_drain_support.stdout == "True" else "SIGINT" }}', --timeout, '{{ "-1" if mobile_drain_support.stdout == "True" else "90" }}', oldap-mobile-media-worker]
+          changed_when: true
+        - name: Reject forced worker termination
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - >-
+                import json,subprocess;
+                cs=json.loads(subprocess.check_output(['docker','inspect','oldap-mediahelper','oldap-ingest-worker','oldap-export-worker','oldap-mobile-media-worker']));
+                assert all(not c['State']['Running'] and c['State']['ExitCode']!=137 for c in cs)
+          changed_when: false
+        - name: Activate validated Compose candidate
+          ansible.builtin.copy:
+            src: '{{ compose_dir }}/docker-compose.jena-candidate.yml'
+            dest: '{{ compose_dir }}/docker-compose.yml'
+            remote_src: true
+            mode: '0600'
+          no_log: true
+        - name: Recreate helper and workers only
+          ansible.builtin.command:
+            cmd: docker compose up -d --no-deps --wait mediaserver ingest-worker export-worker mobile-media-worker
+            chdir: '{{ compose_dir }}'
+          changed_when: true
+      rescue:
+        - name: Restore old image selection
+          ansible.builtin.copy:
+            src: '{{ compose_dir }}/docker-compose.yml.before-jena-{{ ansible_date_time.iso8601_basic_short }}'
+            dest: '{{ compose_dir }}/docker-compose.yml'
+            remote_src: true
+            mode: '0600'
+          no_log: true
+        - name: Recover existing media services
+          ansible.builtin.command:
+            cmd: docker compose up -d --no-deps --wait mediaserver ingest-worker export-worker mobile-media-worker
+            chdir: '{{ compose_dir }}'
+        - name: Report unsuccessful candidate activation
+          ansible.builtin.fail:
+            msg: Media candidate activation failed; restored previous image selection.

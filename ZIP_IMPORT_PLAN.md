@@ -120,7 +120,7 @@ allowlist:
   bits and 8–192 kHz; MP3 at 8–48 kHz; mono or stereo only. The same
   two-channel ceiling applies to AAC audio inside accepted video.
 - Video: MP4 with one 8-bit 4:2:0 H.264/AVC video stream using Baseline, Main,
-  or High profile up to level 5.2, plus zero or one mono/stereo AAC-LC stream.
+  or High profile up to level 5.2, plus zero or one mono/stereo AAC-LC or HE-AAC stream.
 - Documents: PDF/A-1 or PDF/A-2 under the policy below, and content detected
   specifically as `text/plain` with strict UTF-8 decoding; ASCII is valid UTF-8.
   Detected HTML, SVG, XML, JSON, CSV, and executable script formats are not
@@ -784,7 +784,7 @@ Complete lifecycle safety, operational visibility, and the end-user workflow.
 | ID | Decision | Recommendation | Status | Owner/Target |
 | --- | --- | --- | --- | --- |
 | D-001 | Security and resource limits | Use the confirmed table above, including 500 MB compressed and 3 GB extracted; never increase without test evidence. | Decided | Phase 0 |
-| D-002 | Container and codec matrix | Probe content explicitly. Accept JPEG/PNG/single-page TIFF/single-image HEIF or HEIC; WAV integer PCM 8/16/24/32-bit at 8–192 kHz, FLAC 8/16/24-bit at 8–192 kHz, and MP3 at 8–48 kHz, all mono/stereo; MP4 H.264 8-bit 4:2:0 Baseline/Main/High through level 5.2 with optional mono/stereo AAC-LC; strict UTF-8 content detected specifically as `text/plain`; PDF follows D-017. | Decided | Phase 0 |
+| D-002 | Container and codec matrix | Probe content explicitly. Accept JPEG/PNG/single-page TIFF/single-image HEIF or HEIC; WAV integer PCM 8/16/24/32-bit at 8–192 kHz, FLAC 8/16/24-bit at 8–192 kHz, and MP3 at 8–48 kHz, all mono/stereo; MP4 H.264 8-bit 4:2:0 Baseline/Main/High through level 5.2 with optional mono/stereo AAC-LC or HE-AAC; strict UTF-8 content detected specifically as `text/plain`; PDF follows D-017. | Decided | Phase 0 |
 | D-003 | Handling unsupported files | Reject the complete SIP; report every entry; omit only known packaging artifacts. Reject empty and artifacts-only archives with `NO_IMPORTABLE_CONTENT`. | Decided | Phase 0 |
 | D-004 | Existing folder/name collisions | Never merge implicitly. A canonical-equivalent existing child folder or file/directory conflict blocks the import. An existing medium with the same canonical original name is a report warning, not an overwrite, because the new asset has an independent ID. | Decided | Phase 0 |
 | D-005 | ZIP root mapping | The selected existing `shared:StagingFolder` is the import root. ZIP-root files attach directly to it and ZIP-root directories become its children; create no ZIP wrapper. The selected root does not count toward the five-level ZIP depth limit. | Decided | Phase 0 |

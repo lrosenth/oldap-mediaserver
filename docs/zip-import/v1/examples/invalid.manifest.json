@@ -56,7 +56,7 @@
     "allowedH264Profiles": ["Baseline", "Main", "High"],
     "maxH264Level": 5.2,
     "allowedVideoPixelFormats": ["yuv420p"],
-    "allowedAacProfiles": ["LC"],
+    "allowedAacProfiles": ["LC", "HE-AAC"],
     "maxVideoWidth": 3840,
     "maxVideoHeight": 2160,
     "maxVideoFramesPerSecond": 60,

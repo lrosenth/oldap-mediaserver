@@ -1,5 +1,15 @@
 # oldap-mediaserver Codex Context
 
+- Jena mainline integration (2026-11-09): the accepted migration is integrated into `main` with its complete ancestry. Core runtime/package versions remain the tested RC versions; this Git integration does not publish final 1.0.0 packages or change deployed images. Prior primary ref is retained by `pre-jena-merge-20261109`; this tag records Git history, not the deployed GraphDB baseline. Migration branches and old GraphDB checkouts are retained. Coordinated evidence: ../oldap-setup/docs/jena-mainline-merge-20261109.md. Older pending-merge notes below are historical.
+
+- Graceful mobile shutdown (2026-11-05): SIGTERM/SIGINT finish the owned processing/cleanup/lifecycle unit with leases intact, then stop before another claim; idle waits are interruptible. Ordinary Compose grace is 15 minutes; coordinated home maintenance waits without forced kill and keeps the API available through mobile completion. Home runs candidate `jena-0.2.17-rc1-a7b5d97ba17b-amd64` at `sha256:a1f9b384929050910e13db74bacc876add2f7cb750f1f6531e10fd341bac3ecf`. Public contracts are unchanged; see `docs/mobile-worker-shutdown.md` for behavior, compatibility, migration and acceptance.
+
+- Home activation (2026-11-04): helper and ingest/export/mobile workers now use `lrosenth/oldap-mediahelper:jena-0.2.17-rc1-04c2fd90eb1d-amd64` pinned at `sha256:8078872fa5a366fabed13734994bfee04e4223a85e9ea008de8ef1df7e8e6957`. HE-AAC and strict asset authorization are active; packaged codec and live auth/delivery checks pass. SIPI-2 0.1.0 and Caddy unchanged. Source/rollback evidence: sibling oldap-setup/docs/jena-apps-home.md. Earlier pending-deployment statements below are historical.
+
+- Jena migration checkout: this sibling retains the reviewed HE-AAC and asset-authorization work independently of the GraphDB checkout. `ansible/update-jena-home.yml` performs a home-only, digest-pinned helper/three-worker replacement from installed configuration with rollback. It preserves SIPI, Caddy, volumes and access keys; legacy mobile SIGINT requires an empty registry. Release provenance is in sibling oldap-setup/docs/jena-apps-home.md.
+
+- Asset authorization correction (2026-10-31): Invalid supplied capabilities fail closed; matching IDs and integer permissions 1..6 required for signed/public resolution. Tokenless public delivery preserved. 374 mediahelper tests plus four subtests pass (20 skipped); owned real HTTP verifies nine asset, 23 API and ten image checks. Source-overlay container verified; rebuilt release/deployment still pending. See docs/asset-authorization.md.
+
 ## Optional HTJ2K upload (2026-10-12)
 
 Ordinary `/upload` accepts `targetFormat=htj2k` and registers `master.jph`;
@@ -545,3 +555,11 @@ admin purge endpoint exists. The current local image includes this policy.
 OLDAP deployments enable SIPI_SIZE_UPSCALING by default to support Stories requests
 using the IIIF ^ size prefix. Local Compose can override SIPI_SIZE_UPSCALING; VM
 deployments use sipi_size_upscaling. Authorization and output limits remain active.
+
+## HE-AAC upload policy (2026-11-03)
+
+ZIP MP4 validation accepts mono/stereo AAC-LC and HE-AAC. The shared video
+processor preserves HE-AAC audio packets in web derivatives for both individual
+uploads and ZIP imports; originals remain unchanged. Video encoding is unchanged.
+Historical LC-only manifest snapshots remain schema-valid. See
+`docs/zip-import/v1/README.md`. Requires the next mediahelper deployment.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 import sys
 import types
 from pathlib import Path
@@ -64,8 +65,10 @@ def test_audio_derivative_uses_typed_probe_before_conversion(tmp_path: Path) -> 
     assert result.thumbnails == ()
 
 
+@pytest.mark.parametrize("profile", [None, "LC", "HE-AAC", "HE-AACv2"])
 def test_video_derivative_reports_primary_and_bounded_thumbnails(
     tmp_path: Path,
+    profile,
 ) -> None:
     """Video orchestration returns every generated delivery artifact."""
 
@@ -75,6 +78,20 @@ def test_video_derivative_reports_primary_and_bounded_thumbnails(
     derived.mkdir()
 
     def command_runner(command, **kwargs):
+        if command[0] == "ffprobe":
+            streams = (
+                []
+                if profile is None
+                else [{"codec_name": "aac", "profile": profile, "channels": 2}]
+            )
+            return types.SimpleNamespace(
+                returncode=0, stdout=json.dumps({"streams": streams})
+            )
+        if "-c:a" in command:
+            assert command[command.index("-c:a") + 1] == (
+                "copy" if profile == "HE-AAC" else "aac"
+            )
+            assert "0:a:0?" in command
         Path(command[-1]).write_bytes(b"generated")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 

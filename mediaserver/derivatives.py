@@ -8,6 +8,7 @@ therefore share conversion behavior without importing Flask globals.
 from __future__ import annotations
 
 import logging
+import json
 import importlib
 import shutil
 import subprocess
@@ -219,12 +220,53 @@ class DerivativeProcessor:
                 raise RuntimeError("HTJ2K encoder did not produce a JPH image.")
 
     def _create_mp4(self, source: Path, destination: Path) -> None:
+        """Create web video, preserving supported HE-AAC audio without re-encoding.
+
+        Both multipart uploads and ZIP imports use this path. Explicit stream
+        mapping keeps the probed audio identical to the audio selected by ffmpeg.
+        Videos without audio remain valid; other audio retains AAC normalization.
+        """
+        probe = self.command_runner(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name,profile,channels",
+                "-of",
+                "json",
+                str(source),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if probe.returncode != 0:
+            raise RuntimeError("Could not probe video audio.")
+        streams = json.loads(probe.stdout).get("streams", [])
+        audio = streams[0] if streams else {}
+        preserve_audio = (
+            audio.get("codec_name") == "aac"
+            and audio.get("profile") == "HE-AAC"
+            and audio.get("channels") in (1, 2)
+        )
+        audio_options = (
+            ["-c:a", "copy"]
+            if preserve_audio
+            else ["-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+        )
         self._run(
             [
                 "ffmpeg",
                 "-y",
                 "-i",
                 str(source),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -233,12 +275,7 @@ class DerivativeProcessor:
                 "22",
                 "-pix_fmt",
                 "yuv420p",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-ac",
-                "2",
+                *audio_options,
                 "-movflags",
                 "+faststart",
                 str(destination),

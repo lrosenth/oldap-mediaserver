@@ -320,17 +320,24 @@ def create_app() -> Flask:
     )
 
     def decode_optional_query_token() -> Optional[dict]:
-        """Decode optional JWT from `?token=` (HS256). Returns claims dict or None."""
-        tok = request.args.get("token")
-        if not tok:
+        """Decode a supplied capability; only absent tokens allow public lookup.
+
+        Empty, duplicate, invalid and expired tokens fail closed, so a failed
+        authenticated request cannot silently become an anonymous request.
+        """
+        if "token" not in request.args:
             return None
+        tokens = request.args.getlist("token")
+        if len(tokens) != 1 or not tokens[0]:
+            abort(403, description="Invalid media capability")
+        tok = tokens[0]
         try:
             return token_codec.decode_media_token(tok)
         except OldapErrorConfiguration as error:
             app.logger.error("Media-token verification is not configured: %s", error)
             abort(503, description="Media authorization unavailable")
         except OldapError:
-            return None
+            abort(403, description="Invalid or expired media capability")
 
     @app.get("/health")
     @app.get("/status")
@@ -656,9 +663,10 @@ def create_app() -> Flask:
             derivative_name = _first_claim(claims.get("derivativeName"))
             original_name = _first_claim(claims.get("originalName"))
             protocol = _first_claim(claims.get("protocol"))
-            tok_id = claims.get("id") or claims.get("assetId")
-            if tok_id and tok_id != asset_id:
-                claims = None
+            # Accept either established ID field, but never conflicting IDs.
+            identifiers = [claims[key] for key in ("id", "assetId") if key in claims]
+            if not identifiers or any(value != asset_id for value in identifiers):
+                abort(403, description="Media capability does not match asset")
 
         if not claims:
             try:
@@ -694,6 +702,15 @@ def create_app() -> Flask:
                 mo.get("shared:originalName") or mo.get("originalName")
             )
             protocol = _first(mo.get("shared:protocol") or mo.get("protocol"))
+
+        # Match the existing SIPI minimum (DATA_RESTRICTED=1). A signed
+        # capability is not sufficient without a valid OLDAP permission value.
+        # Apply the same check to anonymous API responses; never coerce booleans,
+        # floats or strings into a grant. Future restricted representations need
+        # a separate policy decision, not an implicit change to this threshold.
+        permission = (claims if claims is not None else mo).get("permval")
+        if type(permission) is not int or not 1 <= permission <= 6:
+            abort(403, description="Insufficient media permission")
 
         # IIIF media may expose the uploaded original through /asset/.../original
         # for download, while derived IIIF delivery stays delegated to Cantaloupe.

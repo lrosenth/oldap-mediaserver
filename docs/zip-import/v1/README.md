@@ -80,3 +80,16 @@ manifest from being completed.
 The validation manifest is immutable. Import-time resource and asset mappings
 belong in a separate versioned import receipt to be specified in Phase 5; they do
 not mutate validation evidence after user confirmation.
+
+### HE-AAC policy extension (2026-11-03)
+
+New jobs allow AAC-LC and HE-AAC (mono/stereo) in otherwise accepted MP4
+videos. Standalone AAC and HE-AACv2 are not added to the ZIP allowlist.
+The limits snapshot records `["LC", "HE-AAC"]`; the schema also accepts the
+historical `["LC"]` snapshot so retained manifests remain readable.
+The shared derivative processor used by individual uploads and ZIP imports
+copies HE-AAC audio packets into `web.mp4`, avoiding another lossy audio encode.
+Video encoding and thumbnails remain unchanged. Other audio retains the existing
+AAC normalization. No silence detection or track removal is performed.
+Original files are always preserved byte-for-byte. This requires a future
+mediahelper rebuild/deployment; it does not change existing stored derivatives.

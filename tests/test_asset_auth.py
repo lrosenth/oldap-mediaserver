@@ -23,7 +23,9 @@ def media_app(monkeypatch, tmp_path):
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,https://public.example")
     monkeypatch.delenv("MEDIAHELPER_VERSION", raising=False)
     monkeypatch.delenv("MEDIASERVER_VERSION", raising=False)
-    monkeypatch.setitem(sys.modules, "pyvips", types.SimpleNamespace(Image=types.SimpleNamespace()))
+    monkeypatch.setitem(
+        sys.modules, "pyvips", types.SimpleNamespace(Image=types.SimpleNamespace())
+    )
 
     media_path = str(Path.cwd() / "mediaserver")
     if media_path not in sys.path:
@@ -37,6 +39,7 @@ def media_app(monkeypatch, tmp_path):
 def _asset_token(asset_id: str, **claims) -> str:
     payload = {
         "assetId": asset_id,
+        "permval": 2,
         "path": "fasnacht/image/archive",
         "originalName": "source.tif",
         "derivativeName": "master.tif",
@@ -109,15 +112,18 @@ def test_mobile_routes_are_additive_and_reject_media_capabilities(media_app):
     assert rejected.json["code"] == "authentication_invalid"
 
 
-def test_iiif_original_download_resolves_as_attachment(media_app):
+@pytest.mark.parametrize("permission", [1, 2, 6])
+def test_iiif_original_download_resolves_as_attachment(media_app, permission):
     """IIIF originals are downloadable through /asset while preserving auth headers."""
     module, client, media_root = media_app
     asset_id = "asset-iiif"
-    original = media_root / "fasnacht/image/archive" / asset_id / "original" / "source.tif"
+    original = (
+        media_root / "fasnacht/image/archive" / asset_id / "original" / "source.tif"
+    )
     original.parent.mkdir(parents=True)
     original.write_bytes(b"original")
 
-    token = _asset_token(asset_id)
+    token = _asset_token(asset_id, permval=permission)
     response = client.get(
         f"/auth/asset/{asset_id}/original?token={token}&download=1",
         headers={"Origin": "http://localhost:5173"},
@@ -125,9 +131,14 @@ def test_iiif_original_download_resolves_as_attachment(media_app):
 
     assert response.status_code == 204
     assert response.headers["X-OLDAP-Internal-Path"] == str(original.resolve())
-    assert response.headers["X-OLDAP-Content-Disposition"] == 'attachment; filename="source.tif"'
+    assert (
+        response.headers["X-OLDAP-Content-Disposition"]
+        == 'attachment; filename="source.tif"'
+    )
     assert response.headers["X-OLDAP-Cors-Allow-Origin"] == "http://localhost:5173"
-    assert Path(response.headers["X-OLDAP-Internal-Path"]).is_relative_to(module.IMAGE_ROOT.resolve())
+    assert Path(response.headers["X-OLDAP-Internal-Path"]).is_relative_to(
+        module.IMAGE_ROOT.resolve()
+    )
 
 
 def test_iiif_derived_is_not_served_through_asset_endpoint(media_app):
@@ -145,7 +156,9 @@ def test_original_without_download_stays_inline(media_app):
     """Original files remain inline unless the caller explicitly asks for download=1."""
     _, client, media_root = media_app
     asset_id = "asset-http"
-    original = media_root / "fasnacht/image/archive" / asset_id / "original" / "source.tif"
+    original = (
+        media_root / "fasnacht/image/archive" / asset_id / "original" / "source.tif"
+    )
     original.parent.mkdir(parents=True)
     original.write_bytes(b"original")
 
@@ -153,7 +166,10 @@ def test_original_without_download_stays_inline(media_app):
     response = client.get(f"/auth/asset/{asset_id}/original?token={token}")
 
     assert response.status_code == 204
-    assert response.headers["X-OLDAP-Content-Disposition"] == 'inline; filename="source.tif"'
+    assert (
+        response.headers["X-OLDAP-Content-Disposition"]
+        == 'inline; filename="source.tif"'
+    )
 
 
 def test_auth_asset_preflight_uses_configured_cors_origins(media_app):
@@ -179,3 +195,141 @@ def test_auth_asset_preflight_uses_configured_cors_origins(media_app):
     assert allowed.headers["Access-Control-Allow-Origin"] == "http://localhost:5173"
     assert "GET" in allowed.headers["Access-Control-Allow-Methods"]
     assert "Access-Control-Allow-Origin" not in denied.headers
+
+
+@pytest.mark.parametrize("permission", [0, -1, 7, None, True, False, "2", 1.5, [], {}])
+def test_signed_invalid_permission_never_falls_back(media_app, monkeypatch, permission):
+    """Signed but invalid grants must fail before lookup or path resolution."""
+    module, client, _ = media_app
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("Rejected capability must not perform anonymous lookup")
+
+    monkeypatch.setattr(module, "OldapClient", unexpected_lookup)
+    token = _asset_token("asset", permval=permission)
+    assert (
+        client.get(
+            "/auth/asset/asset/original", query_string={"token": token}
+        ).status_code
+        == 403
+    )
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"assetId": None},
+        {"assetId": "other"},
+        {"id": "asset", "assetId": "other"},
+        {"id": "other", "assetId": "asset"},
+    ],
+)
+def test_capability_identity_cannot_fall_back(media_app, monkeypatch, claims):
+    """Every supplied asset identifier must match the requested asset."""
+    module, client, _ = media_app
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("Mismatched capability must not perform anonymous lookup")
+
+    monkeypatch.setattr(module, "OldapClient", unexpected_lookup)
+    token = _asset_token("asset", **claims)
+    assert (
+        client.get(
+            "/auth/asset/asset/original", query_string={"token": token}
+        ).status_code
+        == 403
+    )
+
+
+@pytest.mark.parametrize(
+    "query", ["token=", "token=invalid", "token=invalid&token=also-invalid"]
+)
+def test_supplied_invalid_token_never_falls_back(media_app, monkeypatch, query):
+    """Presence of a token selects capability authorization, including empty input."""
+    module, client, _ = media_app
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("Invalid supplied token must not perform anonymous lookup")
+
+    monkeypatch.setattr(module, "OldapClient", unexpected_lookup)
+    assert client.get("/auth/asset/asset/original?" + query).status_code == 403
+
+
+@pytest.mark.parametrize("permission", [1, 2, 6, 0, None, True, "2"])
+def test_tokenless_lookup_checks_permission(media_app, monkeypatch, permission):
+    """Public resolution remains available but must carry a valid numeric grant."""
+    from types import SimpleNamespace
+
+    module, client, root = media_app
+    original = root / "public" / "asset" / "original" / "test.pdf"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b"%PDF-test")
+    monkeypatch.setattr(
+        module,
+        "OldapClient",
+        lambda **kwargs: SimpleNamespace(
+            get_mediaobject_by_assetid_unknown=lambda asset: {
+                "shared:path": "public",
+                "shared:originalName": "test.pdf",
+                "shared:protocol": "http",
+                "permval": permission,
+            }
+        ),
+    )
+    expected = 204 if type(permission) is int and permission in (1, 2, 6) else 403
+    assert client.get("/auth/asset/asset/original").status_code == expected
+
+
+def test_expired_capability_never_falls_back(media_app, monkeypatch):
+    """Expiry remains a denial even if the requested file might be public."""
+    import jwt
+
+    module, client, _ = media_app
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("Expired token must not perform anonymous lookup")
+
+    monkeypatch.setattr(module, "OldapClient", unexpected_lookup)
+    claims = jwt.decode(
+        _asset_token("asset"),
+        MEDIA_SECRET,
+        algorithms=["HS256"],
+        audience="oldap-api-media",
+    )
+    claims["exp"] = 1
+    token = jwt.encode(claims, MEDIA_SECRET, algorithm="HS256")
+    assert (
+        client.get(
+            "/auth/asset/asset/original", query_string={"token": token}
+        ).status_code
+        == 403
+    )
+
+
+@pytest.mark.parametrize("missing", ["permval", "assetId"])
+def test_missing_capability_grant_or_identity_is_denied(
+    media_app, monkeypatch, missing
+):
+    """A correctly signed envelope without a grant or asset binding is insufficient."""
+    import jwt
+
+    module, client, _ = media_app
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("Incomplete capability must not perform anonymous lookup")
+
+    monkeypatch.setattr(module, "OldapClient", unexpected_lookup)
+    claims = jwt.decode(
+        _asset_token("asset"),
+        MEDIA_SECRET,
+        algorithms=["HS256"],
+        audience="oldap-api-media",
+    )
+    del claims[missing]
+    token = jwt.encode(claims, MEDIA_SECRET, algorithm="HS256")
+    assert (
+        client.get(
+            "/auth/asset/asset/original", query_string={"token": token}
+        ).status_code
+        == 403
+    )
