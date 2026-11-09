@@ -1,3 +1,9 @@
+### Update 2026-11-09 17:33
+- Decisions: Preserve complete migration history in main via a non-squashed merge; keep pre-jena-merge-20261109 at the previous remote primary tip. No final release/version change or deployment.
+- Implementation: Refreshed origin; primary has no unique commits and merge-tree exactly matches reviewed migration 397de927dc8d. Added current integration context only; runtime sources remain unchanged.
+- Open: Verify coordinated remote refs and record final merge IDs in setup/docs/jena-mainline-merge-20261109.md. Final 1.0.0 artifact publication and old checkout cleanup remain separate.
+- Risks/Assumptions: Existing deployed/candidate acceptance covers identical runtime trees; this is not a fresh full-system test. All nine checkouts were clean. Existing GraphDB checkouts and migration branches are retained.
+
 ### Update 2026-11-05 17:49
 - Decisions: Treat SIGTERM/SIGINT as a drain request: finish the owned unit, retain lease heartbeats and durable retry semantics, take no new claims. Keep API/media contracts and originals unchanged.
 - Implementation: Added shutdown event and interruptible idle wait, signal handlers installed before startup, claim-boundary guards and seven regression tests. Compose defaults to 15-minute stop grace; the home updater detects drain support, waits without SIGKILL for new workers and retains the guarded legacy path. Built/published isolated AMD64 candidate a7b5d97ba17b and deployed it on home; running source hash matches. 391 tests + four subtests pass (20 skipped), four deployment tests, three packaged signal cases, real idle SIGTERM stop/restart and 26 live API/media checks pass; Black/Poetry/diff checks pass.
