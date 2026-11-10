@@ -991,11 +991,13 @@ def test_restart_after_lost_lifecycle_ack_replays_without_second_file_deletion(
         )
 
 
-def test_shutdown_finishes_claimed_commit_without_claiming_next_upload(registry):
+def test_shutdown_finishes_claimed_commit_without_claiming_next_upload(registry, clock):
     """Finish publication/acknowledgement, keep heartbeat, leave queued work alone."""
     import threading
 
     first = queued(registry)
+    # Equal timestamps use random upload IDs as a tie-breaker, not insertion order.
+    clock.value += timedelta(seconds=1)
     second = queued(
         registry, asset=str(uuid4()), init_key=str(uuid4()), commit_key=str(uuid4())
     )

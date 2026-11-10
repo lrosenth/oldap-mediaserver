@@ -1,3 +1,9 @@
+### Update 2026-11-10 15:57
+- Decisions: Make OLDAP/main the primary media checkout; preserve superseded local edits and original media dump. No runtime version or deployment change.
+- Implementation: Verified old source/schema/test edits byte-identical to merged main; saved Git bundles/patch/files and a named stash, then fast-forwarded. Fixed shutdown test ordering with the fixture clock; selected in-project Poetry environment. Documented reconciliation and remaining build/publication differences.
+- Open: Split docker-build from publication/latest handling, review dependency modernization and explicitly update local images; other projects still need archive-path audit.
+- Risks/Assumptions: 391 tests and four subtests pass, 20 skipped; focused Black/Poetry/diff pass (existing metadata deprecations). Three isolated Docker signal cases pass. No active local media path points to OLDAP-Jena. Large untracked dump retained, no data or running services changed.
+
 ### Update 2026-11-09 17:33
 - Decisions: Preserve complete migration history in main via a non-squashed merge; keep pre-jena-merge-20261109 at the previous remote primary tip. No final release/version change or deployment.
 - Implementation: Refreshed origin; primary has no unique commits and merge-tree exactly matches reviewed migration 397de927dc8d. Added current integration context only; runtime sources remain unchanged.
