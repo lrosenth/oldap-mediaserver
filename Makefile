@@ -21,6 +21,8 @@ help:
 	@echo "  deploy-test       Deploy the media stack to media.home.org"
 	@echo "  deploy-vm         Alias for deploy-production"
 	@echo "  deploy-home       Alias for deploy-test"
+	@echo "  docker-build      Build and verify mediahelper locally (docker-image alias)"
+	@echo "  docker-publish    Publish those accepted images (docker-push alias)"
 	@echo "  run-local         Start docker images locally"
 
 show-versions:
@@ -85,3 +87,8 @@ run-local: check-local-media-env
 		--profile zip-import-validation \
 		--profile zip-export-worker \
 		up -d
+
+# Mediahelper release only; SIPI has its own repository/release workflow.
+.PHONY: docker-build docker-image docker-publish docker-push
+docker-build docker-image docker-publish docker-push:
+	$(MAKE) -C mediaserver $@

@@ -470,8 +470,12 @@ locally use `docker-compose.cantaloupe.yml` alongside the base file. Preserve th
 prior mediahelper version too when reverting a coordinated release.
 
 To release the helper, update its VERSION, inspect `make show-versions`, then
-run `make -C mediaserver docker-build`. Publish only changed components and treat
-version tags as immutable. Optional Git tags remain component-specific. No
+run `make docker-build` to build and verify both architectures locally.
+Run `make docker-publish` separately to upload the exact accepted image IDs;
+publication never rebuilds, replaces existing tags or updates `latest`.
+See [the mediahelper image workflow](docs/mediahelper-image-workflow.md) for bundle
+paths, acceptance scope and partial-publication recovery. Publish only changed
+components and treat version tags as immutable. Optional Git tags remain component-specific. No
 new API/frontend/oldaplib image is required solely for the IIIF backend switch.
 
 ## Image derivative pipeline

@@ -58,7 +58,7 @@ def docker(*args, timeout=30):
     ).strip()
 
 
-def verify(image):
+def verify(image, platform="linux/amd64"):
     """Check idle stop and active TERM/INT drain without additional claims."""
     results = []
     for mode, signal in [
@@ -74,7 +74,7 @@ def verify(image):
                 "--name",
                 name,
                 "--platform",
-                "linux/amd64",
+                platform,
                 "--network",
                 "none",
                 "--mount",
@@ -123,11 +123,14 @@ def verify(image):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image")
+    parser.add_argument(
+        "--platform", choices=["linux/amd64", "linux/arm64"], default="linux/amd64"
+    )
     parser.add_argument("--child", choices=["idle", "active"])
     args = parser.parse_args()
     if args.child:
         child(args.child)
     elif args.image:
-        print(json.dumps(verify(args.image), indent=2))
+        print(json.dumps(verify(args.image, args.platform), indent=2))
     else:
         parser.error("--image is required")

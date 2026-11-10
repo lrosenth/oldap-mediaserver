@@ -22,7 +22,8 @@ help:
 	@echo "  show-tag           Show the derived Docker tag"
 	@echo "  show-image         Show the complete versioned image reference"
 	@echo "  run                Run the mediahelper directly with Gunicorn"
-	@echo "  docker-build       Build and push the versioned mediahelper image"
+	@echo "  docker-build       Build and verify both architectures locally (docker-image alias)"
+	@echo "  docker-publish     Publish accepted images without rebuilding or updating latest"
 	@echo "  docker-build-local Build a local-only docker image"
 	@echo "  docker-run         Run the versioned mediahelper Docker image"
 
@@ -57,15 +58,16 @@ docker-build-local: check-version
 	    -t "$(IMAGE):local" \
 	    $(ROOT_DIR)
 
-docker-build: check-version
-	docker buildx build \
-	    --platform linux/amd64,linux/arm64 \
-	    -f Dockerfile \
-	    --build-arg MEDIAHELPER_VERSION="$(VERSION)" \
-	    -t "$(IMAGE_REF)" \
-	    -t "$(IMAGE):latest" \
-	    --push \
-	    $(ROOT_DIR)
+# A new bundle freezes inputs; publication requires its accepted image IDs.
+IMAGE_BUNDLE ?= $(ROOT_DIR)/build/mediahelper/$(VERSION)
+.PHONY: docker-image docker-publish docker-push
+docker-build docker-image: check-version
+	cd "$(ROOT_DIR)" && poetry run python scripts/mediahelper_images.py build \
+		--bundle "$(IMAGE_BUNDLE)" --image "$(IMAGE)" --version "$(VERSION)"
+
+docker-publish docker-push: check-version
+	cd "$(ROOT_DIR)" && poetry run python scripts/mediahelper_images.py publish \
+		--bundle "$(IMAGE_BUNDLE)" --image "$(IMAGE)" --version "$(VERSION)"
 
 docker-run-local:
 	docker run --rm -it \

@@ -1,3 +1,9 @@
+### Update 2026-11-10 16:04
+- Decisions: Separate local mediahelper build/verification from explicit registry publication; never update latest or replace existing version tags. SIPI and legacy Cantaloupe workflows remain separate.
+- Implementation: Added root/component docker-build/docker-image and docker-publish/docker-push paths. New operator snapshots the existing explicit Docker allowlist, loads/checks both architectures, records accepted IDs/input hashes, and publishes those exact tags plus a digest-based index. Added platform selection to the existing signal probe and regression tests for receipts, registry refusal and Make routing.
+- Open: Real AMD64/ARM64 build and packaged acceptance completed; no publication, deployment or component version change. Partial registry publication needs operator inspection before retry.
+- Risks/Assumptions: Full suite 410 passed, 20 skipped, four subtests; both real images pass pip/import checks and six PID-1 signal cases in total. Black/Poetry/diff checks pass. Docker Hub has no conditional tag-create primitive; require one publisher/version. Builds still resolve mutable base/OS packages, so never substitute a rebuild for promotion of tested IDs.
+
 ### Update 2026-11-10 15:57
 - Decisions: Make OLDAP/main the primary media checkout; preserve superseded local edits and original media dump. No runtime version or deployment change.
 - Implementation: Verified old source/schema/test edits byte-identical to merged main; saved Git bundles/patch/files and a named stash, then fast-forwarded. Fixed shutdown test ordering with the fixture clock; selected in-project Poetry environment. Documented reconciliation and remaining build/publication differences.

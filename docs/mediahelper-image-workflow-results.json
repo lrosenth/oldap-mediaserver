@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-10",
+  "version": "0.2.17",
+  "images": {
+    "amd64": {
+      "id": "sha256:2e0f318a575ab9e3a764e1b03a82d6b16a7e5536d83771ff9376caf069afa2c8",
+      "reference": "lrosenth/oldap-mediahelper:v0.2.17-amd64"
+    },
+    "arm64": {
+      "id": "sha256:c816c5ded00df0d515742ce5f098000ffd465a38a07c2331d0b66936dd7b1ab3",
+      "reference": "lrosenth/oldap-mediahelper:v0.2.17-arm64"
+    }
+  },
+  "source_inputs_sha256": "7ecac2318aad65be927c7f35417fa7f972be4abbbd6643af47805a7eebd4e7d6",
+  "tests": {
+    "passed": 410,
+    "skipped": 20,
+    "subtests_passed": 4
+  },
+  "runtime_checks": {
+    "amd64": "pip check, imports and three PID-1 signal cases passed",
+    "arm64": "pip check, imports and three PID-1 signal cases passed"
+  },
+  "published": false,
+  "deployed": false
+}
