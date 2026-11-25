@@ -196,3 +196,21 @@ publication is performed by these repository changes. The previous Cantaloupe
 `v0.2.1` image is not currently installed on the laptop: its merged configuration
 was validated, but its runtime was not relaunched. Pull/retain the actual fallback
 image before a remote migration.
+
+## Production story-image clock tolerance (2026-11-25)
+
+Production retains SIPI 1.0.3 and mounts the reviewed OLDAP policy from SIPI commit
+`67ceb2a` with a two-second JWT clock tolerance. The production inventory group
+selects the sibling policy source explicitly; keep that checkout available for
+future full media deployments. Home remains on its existing bundled policy.
+The mounted policy SHA-256 is
+`2251cd464871997ab7b1aa64f128e6350686d543e8a4c8183c41273833f3921b`.
+
+Only `imageserver` was recreated; five peer containers and the image digest are
+unchanged. Health, 16 fresh-capability image requests (all 200) and invalid-token
+rejection (403) pass. The private rollback Compose file is
+`/opt/oldap-mediaserver/compose/story-policy-20261125T215953Z/docker-compose.yml`.
+To revert this change before subsequent Compose edits, restore that file and run
+`docker compose up -d --no-deps --wait imageserver` from the Compose directory;
+no media or cache volumes need restoring. Clear the production policy override
+only when reverting deliberately or selecting a release that bundles this fix.

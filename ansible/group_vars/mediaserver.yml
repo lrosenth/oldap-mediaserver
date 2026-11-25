@@ -1,0 +1,3 @@
+# Production OLDAP clock tolerance until included in the selected SIPI image.
+# This uses the same sibling checkout as the supported local SIPI build.
+sipi_preflight_source: "{{ playbook_dir }}/../../../sipi-2/examples/oldap/preflight.lua"

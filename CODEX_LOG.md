@@ -1,3 +1,9 @@
+### Update 2026-11-25 23:03
+- Decisions: Keep the production-only JWT clock-tolerance policy across subsequent full media deployments through the existing custom-policy setting.
+- Implementation: Production group points to the documented sibling SIPI checkout; deployment receipt and rollback path recorded. Effective live Compose changes were restricted to the policy path/read-only mount; imageserver healthy, five peers unchanged, 16 fresh image requests pass and invalid token remains denied.
+- Open: Frontend deployment is tracked in FasnachtsPage/oldap-setup; Home remains unchanged.
+- Risks/Assumptions: Future deployments require the sibling policy source. No mediahelper/Python/runtime-image changes or archive writes.
+
 ### Update 2026-11-10 16:04
 - Decisions: Separate local mediahelper build/verification from explicit registry publication; never update latest or replace existing version tags. SIPI and legacy Cantaloupe workflows remain separate.
 - Implementation: Added root/component docker-build/docker-image and docker-publish/docker-push paths. New operator snapshots the existing explicit Docker allowlist, loads/checks both architectures, records accepted IDs/input hashes, and publishes those exact tags plus a digest-based index. Added platform selection to the existing signal probe and regression tests for receipts, registry refusal and Make routing.
